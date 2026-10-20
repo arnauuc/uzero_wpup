@@ -1,6 +1,6 @@
 # uzero_wpup
 
-Eina d'actualització segura de WordPress/WooCommerce (`wpup`, nom provisional): còpia de seguretat, compatibilitat amb el PHP real del lloc, actualització, verificació visual i funcional, i rollback automàtic.
+Eina d'actualització segura de WordPress/WooCommerce **uzero wpup** (nom provisional; binari `wpup`): còpia de seguretat, compatibilitat amb el PHP real del lloc, actualització, verificació visual i funcional, i rollback automàtic.
 
 - [AGENTS.md](AGENTS.md): regles de treball per a agents i persones
 - [docs/especificacio.md](docs/especificacio.md): especificació

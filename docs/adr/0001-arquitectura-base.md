@@ -1,4 +1,4 @@
-# ADR-0001: Arquitectura base de wpup
+# ADR-0001: Arquitectura base d'uzero wpup
 
 **Estat:** Proposat
 **Data:** 2026-10-20

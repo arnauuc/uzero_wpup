@@ -4,7 +4,7 @@ Oct 16, 2026 · @Arnau
 
 ## Objectiu i abast
 
-L'eina (nom provisional: `wpup`) actualitza de forma segura una flota de WordPress/WooCommerce: fa còpia de seguretat, comprova la compatibilitat amb el PHP del lloc, actualitza, verifica que el lloc es continua veient i comportant igual, i reverteix si no és així. Cada execució queda registrada i genera un informe.
+L'eina (nom provisional: **uzero wpup**; binari de la CLI: `wpup`) actualitza de forma segura una flota de WordPress/WooCommerce: fa còpia de seguretat, comprova la compatibilitat amb el PHP del lloc, actualitza, verifica que el lloc es continua veient i comportant igual, i reverteix si no és així. Cada execució queda registrada i genera un informe.
 
 **Fa:**
 

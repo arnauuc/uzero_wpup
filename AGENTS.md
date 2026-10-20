@@ -6,7 +6,7 @@ Instruccions per a qualsevol agent de codi (Claude Code, Codex…) i per a les p
 
 ## Què és
 
-`wpup` (nom provisional) actualitza de forma segura una flota de WordPress/WooCommerce. Fa còpia de seguretat, comprova la compatibilitat amb el PHP real del lloc, actualitza, verifica que el lloc es veu i es comporta igual, i reverteix si no és així. Cada execució queda registrada i genera un informe.
+**uzero wpup** (nom provisional; el binari de la CLI és `wpup`) actualitza de forma segura una flota de WordPress/WooCommerce. Fa còpia de seguretat, comprova la compatibilitat amb el PHP real del lloc, actualitza, verifica que el lloc es veu i es comporta igual, i reverteix si no és així. Cada execució queda registrada i genera un informe.
 
 - Especificació completa: [docs/especificacio.md](docs/especificacio.md)
 - Decisions d'arquitectura: [docs/adr/](docs/adr/)
