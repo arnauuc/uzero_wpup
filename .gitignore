@@ -1,0 +1,30 @@
+# Instruccions locals d'agents: no s'han de versionar i, a més, desactiven la lectura d'AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
+.claude/CLAUDE.md
+.claude/settings.local.json
+
+# Entorn i secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_*
+
+# Dependències i artefactes
+/vendor/
+/node_modules/
+/verifier/node_modules/
+/storage/*.key
+/storage/app/artifacts/
+/storage/app/backups/
+/storage/app/screenshots/
+/storage/logs/
+.phpunit.cache/
+coverage/
+
+# Editors i sistema
+.idea/
+.vscode/
+.DS_Store
