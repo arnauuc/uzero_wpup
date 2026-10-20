@@ -9,6 +9,7 @@ Instruccions per a qualsevol agent de codi (Claude Code, Codex…) i per a les p
 **uzero wpup** (nom provisional; el binari de la CLI és `wpup`) actualitza de forma segura una flota de WordPress/WooCommerce. Fa còpia de seguretat, comprova la compatibilitat amb el PHP real del lloc, actualitza, verifica que el lloc es veu i es comporta igual, i reverteix si no és així. Cada execució queda registrada i genera un informe.
 
 - Especificació completa: [docs/especificacio.md](docs/especificacio.md)
+- Mòdul F9, clients i facturació amb Quipu (s'implementa al final): [docs/modul-facturacio-quipu.md](docs/modul-facturacio-quipu.md)
 - Decisions d'arquitectura: [docs/adr/](docs/adr/)
 - Tasques: Plane, projecte **UZEROWPUP** (identificadors `UZEROWPUP-<n>`)
 
@@ -102,7 +103,7 @@ Per defecte, la feina la fa **Sonnet** (`claude-sonnet-5-5`, àlies `sonnet`). *
 
 Una tasca és **complexa** si té l'etiqueta `opus` a Plane, o bé si compleix qualsevol d'aquests criteris:
 
-- Toca una de les regles innegociables de seguretat (credencials, HMAC, rollback de BD, checkout, neutralització del staging).
+- Toca una de les regles innegociables de seguretat (credencials, HMAC, rollback de BD, checkout, neutralització del staging, dades de facturació).
 - Defineix o canvia una interfície compartida (`SiteDriver`, `BackupTarget`, el contracte del verificador) o el motor d'execucions.
 - Afecta més d'un component (orquestrador + agent, orquestrador + verificador…).
 - Té ambigüitats o contradiccions que s'han de resoldre abans d'implementar.
@@ -154,6 +155,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 8. **Comandes de shell remotes:** arguments sempre escapats. Mai concatenis entrada no validada dins d'una comanda.
 9. **Comandes que fan canvis:** totes tenen `--dry-run`. Les destructives (restauració, alliberament de locks, esborrats) demanen confirmació explícita i queden a `audit_log`.
 10. **`audit_log` és només d'inserció.** Cap codi no hi fa `update` ni `delete`.
+11. **Quipu és només de lectura.** L'eina no crea, no modifica i no esborra res a Quipu (ni factures, ni contactes, ni etiquetes). Les dades de facturació no surten mai fora de l'eina, i els operadors només en veuen l'estat; els imports i les factures només els veuen els `admin`.
 
 ## Regles d'arquitectura i de codi
 
@@ -211,6 +213,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
   | UZEROWPUP-10 | Política d'actualitzacions majors | Capa 1 de compatibilitat (F3) |
   | UZEROWPUP-11 | Retenció per defecte de còpies, logs i captures | Neteja de F2, logs de F5 |
   | UZEROWPUP-12 | Nom definitiu de l'eina | — |
+  | UZEROWPUP-110 | Criteri per identificar les factures de manteniment a Quipu (etiqueta o concepte) | Classificador i sincronització de F9 |
 
 ## Quan has de parar i preguntar
 
