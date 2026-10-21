@@ -38,6 +38,14 @@ Restriccions i fets:
 - **Còpia de la KEK:** fora del servidor, al gestor de contrasenyes de l'empresa, amb accés limitat als `admin`. Les còpies diàries de la BD de l'eina només contenen text xifrat. Si es perd la KEK, es perden totes les credencials.
 - **Millora recomanada:** afegir un TPM 2.0 virtual a la VM de Proxmox. Lliga la KEK a aquella VM i fa que una còpia del disc no sigui suficient per desxifrar-la.
 
+### 2b. Recuperació en cas de desastre
+
+- La còpia que es guarda fora del servidor és la **KEK en brut** (32 bytes, codificats en base64), mai el fitxer segellat per `systemd-creds`, que només s'obre amb el TPM i la clau del host de la VM original.
+- Si es perd la VM: es crea una VM nova (amb un TPM virtual nou si es vol), es restaura la còpia de la BD de l'eina, es recupera la KEK del gestor de contrasenyes i es torna a segellar amb `systemd-creds` a la VM nova. Les credencials tornen a ser llegibles.
+- Les còpies de Proxmox (vzdump) inclouen l'estat del TPM virtual i també permeten restaurar la VM sencera, però no són l'única via de recuperació.
+- Les còpies de les webs (dumps i arxius de WordPress) no estan xifrades amb la KEK: s'hi pot accedir directament des de la destinació, fins i tot sense l'eina.
+- El procediment complet es documenta al runbook de recuperació i es prova en una VM nova almenys un cop l'any (UZEROWPUP-28).
+
 ### 3. Identitats d'accés per compte d'hosting, no per lloc
 
 - Una entitat nova, `hosting_accounts` (servidor + usuari de sistema de la subscripció de Plesk), agrupa els llocs que comparteixen usuari. Cada lloc apunta al seu compte d'hosting.
