@@ -1,6 +1,6 @@
 # ADR-0003: Xarxa i accés a la VM de l'eina
 
-**Estat:** Proposat
+**Estat:** Acceptat (2026-10-21)
 **Data:** 2026-10-21
 **Decideixen:** Arnau
 **Tasca:** UZEROWPUP-125
