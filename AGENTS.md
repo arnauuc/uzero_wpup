@@ -169,6 +169,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 - **Dades fresques:** cada execució comença amb un inventari nou, i la línia base de verificació es captura dins de la mateixa execució, just abans d'actualitzar.
 - **Artefactes:** els paquets s'analitzen i s'instal·len des del servidor de l'eina amb el seu checksum. Staging i producció reben exactament els mateixos bytes. Mai es descarrega un paquet directament des del lloc.
 - **Ordre d'actualització:** core → WooCommerce → plugins → temes → traduccions, i després `wp wc update-db` i el buidatge de memòria cau.
+- **Majors i quarantena** ([ADR-0005](docs/adr/0005-actualitzacions-majors.md)): core `x.y`, WooCommerce `X.0` i plugins o temes amb canvi al primer número obliguen a fer staging primer (fins a F7, s'ometen excepte amb `--allow-major`). Les versions noves esperen 7 dies, excepte el core `x.y.z` i les correccions de vulnerabilitats conegudes.
 - **Compatibilitat en tres capes:** requisits declarats, anàlisi estàtica amb PHPCompatibility i execució real (fatals nous ⇒ rollback). Cada component omès porta el seu motiu.
 - **PHP del lloc:** sempre el que serveix el web (handler del domini a Plesk i probe HTTP), mai el del CLI.
 - **Concurrència:** lock atòmic per lloc a Redis i límits globals i per servidor d'hosting. Cap feina no se'ls salta.
@@ -212,7 +213,6 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
   | UZEROWPUP-7 | PHP/WP mínims en producció i PHP mínim de l'agent | F6 (agent) |
   | UZEROWPUP-8 | Visor d'informes: web Laravel o HTML estàtic | Visor de F5 |
   | UZEROWPUP-9 | Execucions programades o sempre manuals | — |
-  | UZEROWPUP-10 | Política d'actualitzacions majors | Capa 1 de compatibilitat (F3) |
   | UZEROWPUP-11 | Retenció per defecte de còpies, logs i captures | Neteja de F2, logs de F5 |
   | UZEROWPUP-12 | Nom definitiu de l'eina | — |
   | UZEROWPUP-122 | Acceptar l'ADR-0002 de gestió de secrets i accés als servidors | SecretStore, identitat via sudo, SshDriver, desplegament i comandes de claus |
