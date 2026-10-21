@@ -21,7 +21,7 @@ Restriccions:
 2. **Verificador separat en Node + TypeScript + Playwright + pixelmatch**, invocat per l'orquestrador amb un contracte JSON versionat. No té credencials dels llocs.
 3. **Accés als llocs a través de la interfície `SiteDriver`**, amb dues implementacions:
    - `SshDriver`: WP-CLI amb el binari de PHP del domini, `mysqldump`/`tar` i rsync.
-   - `AgentDriver`: un agent PHP temporal d'un sol fitxer (sintaxi PHP 5.6+), pujat per SFTP, amb HMAC, TTL i esborrament garantit.
+   - `AgentDriver`: un agent PHP temporal d'un sol fitxer (sintaxi PHP 7.4+, vegeu l'ADR-0007), pujat per SFTP, amb HMAC, TTL i esborrament garantit.
 4. **Còpies a través de la interfície `BackupTarget`** (local al lloc, SFTP/SCP, S3, i més endavant Dropbox i rclone), amb SHA-256 verificat a cada destinació.
 5. **Staging opcional en Docker** al servidor de l'eina, amb el PHP i el MySQL/MariaDB del lloc, neutralitzat abans d'arrencar. La producció sempre torna a fer còpia i verificació.
 6. **Artefactes per execució:** els paquets s'analitzen (PHPCompatibility) i s'instal·len des del servidor de l'eina amb el seu checksum, de manera que staging i producció reben els mateixos bytes.
@@ -72,7 +72,7 @@ La complexitat del problema és en l'orquestració: passos idempotents, represa,
 ## Conseqüències
 
 - **Més fàcil:** afegir destinacions de còpia o tipus de connexió nous; provar la lògica de domini amb `FakeDriver`; operar en multiusuari amb auditoria.
-- **Més difícil:** mantenir l'agent compatible amb PHP 5.6–8.5 (cal una matriu local en Docker); sincronitzar les versions del contracte del verificador.
+- **Més difícil:** mantenir l'agent compatible amb PHP 7.4–8.5 (ADR-0007) (cal una matriu local en Docker); sincronitzar les versions del contracte del verificador.
 - **Caldrà revisar:** el PHP mínim de l'agent (UZEROWPUP-7), la BD de l'eina (UZEROWPUP-6) i el visor d'informes (UZEROWPUP-8).
 
 ## Accions
