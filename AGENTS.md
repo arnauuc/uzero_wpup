@@ -158,6 +158,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 10. **`audit_log` és només d'inserció.** Cap codi no hi fa `update` ni `delete`.
 11. **Quipu és només de lectura.** L'eina no crea, no modifica i no esborra res a Quipu (ni factures, ni contactes, ni etiquetes). Les dades de facturació no surten mai fora de l'eina, i els operadors només en veuen l'estat; els imports i les factures només els veuen els `admin`.
 12. **Accés als servidors.** Tota l'eina corre amb l'usuari de sistema `wpup` i els operadors l'executen via `sudo`; cap operador pot llegir el `.env`, la clau mestra ni la BD. Als servidors Plesk s'entra amb l'usuari de la subscripció (mai `root`), amb la clau restringida a l'IP de l'eina i amb la host key fixada.
+13. **Xarxa de la VM** ([ADR-0003](docs/adr/0003-xarxa-i-acces.md)). Només s'hi entra per la tailnet (Tailscale): cap port exposat a Internet ni a la LAN, cap contenidor publicat a `0.0.0.0`, Tailscale Funnel prohibit i sortida sempre per l'IP pública fixa (mai per un *exit node*).
 
 ## Regles d'arquitectura i de codi
 
@@ -216,6 +217,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
   | UZEROWPUP-11 | Retenció per defecte de còpies, logs i captures | Neteja de F2, logs de F5 |
   | UZEROWPUP-12 | Nom definitiu de l'eina | — |
   | UZEROWPUP-122 | Acceptar l'ADR-0002 de gestió de secrets i accés als servidors | SecretStore, identitat via sudo, SshDriver, desplegament i comandes de claus |
+  | UZEROWPUP-125 | Acceptar l'ADR-0003 de xarxa i accés a la VM (tailnet) | Xarxa de la VM i desplegament |
   | UZEROWPUP-110 | Criteri per identificar les factures de manteniment a Quipu (etiqueta o concepte) | Classificador i sincronització de F9 |
 
 ## Quan has de parar i preguntar
