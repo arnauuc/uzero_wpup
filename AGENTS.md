@@ -44,7 +44,7 @@ Fins que es facin les tasques UZEROWPUP-1 a UZEROWPUP-4, part d'aquesta estructu
 | Peça | Versió / eina |
 | --- | --- |
 | Orquestrador | PHP 8.3+, Laravel 13, Horizon, Redis |
-| BD de l'eina | Pendent de l'ADR (UZEROWPUP-6): PostgreSQL o MariaDB |
+| BD de l'eina | PostgreSQL (≥ 17), socket Unix i autenticació `peer` ([ADR-0004](docs/adr/0004-base-de-dades.md)); els tests corren contra PostgreSQL, mai SQLite |
 | Secrets | `SecretStore` amb xifratge en sobre (libsodium) i clau mestra segellada amb el TPM 2.0 virtual de la VM via `systemd-creds` (ADR-0002) |
 | Tests PHP | Pest (unitaris, de funcionalitat i d'integració) |
 | Anàlisi estàtica | Larastan (PHPStan) al nivell `max`, sense baseline nova |
@@ -209,7 +209,6 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 
   | Tasca | Decisió | Bloqueja |
   | --- | --- | --- |
-  | UZEROWPUP-6 | BD de l'eina: PostgreSQL o MariaDB | Migracions de F1, entorn Docker |
   | UZEROWPUP-7 | PHP/WP mínims en producció i PHP mínim de l'agent | F6 (agent) |
   | UZEROWPUP-8 | Visor d'informes: web Laravel o HTML estàtic | Visor de F5 |
   | UZEROWPUP-9 | Execucions programades o sempre manuals | — |
