@@ -6,7 +6,7 @@ Instruccions per a qualsevol agent de codi (Claude Code, Codex…) i per a les p
 
 ## Què és
 
-**uzero wpup** (nom provisional; el binari de la CLI és `wpup`) actualitza de forma segura una flota de WordPress/WooCommerce. Fa còpia de seguretat, comprova la compatibilitat amb el PHP real del lloc, actualitza, verifica que el lloc es veu i es comporta igual, i reverteix si no és així. Cada execució queda registrada i genera un informe.
+**Uzero wpup** (el binari de la CLI és `wpup`) actualitza de forma segura una flota de WordPress/WooCommerce. Fa còpia de seguretat, comprova la compatibilitat amb el PHP real del lloc, actualitza, verifica que el lloc es veu i es comporta igual, i reverteix si no és així. Cada execució queda registrada i genera un informe.
 
 - Especificació completa: [docs/especificacio.md](docs/especificacio.md)
 - Mòdul F9, clients i facturació amb Quipu (s'implementa al final): [docs/modul-facturacio-quipu.md](docs/modul-facturacio-quipu.md)
@@ -214,7 +214,6 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
   | UZEROWPUP-9 | Execucions programades o sempre manuals | — |
   | UZEROWPUP-10 | Política d'actualitzacions majors | Capa 1 de compatibilitat (F3) |
   | UZEROWPUP-11 | Retenció per defecte de còpies, logs i captures | Neteja de F2, logs de F5 |
-  | UZEROWPUP-12 | Nom definitiu de l'eina | — |
   | UZEROWPUP-122 | Acceptar l'ADR-0002 de gestió de secrets i accés als servidors | SecretStore, identitat via sudo, SshDriver, desplegament i comandes de claus |
   | UZEROWPUP-110 | Criteri per identificar les factures de manteniment a Quipu (etiqueta o concepte) | Classificador i sincronització de F9 |
 
