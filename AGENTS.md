@@ -171,7 +171,8 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 - **Ordre d'actualització:** core → WooCommerce → plugins → temes → traduccions, i després `wp wc update-db` i el buidatge de memòria cau.
 - **Compatibilitat en tres capes:** requisits declarats, anàlisi estàtica amb PHPCompatibility i execució real (fatals nous ⇒ rollback). Cada component omès porta el seu motiu.
 - **PHP del lloc:** sempre el que serveix el web (handler del domini a Plesk i probe HTTP), mai el del CLI.
-- **Concurrència:** lock atòmic per lloc a Redis i límits globals i per servidor d'hosting. Cap feina no se'ls salta.
+- **Concurrència:** lock atòmic per lloc i per compte d'hosting a Redis, i **una sola actualització alhora** a tota l'eina ([ADR-0006](docs/adr/0006-execucions-programades.md)); el staging s'esborra en acabar cada lloc. Cap feina no se salta aquests límits.
+- **Execucions programades** (ADR-0006): cada lloc té la seva finestra (per defecte, de 01:00 a 06:00; també pot ser de dia) i només s'actualitzen automàticament els llocs amb `auto_update`. Un lloc que no hi cap dins de la seva finestra es deixa per a la següent.
 
 **Codi PHP (orquestrador)**
 
@@ -211,7 +212,6 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
   | UZEROWPUP-6 | BD de l'eina: PostgreSQL o MariaDB | Migracions de F1, entorn Docker |
   | UZEROWPUP-7 | PHP/WP mínims en producció i PHP mínim de l'agent | F6 (agent) |
   | UZEROWPUP-8 | Visor d'informes: web Laravel o HTML estàtic | Visor de F5 |
-  | UZEROWPUP-9 | Execucions programades o sempre manuals | — |
   | UZEROWPUP-10 | Política d'actualitzacions majors | Capa 1 de compatibilitat (F3) |
   | UZEROWPUP-11 | Retenció per defecte de còpies, logs i captures | Neteja de F2, logs de F5 |
   | UZEROWPUP-12 | Nom definitiu de l'eina | — |
