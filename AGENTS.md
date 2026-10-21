@@ -45,7 +45,7 @@ Fins que es facin les tasques UZEROWPUP-1 a UZEROWPUP-4, part d'aquesta estructu
 | Peça | Versió / eina |
 | --- | --- |
 | Orquestrador | PHP 8.3+, Laravel 13, Horizon, Redis |
-| BD de l'eina | Pendent de l'ADR (UZEROWPUP-6): PostgreSQL o MariaDB |
+| BD de l'eina | PostgreSQL (≥ 17), socket Unix i autenticació `peer` ([ADR-0004](docs/adr/0004-base-de-dades.md)); els tests corren contra PostgreSQL, mai SQLite |
 | Secrets | `SecretStore` amb xifratge en sobre (libsodium) i clau mestra segellada amb el TPM 2.0 virtual de la VM via `systemd-creds` (ADR-0002) |
 | Tests PHP | Pest (unitaris, de funcionalitat i d'integració) |
 | Anàlisi estàtica | Larastan (PHPStan) al nivell `max`, sense baseline nova |
@@ -159,6 +159,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 10. **`audit_log` és només d'inserció.** Cap codi no hi fa `update` ni `delete`.
 11. **Quipu és només de lectura.** L'eina no crea, no modifica i no esborra res a Quipu (ni factures, ni contactes, ni etiquetes). Les dades de facturació no surten mai fora de l'eina, i els operadors només en veuen l'estat; els imports i les factures només els veuen els `admin`.
 12. **Accés als servidors.** Tota l'eina corre amb l'usuari de sistema `wpup` i els operadors l'executen via `sudo`; cap operador pot llegir el `.env`, la clau mestra ni la BD. Als servidors Plesk s'entra amb l'usuari de la subscripció (mai `root`), amb la clau restringida a l'IP de l'eina i amb la host key fixada.
+13. **Xarxa de la VM** ([ADR-0003](docs/adr/0003-xarxa-i-acces.md)). Només s'hi entra per la tailnet (Tailscale): cap port exposat a Internet ni a la LAN, cap contenidor publicat a `0.0.0.0`, Tailscale Funnel prohibit i sortida sempre per l'IP pública fixa (mai per un *exit node*).
 
 ## Regles d'arquitectura i de codi
 
@@ -170,9 +171,11 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 - **Dades fresques:** cada execució comença amb un inventari nou, i la línia base de verificació es captura dins de la mateixa execució, just abans d'actualitzar.
 - **Artefactes:** els paquets s'analitzen i s'instal·len des del servidor de l'eina amb el seu checksum. Staging i producció reben exactament els mateixos bytes. Mai es descarrega un paquet directament des del lloc.
 - **Ordre d'actualització:** core → WooCommerce → plugins → temes → traduccions, i després `wp wc update-db` i el buidatge de memòria cau.
+- **Majors i quarantena** ([ADR-0005](docs/adr/0005-actualitzacions-majors.md)): core `x.y`, WooCommerce `X.0` i plugins o temes amb canvi al primer número obliguen a fer staging primer (fins a F7, s'ometen excepte amb `--allow-major`). Les versions noves esperen 7 dies, excepte el core `x.y.z` i les correccions de vulnerabilitats conegudes.
 - **Compatibilitat en tres capes:** requisits declarats, anàlisi estàtica amb PHPCompatibility i execució real (fatals nous ⇒ rollback). Cada component omès porta el seu motiu.
 - **PHP del lloc:** sempre el que serveix el web (handler del domini a Plesk i probe HTTP), mai el del CLI.
-- **Concurrència:** lock atòmic per lloc a Redis i límits globals i per servidor d'hosting. Cap feina no se'ls salta.
+- **Concurrència:** lock atòmic per lloc i per compte d'hosting a Redis, i **una sola actualització alhora** a tota l'eina ([ADR-0006](docs/adr/0006-execucions-programades.md)); el staging s'esborra en acabar cada lloc. Cap feina no se salta aquests límits.
+- **Execucions programades** (ADR-0006): cada lloc té la seva finestra (per defecte, de 01:00 a 06:00; també pot ser de dia) i només s'actualitzen automàticament els llocs amb `auto_update`. Un lloc que no hi cap dins de la seva finestra es deixa per a la següent.
 
 **Codi PHP (orquestrador)**
 
@@ -210,13 +213,11 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 
   | Tasca | Decisió | Bloqueja |
   | --- | --- | --- |
-  | UZEROWPUP-6 | BD de l'eina: PostgreSQL o MariaDB | Migracions de F1, entorn Docker |
   | UZEROWPUP-8 | Visor d'informes: web Laravel o HTML estàtic | Visor de F5 |
-  | UZEROWPUP-9 | Execucions programades o sempre manuals | — |
-  | UZEROWPUP-10 | Política d'actualitzacions majors | Capa 1 de compatibilitat (F3) |
   | UZEROWPUP-11 | Retenció per defecte de còpies, logs i captures | Neteja de F2, logs de F5 |
   | UZEROWPUP-12 | Nom definitiu de l'eina | — |
   | UZEROWPUP-122 | Acceptar l'ADR-0002 de gestió de secrets i accés als servidors | SecretStore, identitat via sudo, SshDriver, desplegament i comandes de claus |
+  | UZEROWPUP-125 | Acceptar l'ADR-0003 de xarxa i accés a la VM (tailnet) | Xarxa de la VM i desplegament |
   | UZEROWPUP-110 | Criteri per identificar les factures de manteniment a Quipu (etiqueta o concepte) | Classificador i sincronització de F9 |
 
 ## Quan has de parar i preguntar
