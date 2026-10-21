@@ -35,16 +35,23 @@ Restriccions i fets:
 - Cada secret es xifra amb una clau de dades pròpia (*DEK*, aleatòria, XChaCha20-Poly1305 amb libsodium). La DEK es xifra amb la **clau mestra** (*KEK*). A la BD només hi ha el text xifrat, la DEK xifrada, l'identificador de la versió de la KEK i les metadades.
 - La KEK es guarda com a credencial de systemd segellada amb el TPM 2.0 virtual de la VM i amb la clau del host (`systemd-creds encrypt --with-key=tpm2+host`). Es fa servir `tpm2+host`, i no `auto`, perquè si el TPM no hi és o falla, la creació falli en lloc de rebaixar la protecció en silenci. systemd la desxifra i l'entrega només als serveis de l'usuari `wpup` (`LoadCredentialEncrypted=`). Per a la CLI via sudo, s'obté amb un helper restringit.
 - L'`APP_KEY` de Laravel queda per a les sessions i les cookies del visor; no xifra cap credencial de llocs.
-- **Còpia de la KEK:** fora del servidor, al gestor de contrasenyes de l'empresa, amb accés limitat als `admin`. Les còpies diàries de la BD de l'eina només contenen text xifrat. Si es perd la KEK, es perden totes les credencials.
+- **Còpia de la KEK:** fora del servidor. Les còpies diàries de la BD de l'eina només contenen text xifrat, de manera que, si es perd la KEK, es perden totes les credencials (vegeu el punt 2c).
 - **TPM 2.0 virtual obligatori a la VM de Proxmox** (`tpmstate0`, versió `v2.0`, amb firmware UEFI/OVMF). S'ha d'afegir abans de crear la KEK. Lliga la KEK a aquella VM: una còpia del disc de la VM sense l'estat del TPM no és suficient per desxifrar-la. El desplegament comprova que `/dev/tpmrm0` existeix i que `systemd-creds has-tpm2` dona èxit; si no, s'atura.
 
 ### 2b. Recuperació en cas de desastre
 
-- La còpia que es guarda fora del servidor és la **KEK en brut** (32 bytes, codificats en base64), mai el fitxer segellat per `systemd-creds`, que només s'obre amb el TPM i la clau del host de la VM original.
-- Si es perd la VM: es crea una VM nova amb un TPM virtual nou, es restaura la còpia de la BD de l'eina, es recupera la KEK del gestor de contrasenyes i es torna a segellar amb `systemd-creds` a la VM nova. Les credencials tornen a ser llegibles.
+- La còpia que es guarda fora del servidor (al KeePassXC del custodi, punt 2c) és la **KEK en brut** (32 bytes, codificats en base64), mai el fitxer segellat per `systemd-creds`, que només s'obre amb el TPM i la clau del host de la VM original.
+- Si es perd la VM: es crea una VM nova amb un TPM virtual nou, es restaura la còpia de la BD de l'eina, es recupera la KEK del KeePassXC del custodi i es torna a segellar amb `systemd-creds` a la VM nova. Les credencials tornen a ser llegibles.
 - Les còpies de Proxmox (vzdump) inclouen l'estat del TPM virtual i també permeten restaurar la VM sencera, però no són l'única via de recuperació.
 - Les còpies de les webs (dumps i arxius de WordPress) no estan xifrades amb la KEK: s'hi pot accedir directament des de la destinació, fins i tot sense l'eina.
 - El procediment complet es documenta al runbook de recuperació i es prova en una VM nova almenys un cop l'any (UZEROWPUP-28).
+
+### 2c. Custòdia de la KEK
+
+- **Custodi únic:** Arnau. La KEK en brut es guarda en una entrada pròpia de la seva base de dades de **KeePassXC**, fora de qualsevol caixa compartida de l'equip. Ningú més no té accés a la còpia de la KEK, inclosos els altres `admin` de l'eina.
+- **Còpies del fitxer de KeePassXC:** almenys dues ubicacions independents de la VM de l'eina i del clúster de Proxmox (p. ex. un dispositiu personal i una còpia xifrada fora de l'oficina), amb una contrasenya mestra robusta i, si es pot, un fitxer de clau o una clau de maquinari.
+- **Risc acceptat:** amb un sol custodi, si Arnau no està disponible i es perd la VM, no es poden recuperar les credencials. Caldria tornar a donar d'alta les claus i les contrasenyes de tots els comptes d'hosting i destinacions. Es pot reduir afegint un segon custodi o un sobre segellat de recuperació; aquesta decisió es pot revisar sense canviar el disseny.
+- **Rotació:** si la còpia es veu compromesa o canvia el custodi, s'executa `wpup secrets:rekey` i es guarda la KEK nova (la vella deixa de servir).
 
 ### 3. Identitats d'accés per compte d'hosting, no per lloc
 
@@ -113,7 +120,7 @@ El risc principal no és un atacant extern a la BD, sinó l'abast de cada creden
 ## Conseqüències
 
 - **Més fàcil:** donar i treure accés a operadors (un usuari Unix i una línia a `users`), auditar l'accés a credencials i rotar les claus.
-- **Més difícil:** la instal·lació del servidor (sudoers, systemd-creds, permisos) i la recuperació en cas de desastre, que depèn de tenir la KEK custodiada.
+- **Més difícil:** la instal·lació del servidor (sudoers, systemd-creds, permisos) i la recuperació en cas de desastre, que depèn del custodi de la KEK (un sol custodi; vegeu el punt 2c).
 - **Canvis al model de dades:** la taula nova `hosting_accounts`, i les credencials passen dels llocs als comptes d'hosting.
 - **Cal comprovar a F1:** que els usuaris de subscripció de Plesk tenen shell (no `/bin/false`) i que, si és un shell *chrooted*, s'hi poden fer servir els binaris de `/opt/plesk/php/X.Y/bin/php` i WP-CLI. Si no, cal una alternativa (shell no chrooted per a aquells usuaris, o l'agent).
 - **Caldrà revisar:** l'adopció de Vault si l'eina creix.
