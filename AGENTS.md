@@ -148,7 +148,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 
 1. **Mai contra llocs reals des del desenvolupament.** Els tests i les proves manuals es fan només contra els llocs de prova de Docker. Cap credencial real dins del repositori, als fixtures ni als tests.
 2. **Secrets** ([ADR-0002](docs/adr/0002-gestio-de-secrets.md)). Les credencials es guarden només a través del `SecretStore`, amb xifratge en sobre i la clau mestra segellada amb el TPM (`systemd-creds`, `tpm2+host`); mai amb l'`APP_KEY` ni en fitxers en clar. Les claus SSH es fan servir en memòria o en un `ssh-agent` efímer, i no s'escriuen mai al disc. Les credencials no surten mai en clar als logs, a les excepcions, a la sortida de la CLI, als informes ni a `run_steps`. Tota sortida remota passa pel redactor de secrets. Mai facis `dd()`, `dump()` ni `var_dump()` d'objectes que continguin credencials.
-3. **Cap actualització sense una còpia completa i verificada** (SHA-256 comprovat a cada destinació).
+3. **Cap actualització sense un punt de restauració verificat** ([ADR-0009](docs/adr/0009-copies-i-retencio.md)): dump complet de la BD i arxiu del codi, amb SHA-256 comprovat. L'eina no és un sistema de còpies de llarga durada (aquestes són les del hosting i Dropbox), però vigila que existeixin.
 4. **Base de dades d'una botiga:** si hi ha hagut escriptures noves a les comandes o als usuaris des de la còpia, mai es restaura automàticament. Només es restauren els fitxers i s'avisa amb el llistat de comandes afectades.
 5. **Checkout:** el verificador no prem mai el botó de fer la comanda i bloqueja per xarxa la petició `?wc-ajax=checkout`.
 6. **Staging neutralitzat abans d'arrencar:** sense correus reals, sense cron, passarel·les i webhooks en mode test, sortida de xarxa restringida i `noindex`.
@@ -168,6 +168,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 - **Execucions:** cada pas és idempotent, té timeout i desa la durada, la sortida resumida i la sortida completa emmascarada. Una execució interrompuda es reprèn o es reverteix, però mai queda a mitges en silenci.
 - **Dades fresques:** cada execució comença amb un inventari nou, i la línia base de verificació es captura dins de la mateixa execució, just abans d'actualitzar.
 - **Artefactes:** els paquets s'analitzen i s'instal·len des del servidor de l'eina amb el seu checksum. Staging i producció reben exactament els mateixos bytes. Mai es descarrega un paquet directament des del lloc.
+- **Retenció** (ADR-0009): els punts de restauració es guarden 7 dies (màxim 2 per lloc, i els revertits queden protegits); els logs complets, 90 dies (1 any si hi ha error); les captures, 30 dies (180 si hi ha avís o error); l'`audit_log` no es purga mai. Els valors són a `config/wpup.php`.
 - **Ordre d'actualització:** core → WooCommerce → plugins → temes → traduccions, i després `wp wc update-db` i el buidatge de memòria cau.
 - **Compatibilitat en tres capes:** requisits declarats, anàlisi estàtica amb PHPCompatibility i execució real (fatals nous ⇒ rollback). Cada component omès porta el seu motiu.
 - **PHP del lloc:** sempre el que serveix el web (handler del domini a Plesk i probe HTTP), mai el del CLI.
@@ -213,7 +214,6 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
   | UZEROWPUP-8 | Visor d'informes: web Laravel o HTML estàtic | Visor de F5 |
   | UZEROWPUP-9 | Execucions programades o sempre manuals | — |
   | UZEROWPUP-10 | Política d'actualitzacions majors | Capa 1 de compatibilitat (F3) |
-  | UZEROWPUP-11 | Retenció per defecte de còpies, logs i captures | Neteja de F2, logs de F5 |
   | UZEROWPUP-12 | Nom definitiu de l'eina | — |
   | UZEROWPUP-122 | Acceptar l'ADR-0002 de gestió de secrets i accés als servidors | SecretStore, identitat via sudo, SshDriver, desplegament i comandes de claus |
   | UZEROWPUP-110 | Criteri per identificar les factures de manteniment a Quipu (etiqueta o concepte) | Classificador i sincronització de F9 |
