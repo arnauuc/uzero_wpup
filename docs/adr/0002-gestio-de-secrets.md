@@ -1,6 +1,6 @@
 # ADR-0002: Gestió de secrets i accés als servidors
 
-**Estat:** Proposat
+**Estat:** Acceptat (2026-10-21)
 **Data:** 2026-10-21
 **Decideixen:** Arnau
 **Tasca:** UZEROWPUP-122
