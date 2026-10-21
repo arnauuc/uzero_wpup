@@ -45,6 +45,7 @@ Fins que es facin les tasques UZEROWPUP-1 a UZEROWPUP-4, part d'aquesta estructu
 | --- | --- |
 | Orquestrador | PHP 8.3+, Laravel 13, Horizon, Redis |
 | BD de l'eina | Pendent de l'ADR (UZEROWPUP-6): PostgreSQL o MariaDB |
+| Secrets | `SecretStore` amb xifratge en sobre (libsodium) i clau mestra a `systemd-creds` (ADR-0002) |
 | Tests PHP | Pest (unitaris, de funcionalitat i d'integració) |
 | Anàlisi estàtica | Larastan (PHPStan) al nivell `max`, sense baseline nova |
 | Estil PHP | Pint, preset `laravel` |
@@ -103,7 +104,7 @@ Per defecte, la feina la fa **Sonnet** (`claude-sonnet-5-5`, àlies `sonnet`). *
 
 Una tasca és **complexa** si té l'etiqueta `opus` a Plane, o bé si compleix qualsevol d'aquests criteris:
 
-- Toca una de les regles innegociables de seguretat (credencials, HMAC, rollback de BD, checkout, neutralització del staging, dades de facturació).
+- Toca una de les regles innegociables de seguretat (credencials i claus, sudo i permisos del servidor, HMAC, rollback de BD, checkout, neutralització del staging, dades de facturació).
 - Defineix o canvia una interfície compartida (`SiteDriver`, `BackupTarget`, el contracte del verificador) o el motor d'execucions.
 - Afecta més d'un component (orquestrador + agent, orquestrador + verificador…).
 - Té ambigüitats o contradiccions que s'han de resoldre abans d'implementar.
@@ -146,7 +147,7 @@ Si una sessió s'executa amb Opus, delega a subagents Sonnet tot el que sigui im
 Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre comandes. Aquestes regles passen per davant de la velocitat:
 
 1. **Mai contra llocs reals des del desenvolupament.** Els tests i les proves manuals es fan només contra els llocs de prova de Docker. Cap credencial real dins del repositori, als fixtures ni als tests.
-2. **Secrets.** Les credencials es guarden xifrades (Laravel encryption) i no surten mai en clar als logs, a les excepcions, a la sortida de la CLI, als informes ni a `run_steps`. Tota sortida remota passa pel redactor de secrets. Mai facis `dd()`, `dump()` ni `var_dump()` d'objectes que continguin credencials.
+2. **Secrets** ([ADR-0002](docs/adr/0002-gestio-de-secrets.md)). Les credencials es guarden només a través del `SecretStore`, amb xifratge en sobre i la clau mestra a `systemd-creds`; mai amb l'`APP_KEY` ni en fitxers en clar. Les claus SSH es fan servir en memòria o en un `ssh-agent` efímer, i no s'escriuen mai al disc. Les credencials no surten mai en clar als logs, a les excepcions, a la sortida de la CLI, als informes ni a `run_steps`. Tota sortida remota passa pel redactor de secrets. Mai facis `dd()`, `dump()` ni `var_dump()` d'objectes que continguin credencials.
 3. **Cap actualització sense una còpia completa i verificada** (SHA-256 comprovat a cada destinació).
 4. **Base de dades d'una botiga:** si hi ha hagut escriptures noves a les comandes o als usuaris des de la còpia, mai es restaura automàticament. Només es restauren els fitxers i s'avisa amb el llistat de comandes afectades.
 5. **Checkout:** el verificador no prem mai el botó de fer la comanda i bloqueja per xarxa la petició `?wc-ajax=checkout`.
@@ -156,6 +157,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 9. **Comandes que fan canvis:** totes tenen `--dry-run`. Les destructives (restauració, alliberament de locks, esborrats) demanen confirmació explícita i queden a `audit_log`.
 10. **`audit_log` és només d'inserció.** Cap codi no hi fa `update` ni `delete`.
 11. **Quipu és només de lectura.** L'eina no crea, no modifica i no esborra res a Quipu (ni factures, ni contactes, ni etiquetes). Les dades de facturació no surten mai fora de l'eina, i els operadors només en veuen l'estat; els imports i les factures només els veuen els `admin`.
+12. **Accés als servidors.** Tota l'eina corre amb l'usuari de sistema `wpup` i els operadors l'executen via `sudo`; cap operador pot llegir el `.env`, la clau mestra ni la BD. Als servidors Plesk s'entra amb l'usuari de la subscripció (mai `root`), amb la clau restringida a l'IP de l'eina i amb la host key fixada.
 
 ## Regles d'arquitectura i de codi
 
@@ -213,6 +215,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
   | UZEROWPUP-10 | Política d'actualitzacions majors | Capa 1 de compatibilitat (F3) |
   | UZEROWPUP-11 | Retenció per defecte de còpies, logs i captures | Neteja de F2, logs de F5 |
   | UZEROWPUP-12 | Nom definitiu de l'eina | — |
+  | UZEROWPUP-122 | Acceptar l'ADR-0002 de gestió de secrets i accés als servidors | SecretStore, identitat via sudo, SshDriver, desplegament i comandes de claus |
   | UZEROWPUP-110 | Criteri per identificar les factures de manteniment a Quipu (etiqueta o concepte) | Classificador i sincronització de F9 |
 
 ## Quan has de parar i preguntar
