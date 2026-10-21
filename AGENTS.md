@@ -45,7 +45,7 @@ Fins que es facin les tasques UZEROWPUP-1 a UZEROWPUP-4, part d'aquesta estructu
 | --- | --- |
 | Orquestrador | PHP 8.3+, Laravel 13, Horizon, Redis |
 | BD de l'eina | Pendent de l'ADR (UZEROWPUP-6): PostgreSQL o MariaDB |
-| Secrets | `SecretStore` amb xifratge en sobre (libsodium) i clau mestra a `systemd-creds` (ADR-0002) |
+| Secrets | `SecretStore` amb xifratge en sobre (libsodium) i clau mestra segellada amb el TPM 2.0 virtual de la VM via `systemd-creds` (ADR-0002) |
 | Tests PHP | Pest (unitaris, de funcionalitat i d'integració) |
 | Anàlisi estàtica | Larastan (PHPStan) al nivell `max`, sense baseline nova |
 | Estil PHP | Pint, preset `laravel` |
@@ -147,7 +147,7 @@ Si una sessió s'executa amb Opus, delega a subagents Sonnet tot el que sigui im
 Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre comandes. Aquestes regles passen per davant de la velocitat:
 
 1. **Mai contra llocs reals des del desenvolupament.** Els tests i les proves manuals es fan només contra els llocs de prova de Docker. Cap credencial real dins del repositori, als fixtures ni als tests.
-2. **Secrets** ([ADR-0002](docs/adr/0002-gestio-de-secrets.md)). Les credencials es guarden només a través del `SecretStore`, amb xifratge en sobre i la clau mestra a `systemd-creds`; mai amb l'`APP_KEY` ni en fitxers en clar. Les claus SSH es fan servir en memòria o en un `ssh-agent` efímer, i no s'escriuen mai al disc. Les credencials no surten mai en clar als logs, a les excepcions, a la sortida de la CLI, als informes ni a `run_steps`. Tota sortida remota passa pel redactor de secrets. Mai facis `dd()`, `dump()` ni `var_dump()` d'objectes que continguin credencials.
+2. **Secrets** ([ADR-0002](docs/adr/0002-gestio-de-secrets.md)). Les credencials es guarden només a través del `SecretStore`, amb xifratge en sobre i la clau mestra segellada amb el TPM (`systemd-creds`, `tpm2+host`); mai amb l'`APP_KEY` ni en fitxers en clar. Les claus SSH es fan servir en memòria o en un `ssh-agent` efímer, i no s'escriuen mai al disc. Les credencials no surten mai en clar als logs, a les excepcions, a la sortida de la CLI, als informes ni a `run_steps`. Tota sortida remota passa pel redactor de secrets. Mai facis `dd()`, `dump()` ni `var_dump()` d'objectes que continguin credencials.
 3. **Cap actualització sense una còpia completa i verificada** (SHA-256 comprovat a cada destinació).
 4. **Base de dades d'una botiga:** si hi ha hagut escriptures noves a les comandes o als usuaris des de la còpia, mai es restaura automàticament. Només es restauren els fitxers i s'avisa amb el llistat de comandes afectades.
 5. **Checkout:** el verificador no prem mai el botó de fer la comanda i bloqueja per xarxa la petició `?wc-ajax=checkout`.

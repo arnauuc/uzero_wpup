@@ -17,7 +17,7 @@ L'eina ha de guardar credencials que donen accés a tota la flota:
 Restriccions i fets:
 
 - **Plesk:** cada lloc té el seu usuari de sistema, però un subscriptor pot tenir diversos llocs que comparteixen el mateix usuari. Mai es fa servir `root`.
-- **Servidor de l'eina:** una VM a Proxmox. Per defecte no té TPM, tot i que Proxmox permet afegir-li un TPM 2.0 virtual.
+- **Servidor de l'eina:** una VM a Proxmox amb un TPM 2.0 virtual (decidit el 2026-10-21).
 - **Operadors:** diverses persones fan servir l'eina, cadascuna amb el seu usuari Unix, i cap d'elles ha de poder llegir els secrets.
 - **El forat del pla inicial:** credencials xifrades a la BD amb l'`APP_KEY` del `.env`. Si els operadors executen `php artisan` amb el seu usuari, han de poder llegir el `.env` i, per tant, poden desxifrar-ho tot. A més, un dump de la BD i el `.env` junts ho exposen tot.
 
@@ -33,15 +33,15 @@ Restriccions i fets:
 ### 2. Xifratge en sobre amb una clau mestra fora de la BD i del `.env`
 
 - Cada secret es xifra amb una clau de dades pròpia (*DEK*, aleatòria, XChaCha20-Poly1305 amb libsodium). La DEK es xifra amb la **clau mestra** (*KEK*). A la BD només hi ha el text xifrat, la DEK xifrada, l'identificador de la versió de la KEK i les metadades.
-- La KEK es guarda com a credencial de systemd (`systemd-creds encrypt --with-key=auto`). Si la VM té TPM (virtual o físic), la credencial queda lligada al TPM i a la clau del host; si no en té, queda protegida per la clau del host (`/var/lib/systemd/credential.secret`, només llegible per root). systemd la desxifra i l'entrega només als serveis de l'usuari `wpup` (`LoadCredentialEncrypted=`). Per a la CLI via sudo, s'obté amb un helper restringit.
+- La KEK es guarda com a credencial de systemd segellada amb el TPM 2.0 virtual de la VM i amb la clau del host (`systemd-creds encrypt --with-key=tpm2+host`). Es fa servir `tpm2+host`, i no `auto`, perquè si el TPM no hi és o falla, la creació falli en lloc de rebaixar la protecció en silenci. systemd la desxifra i l'entrega només als serveis de l'usuari `wpup` (`LoadCredentialEncrypted=`). Per a la CLI via sudo, s'obté amb un helper restringit.
 - L'`APP_KEY` de Laravel queda per a les sessions i les cookies del visor; no xifra cap credencial de llocs.
 - **Còpia de la KEK:** fora del servidor, al gestor de contrasenyes de l'empresa, amb accés limitat als `admin`. Les còpies diàries de la BD de l'eina només contenen text xifrat. Si es perd la KEK, es perden totes les credencials.
-- **Millora recomanada:** afegir un TPM 2.0 virtual a la VM de Proxmox. Lliga la KEK a aquella VM i fa que una còpia del disc no sigui suficient per desxifrar-la.
+- **TPM 2.0 virtual obligatori a la VM de Proxmox** (`tpmstate0`, versió `v2.0`, amb firmware UEFI/OVMF). S'ha d'afegir abans de crear la KEK. Lliga la KEK a aquella VM: una còpia del disc de la VM sense l'estat del TPM no és suficient per desxifrar-la. El desplegament comprova que `/dev/tpmrm0` existeix i que `systemd-creds has-tpm2` dona èxit; si no, s'atura.
 
 ### 2b. Recuperació en cas de desastre
 
 - La còpia que es guarda fora del servidor és la **KEK en brut** (32 bytes, codificats en base64), mai el fitxer segellat per `systemd-creds`, que només s'obre amb el TPM i la clau del host de la VM original.
-- Si es perd la VM: es crea una VM nova (amb un TPM virtual nou si es vol), es restaura la còpia de la BD de l'eina, es recupera la KEK del gestor de contrasenyes i es torna a segellar amb `systemd-creds` a la VM nova. Les credencials tornen a ser llegibles.
+- Si es perd la VM: es crea una VM nova amb un TPM virtual nou, es restaura la còpia de la BD de l'eina, es recupera la KEK del gestor de contrasenyes i es torna a segellar amb `systemd-creds` a la VM nova. Les credencials tornen a ser llegibles.
 - Les còpies de Proxmox (vzdump) inclouen l'estat del TPM virtual i també permeten restaurar la VM sencera, però no són l'única via de recuperació.
 - Les còpies de les webs (dumps i arxius de WordPress) no estan xifrades amb la KEK: s'hi pot accedir directament des de la destinació, fins i tot sense l'eina.
 - El procediment complet es documenta al runbook de recuperació i es prova en una VM nova almenys un cop l'any (UZEROWPUP-28).
@@ -116,7 +116,8 @@ El risc principal no és un atacant extern a la BD, sinó l'abast de cada creden
 - **Més difícil:** la instal·lació del servidor (sudoers, systemd-creds, permisos) i la recuperació en cas de desastre, que depèn de tenir la KEK custodiada.
 - **Canvis al model de dades:** la taula nova `hosting_accounts`, i les credencials passen dels llocs als comptes d'hosting.
 - **Cal comprovar a F1:** que els usuaris de subscripció de Plesk tenen shell (no `/bin/false`) i que, si és un shell *chrooted*, s'hi poden fer servir els binaris de `/opt/plesk/php/X.Y/bin/php` i WP-CLI. Si no, cal una alternativa (shell no chrooted per a aquells usuaris, o l'agent).
-- **Caldrà revisar:** l'adopció de Vault si l'eina creix, i el vTPM a Proxmox.
+- **Caldrà revisar:** l'adopció de Vault si l'eina creix.
+- **Còpies de Proxmox:** els vzdump de la VM han d'incloure el disc `tpmstate0`. Si no l'inclouen, restaurar la VM obliga a fer servir el camí de la KEK en brut.
 
 ## Accions
 
