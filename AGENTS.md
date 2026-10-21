@@ -20,6 +20,7 @@ Instruccions per a qualsevol agent de codi (Claude Code, Codex…) i per a les p
 - Canviar la versió de PHP ni la configuració del servidor dels llocs. Només ho detecta i avisa.
 - Fer pagaments reals ni enviar comandes al checkout.
 - Gestionar llicències de plugins premium. Fa servir les que ja hi ha registrades al lloc.
+- Actualitzar llocs amb PHP inferior a 7.4 ([ADR-0007](docs/adr/0007-php-minim.md)): es detecten i es bloquegen amb avís.
 
 Si una tasca sembla demanar alguna d'aquestes coses, atura't i pregunta.
 
@@ -29,7 +30,7 @@ Si una tasca sembla demanar alguna d'aquestes coses, atura't i pregunta.
 app/            Orquestrador Laravel (comandes Artisan, dominis, drivers, feines)
 config/wpup.php Configuració pròpia de l'eina (concurrència, timeouts, mínims de PHP/WP…)
 verifier/       Worker Node + TypeScript + Playwright (captures, diff, checkout, errors)
-agent/          Agent PHP temporal per a llocs SFTP: UN sol fitxer, sintaxi PHP 5.6
+agent/          Agent PHP temporal per a llocs SFTP: UN sol fitxer, sintaxi PHP 7.4
 docker/         Entorn de desenvolupament, llocs WordPress de prova i imatges de staging
 tests/          Pest: Unit/, Feature/, Integration/ (contra els llocs de prova de Docker)
 docs/           Especificació, ADRs, runbooks i esquemes
@@ -44,14 +45,14 @@ Fins que es facin les tasques UZEROWPUP-1 a UZEROWPUP-4, part d'aquesta estructu
 | Peça | Versió / eina |
 | --- | --- |
 | Orquestrador | PHP 8.3+, Laravel 13, Horizon, Redis |
-| BD de l'eina | Pendent de l'ADR (UZEROWPUP-6): PostgreSQL o MariaDB |
+| BD de l'eina | PostgreSQL (≥ 17), socket Unix i autenticació `peer` ([ADR-0004](docs/adr/0004-base-de-dades.md)); els tests corren contra PostgreSQL, mai SQLite |
 | Secrets | `SecretStore` amb xifratge en sobre (libsodium) i clau mestra segellada amb el TPM 2.0 virtual de la VM via `systemd-creds` (ADR-0002) |
 | Tests PHP | Pest (unitaris, de funcionalitat i d'integració) |
 | Anàlisi estàtica | Larastan (PHPStan) al nivell `max`, sense baseline nova |
 | Estil PHP | Pint, preset `laravel` |
 | Panell web | Blade + Tailwind + Alpine.js (Vite, sense CDN), login propi amb TOTP obligatori ([ADR-0008](docs/adr/0008-panell-web.md)) |
 | Verificador | Node LTS, TypeScript `strict`, Playwright, pixelmatch, ESLint, Vitest |
-| Agent | PHP 5.6–8.5, un sol fitxer i sense dependències (mínim pendent de UZEROWPUP-7) |
+| Agent | PHP 7.4–8.5, un sol fitxer i sense dependències ([ADR-0007](docs/adr/0007-php-minim.md)) |
 | Compatibilitat | PHP_CodeSniffer + PHPCompatibility |
 
 No afegeixis dependències noves (Composer o npm) sense justificar-les a la descripció del PR. Si una dependència condiciona l'arquitectura, cal un ADR.
@@ -68,7 +69,7 @@ make lint            # Pint --test + ESLint
 make stan            # Larastan + tsc --noEmit
 make test            # Pest (unitaris + funcionalitat + integració)
 make verifier        # tests del verificador (Vitest)
-make agent-matrix    # tests de l'agent contra PHP 5.6 … 8.5
+make agent-matrix    # tests de l'agent contra PHP 7.4 … 8.5
 make ci              # tot l'anterior; ha de sortir amb codi 0
 make hooks           # instal·la el hook pre-push (.githooks/)
 ```
@@ -159,6 +160,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 10. **`audit_log` és només d'inserció.** Cap codi no hi fa `update` ni `delete`.
 11. **Quipu és només de lectura.** L'eina no crea, no modifica i no esborra res a Quipu (ni factures, ni contactes, ni etiquetes). Les dades de facturació no surten mai fora de l'eina, i els operadors només en veuen l'estat; els imports i les factures només els veuen els `admin`.
 12. **Accés als servidors.** Tota l'eina corre amb l'usuari de sistema `wpup` i els operadors l'executen via `sudo`; cap operador pot llegir el `.env`, la clau mestra ni la BD. Als servidors Plesk s'entra amb l'usuari de la subscripció (mai `root`), amb la clau restringida a l'IP de l'eina i amb la host key fixada.
+13. **Xarxa de la VM** ([ADR-0003](docs/adr/0003-xarxa-i-acces.md)). Només s'hi entra per la tailnet (Tailscale): cap port exposat a Internet ni a la LAN, cap contenidor publicat a `0.0.0.0`, Tailscale Funnel prohibit i sortida sempre per l'IP pública fixa (mai per un *exit node*).
 
 ## Regles d'arquitectura i de codi
 
@@ -170,9 +172,11 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 - **Dades fresques:** cada execució comença amb un inventari nou, i la línia base de verificació es captura dins de la mateixa execució, just abans d'actualitzar.
 - **Artefactes:** els paquets s'analitzen i s'instal·len des del servidor de l'eina amb el seu checksum. Staging i producció reben exactament els mateixos bytes. Mai es descarrega un paquet directament des del lloc.
 - **Ordre d'actualització:** core → WooCommerce → plugins → temes → traduccions, i després `wp wc update-db` i el buidatge de memòria cau.
+- **Majors i quarantena** ([ADR-0005](docs/adr/0005-actualitzacions-majors.md)): core `x.y`, WooCommerce `X.0` i plugins o temes amb canvi al primer número obliguen a fer staging primer (fins a F7, s'ometen excepte amb `--allow-major`). Les versions noves esperen 7 dies, excepte el core `x.y.z` i les correccions de vulnerabilitats conegudes.
 - **Compatibilitat en tres capes:** requisits declarats, anàlisi estàtica amb PHPCompatibility i execució real (fatals nous ⇒ rollback). Cada component omès porta el seu motiu.
 - **PHP del lloc:** sempre el que serveix el web (handler del domini a Plesk i probe HTTP), mai el del CLI.
-- **Concurrència:** lock atòmic per lloc a Redis i límits globals i per servidor d'hosting. Cap feina no se'ls salta.
+- **Concurrència:** lock atòmic per lloc i per compte d'hosting a Redis, i **una sola actualització alhora** a tota l'eina ([ADR-0006](docs/adr/0006-execucions-programades.md)); el staging s'esborra en acabar cada lloc. Cap feina no se salta aquests límits.
+- **Execucions programades** (ADR-0006): cada lloc té la seva finestra (per defecte, de 01:00 a 06:00; també pot ser de dia) i només s'actualitzen automàticament els llocs amb `auto_update`. Un lloc que no hi cap dins de la seva finestra es deixa per a la següent.
 
 **Codi PHP (orquestrador)**
 
@@ -184,7 +188,8 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 
 **Agent (`agent/`)**
 
-- Sintaxi compatible amb PHP 5.6 (o amb el mínim que fixi UZEROWPUP-7): sense tipus escalars, tipus de retorn, `??=`, arrow functions, `match`, nullsafe, `readonly`, enums ni arguments amb nom.
+- Sintaxi compatible amb PHP 7.4 (ADR-0007): es poden fer servir tipus escalars, tipus de retorn, propietats tipades, `??=` i arrow functions; **no** es pot fer servir `match`, nullsafe, arguments amb nom, tipus unió, `mixed`, promoció al constructor, enums, `readonly` ni `never`.
+- El probe HTTP és l'excepció: sintaxi PHP 5.x, perquè ha de detectar fins i tot els llocs per sota del mínim.
 - Un sol fitxer, sense dependències. Totes les operacions llargues van per trossos, són reprenibles i informen del progrés.
 - Qualsevol canvi a `agent/` ha de passar `make agent-matrix`.
 
@@ -215,13 +220,10 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 
   | Tasca | Decisió | Bloqueja |
   | --- | --- | --- |
-  | UZEROWPUP-6 | BD de l'eina: PostgreSQL o MariaDB | Migracions de F1, entorn Docker |
-  | UZEROWPUP-7 | PHP/WP mínims en producció i PHP mínim de l'agent | F6 (agent) |
-  | UZEROWPUP-9 | Execucions programades o sempre manuals | — |
-  | UZEROWPUP-10 | Política d'actualitzacions majors | Capa 1 de compatibilitat (F3) |
   | UZEROWPUP-11 | Retenció per defecte de còpies, logs i captures | Neteja de F2, logs de F5 |
   | UZEROWPUP-12 | Nom definitiu de l'eina | — |
   | UZEROWPUP-122 | Acceptar l'ADR-0002 de gestió de secrets i accés als servidors | SecretStore, identitat via sudo, SshDriver, desplegament i comandes de claus |
+  | UZEROWPUP-125 | Acceptar l'ADR-0003 de xarxa i accés a la VM (tailnet) | Xarxa de la VM i desplegament |
   | UZEROWPUP-110 | Criteri per identificar les factures de manteniment a Quipu (etiqueta o concepte) | Classificador i sincronització de F9 |
 
 ## Quan has de parar i preguntar
