@@ -50,6 +50,7 @@ Fins que es facin les tasques UZEROWPUP-1 a UZEROWPUP-4, part d'aquesta estructu
 | Tests PHP | Pest (unitaris, de funcionalitat i d'integració) |
 | Anàlisi estàtica | Larastan (PHPStan) al nivell `max`, sense baseline nova |
 | Estil PHP | Pint, preset `laravel` |
+| Panell web | Blade + Tailwind + Alpine.js (Vite, sense CDN), login propi amb TOTP obligatori ([ADR-0008](docs/adr/0008-panell-web.md)) |
 | Verificador | Node LTS, TypeScript `strict`, Playwright, pixelmatch, ESLint, Vitest |
 | Agent | PHP 7.4–8.5, un sol fitxer i sense dependències ([ADR-0007](docs/adr/0007-php-minim.md)) |
 | Compatibilitat | PHP_CodeSniffer + PHPCompatibility |
@@ -192,6 +193,12 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 - Un sol fitxer, sense dependències. Totes les operacions llargues van per trossos, són reprenibles i informen del progrés.
 - Qualsevol canvi a `agent/` ha de passar `make agent-matrix`.
 
+**Panell web** ([ADR-0008](docs/adr/0008-panell-web.md))
+
+- Cada acció del web crida el **mateix servei de domini i la mateixa policy** que la comanda CLI equivalent. No hi ha lògica de negoci als controladors, i els tests de policy cobreixen els dos canals.
+- Les accions que fan canvis passen per una previsualització (`--dry-run`) i una confirmació; les sensibles demanen el TOTP de nou. Només POST amb CSRF.
+- **Mai pel web:** credencials i secrets, `key:*`, `secrets:rekey` i gestió d'usuaris i rols. Això és exclusiu de la CLI d'un `admin`.
+
 **Verificador (`verifier/`)**
 
 - TypeScript `strict`; entrada i sortida JSON versionades i validades.
@@ -213,7 +220,6 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 
   | Tasca | Decisió | Bloqueja |
   | --- | --- | --- |
-  | UZEROWPUP-8 | Visor d'informes: web Laravel o HTML estàtic | Visor de F5 |
   | UZEROWPUP-11 | Retenció per defecte de còpies, logs i captures | Neteja de F2, logs de F5 |
   | UZEROWPUP-12 | Nom definitiu de l'eina | — |
   | UZEROWPUP-122 | Acceptar l'ADR-0002 de gestió de secrets i accés als servidors | SecretStore, identitat via sudo, SshDriver, desplegament i comandes de claus |
