@@ -20,6 +20,7 @@ Instruccions per a qualsevol agent de codi (Claude Code, Codex…) i per a les p
 - Canviar la versió de PHP ni la configuració del servidor dels llocs. Només ho detecta i avisa.
 - Fer pagaments reals ni enviar comandes al checkout.
 - Gestionar llicències de plugins premium. Fa servir les que ja hi ha registrades al lloc.
+- Actualitzar llocs amb PHP inferior a 7.4 ([ADR-0007](docs/adr/0007-php-minim.md)): es detecten i es bloquegen amb avís.
 
 Si una tasca sembla demanar alguna d'aquestes coses, atura't i pregunta.
 
@@ -29,7 +30,7 @@ Si una tasca sembla demanar alguna d'aquestes coses, atura't i pregunta.
 app/            Orquestrador Laravel (comandes Artisan, dominis, drivers, feines)
 config/wpup.php Configuració pròpia de l'eina (concurrència, timeouts, mínims de PHP/WP…)
 verifier/       Worker Node + TypeScript + Playwright (captures, diff, checkout, errors)
-agent/          Agent PHP temporal per a llocs SFTP: UN sol fitxer, sintaxi PHP 5.6
+agent/          Agent PHP temporal per a llocs SFTP: UN sol fitxer, sintaxi PHP 7.4
 docker/         Entorn de desenvolupament, llocs WordPress de prova i imatges de staging
 tests/          Pest: Unit/, Feature/, Integration/ (contra els llocs de prova de Docker)
 docs/           Especificació, ADRs, runbooks i esquemes
@@ -50,7 +51,7 @@ Fins que es facin les tasques UZEROWPUP-1 a UZEROWPUP-4, part d'aquesta estructu
 | Anàlisi estàtica | Larastan (PHPStan) al nivell `max`, sense baseline nova |
 | Estil PHP | Pint, preset `laravel` |
 | Verificador | Node LTS, TypeScript `strict`, Playwright, pixelmatch, ESLint, Vitest |
-| Agent | PHP 5.6–8.5, un sol fitxer i sense dependències (mínim pendent de UZEROWPUP-7) |
+| Agent | PHP 7.4–8.5, un sol fitxer i sense dependències ([ADR-0007](docs/adr/0007-php-minim.md)) |
 | Compatibilitat | PHP_CodeSniffer + PHPCompatibility |
 
 No afegeixis dependències noves (Composer o npm) sense justificar-les a la descripció del PR. Si una dependència condiciona l'arquitectura, cal un ADR.
@@ -67,7 +68,7 @@ make lint            # Pint --test + ESLint
 make stan            # Larastan + tsc --noEmit
 make test            # Pest (unitaris + funcionalitat + integració)
 make verifier        # tests del verificador (Vitest)
-make agent-matrix    # tests de l'agent contra PHP 5.6 … 8.5
+make agent-matrix    # tests de l'agent contra PHP 7.4 … 8.5
 make ci              # tot l'anterior; ha de sortir amb codi 0
 make hooks           # instal·la el hook pre-push (.githooks/)
 ```
@@ -183,7 +184,8 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 
 **Agent (`agent/`)**
 
-- Sintaxi compatible amb PHP 5.6 (o amb el mínim que fixi UZEROWPUP-7): sense tipus escalars, tipus de retorn, `??=`, arrow functions, `match`, nullsafe, `readonly`, enums ni arguments amb nom.
+- Sintaxi compatible amb PHP 7.4 (ADR-0007): es poden fer servir tipus escalars, tipus de retorn, propietats tipades, `??=` i arrow functions; **no** es pot fer servir `match`, nullsafe, arguments amb nom, tipus unió, `mixed`, promoció al constructor, enums, `readonly` ni `never`.
+- El probe HTTP és l'excepció: sintaxi PHP 5.x, perquè ha de detectar fins i tot els llocs per sota del mínim.
 - Un sol fitxer, sense dependències. Totes les operacions llargues van per trossos, són reprenibles i informen del progrés.
 - Qualsevol canvi a `agent/` ha de passar `make agent-matrix`.
 
@@ -209,7 +211,6 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
   | Tasca | Decisió | Bloqueja |
   | --- | --- | --- |
   | UZEROWPUP-6 | BD de l'eina: PostgreSQL o MariaDB | Migracions de F1, entorn Docker |
-  | UZEROWPUP-7 | PHP/WP mínims en producció i PHP mínim de l'agent | F6 (agent) |
   | UZEROWPUP-8 | Visor d'informes: web Laravel o HTML estàtic | Visor de F5 |
   | UZEROWPUP-9 | Execucions programades o sempre manuals | — |
   | UZEROWPUP-10 | Política d'actualitzacions majors | Capa 1 de compatibilitat (F3) |
