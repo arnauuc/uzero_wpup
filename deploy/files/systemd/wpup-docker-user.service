@@ -1,0 +1,15 @@
+[Unit]
+Description=Uzero wpup: block inbound traffic to containers (DOCKER-USER)
+Documentation=file:///opt/uzero-wpup/docs/runbooks/xarxa.md
+After=docker.service nftables.service
+# Restarts together with Docker so the rules are back after every daemon restart.
+PartOf=docker.service
+ConditionPathExists=/usr/bin/dockerd
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/wpup-docker-user
+
+[Install]
+WantedBy=docker.service

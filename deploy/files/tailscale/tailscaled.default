@@ -1,0 +1,6 @@
+# Installed as /etc/default/tailscaled.
+# Same firewall backend as the rest of the host (nftables). Tailscale keeps its
+# own rules in its own tables and never touches the "inet wpup" table.
+PORT="41641"
+FLAGS=""
+TS_DEBUG_FIREWALL_MODE=nftables

@@ -127,3 +127,10 @@ tools: ## Download the pinned WP-CLI phar that the tool installs on the sites
 	@test -f $(WPCLI_PHAR) || { curl -fsSL -o $(WPCLI_PHAR).part https://github.com/wp-cli/wp-cli/releases/download/v$(WPCLI_VERSION)/wp-cli-$(WPCLI_VERSION).phar \
 		&& echo "$(WPCLI_SHA512)  $(WPCLI_PHAR).part" | sha512sum -c --quiet && mv $(WPCLI_PHAR).part $(WPCLI_PHAR); }
 	@echo "$(WPCLI_SHA512)  $(WPCLI_PHAR)" | sha512sum -c --quiet && echo "WP-CLI $(WPCLI_VERSION): OK"
+
+# Server provisioning scripts (UZEROWPUP-126, UZEROWPUP-28). Not part of `make ci` yet.
+.PHONY: deploy-lint
+deploy-lint: ## bash -n and shellcheck (if installed) over deploy/**/*.sh
+	@set -e; scripts=$$(find deploy -name "*.sh" | sort); \
+	for f in $$scripts; do bash -n "$$f"; done; echo "bash -n: OK"; \
+	if command -v shellcheck >/dev/null 2>&1; then shellcheck -x $$scripts && echo "shellcheck: OK"; else echo "shellcheck: not installed, skipped"; fi
