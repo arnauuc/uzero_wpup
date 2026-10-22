@@ -55,6 +55,17 @@ return [
     ],
 
     /*
+     * Site catalogue (UZEROWPUP-25). `default_window` applies to sites without
+     * their own maintenance window (ADR-0006); the other lists are the values a
+     * profile may use.
+     */
+    'sites' => [
+        'default_window' => ['days' => [1, 2, 3, 4, 5, 6, 7], 'start' => '01:00', 'end' => '06:00'],
+        'notification_channels' => ['email', 'telegram', 'slack'],
+        'external_backup_types' => ['plesk', 'dropbox', 'plugin', 'other', 'none'],
+    ],
+
+    /*
      * Locks (UZEROWPUP-19, UZEROWPUP-124): one run per site and per hosting
      * account at a time. The lease expires after `ttl_seconds` unless the run
      * refreshes it, so a dead worker never keeps a site locked forever.
