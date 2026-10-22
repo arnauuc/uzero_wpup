@@ -8,6 +8,7 @@ use App\Domain\Secrets\EnvelopeSecretStore;
 use App\Domain\Secrets\Kek\EnvKekProvider;
 use App\Domain\Secrets\Kek\SystemdCredentialKekProvider;
 use App\Domain\Secrets\Secret;
+use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Secrets\SecretStore;
 use App\Domain\Secrets\SecretStoreException;
 use App\Enums\AuditResult;
@@ -69,7 +70,7 @@ it('replaces a secret value', function (): void {
 
 it('fails with a different KEK and audits the failure', function (): void {
     $id = store()->put('x', new Secret(SSH_KEY), actor());
-    $otherKek = new EnvelopeSecretStore(new EnvKekProvider(base64_encode(random_bytes(32)), 'testing'), app(AuditLogger::class));
+    $otherKek = new EnvelopeSecretStore(new EnvKekProvider(base64_encode(random_bytes(32)), 'testing'), app(AuditLogger::class), app(SecretRedactor::class));
 
     expect(fn () => $otherKek->reveal($id, actor(), 'test'))
         ->toThrow(SecretStoreException::class, 'could not be decrypted')

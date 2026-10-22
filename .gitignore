@@ -56,3 +56,6 @@ Thumbs.db
 # Verificador
 /verifier/node_modules/
 /verifier/dist/
+
+# Worktrees dels agents de Claude Code
+/.claude/worktrees/

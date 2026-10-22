@@ -24,6 +24,7 @@ final readonly class EnvelopeSecretStore implements SecretStore
     public function __construct(
         private KekProvider $kekProvider,
         private AuditLogger $audit,
+        private SecretRedactor $redactor,
     ) {}
 
     public function put(string $purpose, Secret $value, AuditActor $actor): string
@@ -59,6 +60,9 @@ final readonly class EnvelopeSecretStore implements SecretStore
         }
 
         $this->audit->record($actor, 'secret.reveal', AuditResult::Success, 'secret', $id, $context);
+
+        // From now on, any output of this process that contains it is masked.
+        $this->redactor->register($secret);
 
         return $secret;
     }
