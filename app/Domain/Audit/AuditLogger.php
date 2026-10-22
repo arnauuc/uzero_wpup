@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Audit;
 
+use App\Domain\Secrets\SecretRedactor;
 use App\Enums\AuditResult;
 use App\Models\AuditLogEntry;
 
@@ -11,11 +12,13 @@ use App\Models\AuditLogEntry;
  * Single entry point to write the audit trail. Every command or web action that
  * changes something must go through here (AGENTS.md rule 9).
  *
- * The context must never contain secrets; once the secret redactor exists
- * (UZEROWPUP-18) it is applied here as well.
+ * The context must never contain secrets; as a safety net it is passed through
+ * the SecretRedactor before being stored.
  */
-final class AuditLogger
+final readonly class AuditLogger
 {
+    public function __construct(private SecretRedactor $redactor) {}
+
     /**
      * @param  array<string, mixed>  $context
      */
@@ -36,7 +39,7 @@ final class AuditLogger
             'result' => $result,
             'object_type' => $objectType,
             'object_id' => $objectId === null ? null : (string) $objectId,
-            'context' => $context,
+            'context' => $this->redactor->redactArray($context),
         ]);
     }
 }

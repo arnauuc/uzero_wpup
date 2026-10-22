@@ -8,8 +8,10 @@ use App\Domain\Secrets\EnvelopeSecretStore;
 use App\Domain\Secrets\Kek\EnvKekProvider;
 use App\Domain\Secrets\Kek\KekProvider;
 use App\Domain\Secrets\Kek\SystemdCredentialKekProvider;
+use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Secrets\SecretStore;
 use App\Domain\Secrets\SecretStoreException;
+use App\Support\Logging\RedactSecretsTap;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 
@@ -38,6 +40,36 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton(SecretStore::class, EnvelopeSecretStore::class);
+        $this->app->singleton(SecretRedactor::class);
+
+        $this->redactAllLogChannels();
+    }
+
+    /**
+     * Adds the secret-redaction tap to every configured log channel, so none can
+     * bypass it (AGENTS.md rule 2).
+     */
+    private function redactAllLogChannels(): void
+    {
+        $channels = config('logging.channels');
+
+        if (! is_array($channels)) {
+            return;
+        }
+
+        foreach ($channels as $name => $channel) {
+            if (! is_array($channel)) {
+                continue;
+            }
+
+            $taps = isset($channel['tap']) && is_array($channel['tap']) ? $channel['tap'] : [];
+
+            if (! in_array(RedactSecretsTap::class, $taps, true)) {
+                $taps[] = RedactSecretsTap::class;
+            }
+
+            config(["logging.channels.{$name}.tap" => $taps]);
+        }
     }
 
     private static function stringOrNull(mixed $value): ?string
