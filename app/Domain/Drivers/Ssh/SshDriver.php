@@ -84,12 +84,28 @@ final class SshDriver implements SiteDriver
             $checks[] = new ProbeCheck('wp-cli', CheckResult::Ok, trim($version->stdout));
             $this->wpOk(['core', 'is-installed'], 'La comprovació de WordPress');
             $checks[] = new ProbeCheck('wordpress', CheckResult::Ok, $this->target->wpPath);
+            $checks[] = $this->writableCheck();
             $checks[] = new ProbeCheck('disc', CheckResult::Ok, sprintf('%.1f GB lliures', $this->freeDiskBytes() / 1e9));
         } catch (DriverException $e) {
             $checks[] = new ProbeCheck('wordpress', CheckResult::Error, $e->getMessage());
         }
 
         return new ProbeResult($checks);
+    }
+
+    /**
+     * The account must be able to write the code it updates and restores.
+     */
+    private function writableCheck(): ProbeCheck
+    {
+        $root = rtrim($this->target->wpPath, '/');
+        $paths = [$root, $root.'/wp-content', $root.'/wp-content/plugins', $root.'/wp-content/themes'];
+        $script = 'for p in '.implode(' ', array_map(escapeshellarg(...), $paths)).'; do [ -w "$p" ] || printf "%s " "$p"; done';
+        $readOnly = trim($this->exec($script, 30)->stdout);
+
+        return $readOnly === ''
+            ? new ProbeCheck('permisos', CheckResult::Ok, "{$this->target->user} pot escriure el codi del lloc")
+            : new ProbeCheck('permisos', CheckResult::Error, "{$this->target->user} no pot escriure a: {$readOnly}");
     }
 
     public function installedComponents(): InstalledComponents
