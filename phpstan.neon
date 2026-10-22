@@ -1,0 +1,19 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+
+parameters:
+    level: max
+    paths:
+        - app
+        - config
+        - database
+        - routes
+        - tests
+    ignoreErrors:
+        # Framework false positive: env() with a string default is typed bool|string
+        # by the Laravel stubs, but it is always a string for these variables.
+        -
+            identifier: argument.type
+            paths:
+                - config/filesystems.php
+                - config/horizon.php
