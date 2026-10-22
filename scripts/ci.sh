@@ -38,9 +38,10 @@ run_step() {
     if [ "$status" -eq 0 ]; then
         local detail=""
         if [ "$name" = "test" ]; then
-            local passed
+            local passed skipped
             passed=$(grep -oE '[0-9]+ passed' "$log" | tail -n1)
-            [ -n "$passed" ] && detail=" ($passed)"
+            skipped=$(grep -oE '[0-9]+ skipped' "$log" | tail -n1)
+            [ -n "$passed" ] && detail=" ($passed${skipped:+, $skipped})"
         fi
         if [ "$name" = "agent-matrix" ] && grep -q 'matrix skipped' "$log"; then
             record "$name" "SKIP (sense agent)"

@@ -38,6 +38,8 @@ services:
     command: php artisan serve --host=0.0.0.0 --port=8000
     ports:
       - "127.0.0.1:8000:8000"
+    # fixtures-link: the integration tests reach the test sites by name (wp74:22…).
+    networks: [default, fixtures-link]
     healthcheck:
       test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\", 8000) ? 0 : 1);'"]
       interval: 5s
@@ -106,3 +108,10 @@ services:
 volumes:
   postgres-data:
   redis-data:
+
+networks:
+  default:
+  # Shared with docker/fixtures/compose.yaml (test sites only). Created by `make up`.
+  fixtures-link:
+    name: uzero-wpup-fixtures-link
+    external: true

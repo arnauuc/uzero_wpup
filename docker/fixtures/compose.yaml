@@ -7,7 +7,8 @@ x-site: &site
   depends_on:
     db:
       condition: service_healthy
-  networks: [fixtures]
+  # fixtures-link: reachable from the dev app container (integration tests); the DB is not.
+  networks: [fixtures, fixtures-link]
   restart: unless-stopped
   healthcheck:
     test: ["CMD-SHELL", "curl -s -o /dev/null http://127.0.0.1:$${HTTP_PORT}/ && pgrep sshd >/dev/null"]
@@ -119,6 +120,9 @@ services:
 
 networks:
   fixtures:
+  fixtures-link:
+    name: uzero-wpup-fixtures-link
+    external: true
 
 volumes:
   db_data:
