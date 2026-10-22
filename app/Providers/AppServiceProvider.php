@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Identity\CliCommandGate;
+use App\Domain\Identity\OperatorResolver;
+use App\Domain\Identity\ProcessIdentity;
 use App\Domain\Secrets\EnvelopeSecretStore;
 use App\Domain\Secrets\Kek\EnvKekProvider;
 use App\Domain\Secrets\Kek\KekProvider;
@@ -12,7 +15,9 @@ use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Secrets\SecretStore;
 use App\Domain\Secrets\SecretStoreException;
 use App\Support\Logging\RedactSecretsTap;
+use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -41,6 +46,18 @@ class AppServiceProvider extends ServiceProvider
 
         $this->app->singleton(SecretStore::class, EnvelopeSecretStore::class);
         $this->app->singleton(SecretRedactor::class);
+
+        $this->app->bind(ProcessIdentity::class, static fn (): ProcessIdentity => ProcessIdentity::current());
+        $this->app->bind(OperatorResolver::class, static fn (Application $app): OperatorResolver => new OperatorResolver(
+            self::configString('wpup.identity.mode'),
+            self::configString('wpup.identity.service_user'),
+            $app->environment(),
+        ));
+        $this->app->singleton(CliCommandGate::class, static function (): CliCommandGate {
+            $allowed = config('wpup.cli.allowed_commands');
+
+            return new CliCommandGate(is_array($allowed) ? array_values(array_filter($allowed, is_string(...))) : []);
+        });
 
         $this->redactAllLogChannels();
     }
@@ -96,6 +113,16 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        // Second line of defence behind the `wpup` bash wrapper: when invoked through
+        // it (WPUP_CLI=1), only Uzero wpup commands may run (ADR-0002).
+        Event::listen(CommandStarting::class, function (CommandStarting $event): void {
+            if (getenv('WPUP_CLI') !== '1') {
+                return;
+            }
+
+            if (! $this->app->make(CliCommandGate::class)->allows($event->command)) {
+                throw new \RuntimeException(sprintf('wpup: comanda no permesa: %s', (string) $event->command));
+            }
+        });
     }
 }

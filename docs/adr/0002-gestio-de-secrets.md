@@ -61,10 +61,10 @@ Restriccions i fets:
 
 ### 4. Claus SSH
 
-- Ed25519, una per compte d'hosting, generades per l'eina (`wpup key:generate`). La privada no surt mai del servidor de l'eina i no es mostra mai.
+- Ed25519, una per compte d'hosting, generades per l'eina (`wpup ssh-key:generate`). La privada no surt mai del servidor de l'eina i no es mostra mai.
 - La pública s'instal·la a l'`authorized_keys` de l'usuari de la subscripció, amb restriccions: `from="<IP de l'eina>",no-port-forwarding,no-agent-forwarding,no-X11-forwarding`.
 - La host key de cada servidor es fixa en la primera connexió, amb confirmació de l'admin. Si després canvia, la connexió falla (`StrictHostKeyChecking yes` amb un `known_hosts` propi de l'eina).
-- Rotació: `wpup key:rotate <compte>` genera una clau nova, la instal·la, en comprova l'accés i retira l'antiga. Recomanada anualment o quan marxa algú amb accés de root a la VM.
+- Rotació: `wpup ssh-key:rotate <compte>` genera una clau nova, la instal·la, en comprova l'accés i retira l'antiga. Recomanada anualment o quan marxa algú amb accés de root a la VM.
 
 ### 5. Ús dels secrets en temps d'execució
 
@@ -133,5 +133,5 @@ El risc principal no és un atacant extern a la BD, sinó l'abast de cada creden
 3. [ ] UZEROWPUP-16 Identitat per `SUDO_USER` i embolcall `wpup` via sudo
 4. [ ] UZEROWPUP-13 Model `hosting_accounts`
 5. [ ] UZEROWPUP-28 Desplegament: usuari `wpup`, sudoers, systemd-creds, permisos i custòdia de la KEK
-6. [ ] UZEROWPUP-123 Comandes `key:generate`, `key:rotate` i `secrets:rekey`
+6. [ ] UZEROWPUP-123 Comandes `ssh-key:generate`, `ssh-key:rotate` i `secrets:rekey` (espai de noms `ssh-key:` per no topar amb el `key:generate` de Laravel)
 7. [ ] UZEROWPUP-124 Lock per compte d'hosting

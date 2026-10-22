@@ -25,4 +25,33 @@ return [
         'dev_kek' => env('WPUP_DEV_KEK'),
     ],
 
+    /*
+     * Operator identity (ADR-0002). The tool always runs as the service user and
+     * operators call it through `sudo -u wpup wpup ...`.
+     *
+     * - "sudo": production. The process must run as `service_user` and the
+     *   operator is SUDO_USER, mapped to an active row in `users`.
+     * - "posix": local development only. The operator is the process user.
+     *   Refused when APP_ENV=production.
+     */
+    'identity' => [
+        'mode' => env('WPUP_IDENTITY_MODE', 'sudo'),
+        'service_user' => env('WPUP_SERVICE_USER', 'wpup'),
+    ],
+
+    /*
+     * Commands reachable through the `wpup` binary. Anything else (tinker,
+     * migrate, key:generate, user:bootstrap...) is refused there and stays
+     * available only to whoever can run `artisan` as the service user.
+     * Entries ending in ":" allow a whole namespace.
+     */
+    'cli' => [
+        'allowed_commands' => [
+            'list', 'help',
+            'site:', 'user:add', 'user:list', 'user:role', 'user:deactivate',
+            'lock:', 'backup:', 'agent:', 'client:', 'billing:', 'ssh-key:', 'secrets:', 'staging:', 'run:',
+            'inventory', 'plan', 'update', 'verify', 'rollback', 'runs', 'report', 'cleanup', 'doctor', 'stats',
+        ],
+    ],
+
 ];

@@ -198,7 +198,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
 
 - Cada acció del web crida el **mateix servei de domini i la mateixa policy** que la comanda CLI equivalent. No hi ha lògica de negoci als controladors, i els tests de policy cobreixen els dos canals.
 - Les accions que fan canvis passen per una previsualització (`--dry-run`) i una confirmació; les sensibles demanen el TOTP de nou. Només POST amb CSRF.
-- **Mai pel web:** credencials i secrets, `key:*`, `secrets:rekey` i gestió d'usuaris i rols. Això és exclusiu de la CLI d'un `admin`.
+- **Mai pel web:** credencials i secrets, `ssh-key:*`, `secrets:rekey` i gestió d'usuaris i rols. Això és exclusiu de la CLI d'un `admin`.
 
 **Verificador (`verifier/`)**
 

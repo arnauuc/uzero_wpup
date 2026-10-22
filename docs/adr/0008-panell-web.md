@@ -38,7 +38,7 @@ L'especificació preveia un «visor de només lectura» per als informes i les c
 - **Reautenticació:** les accions destructives o sensibles (rollback, restauració, `--allow-major`, `--skip-quarantine`, `lock:release`) demanen tornar a introduir el codi TOTP.
 - **Protecció CSRF** a tots els formularis; les accions no s'executen mai amb peticions GET.
 - **Auditoria:** cada acció registra l'usuari, el canal (`web` o `cli`), l'IP de la tailnet i el resultat.
-- **Mai pel web:** gestió de credencials i secrets (alta i edició de credencials de llocs, destinacions i Quipu), `key:generate`, `key:rotate`, `secrets:rekey`, gestió d'usuaris i rols, i qualsevol acció que mostri un secret. Això queda exclusivament per a la CLI d'un `admin`.
+- **Mai pel web:** gestió de credencials i secrets (alta i edició de credencials de llocs, destinacions i Quipu), `ssh-key:generate`, `ssh-key:rotate`, `secrets:rekey`, gestió d'usuaris i rols, i qualsevol acció que mostri un secret. Això queda exclusivament per a la CLI d'un `admin`.
 
 ## Opcions considerades
 
