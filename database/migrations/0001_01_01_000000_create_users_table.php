@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use App\Enums\UserRole;
+use App\Support\Database\EnumCheck;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -16,12 +18,18 @@ return new class extends Migration
         Schema::create('users', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->string('email')->unique();
-            $table->timestamp('email_verified_at')->nullable();
-            $table->string('password');
+            $table->string('unix_username')->unique();
+            $table->text('role');
+            $table->boolean('active')->default(true);
+            $table->string('email')->nullable()->unique();
+            $table->timestampTz('email_verified_at')->nullable();
+            // Nullable: the web login (UZEROWPUP-131) comes later; the CLI identifies operators by Unix user.
+            $table->string('password')->nullable();
             $table->rememberToken();
-            $table->timestamps();
+            $table->timestampsTz();
         });
+
+        EnumCheck::add('users', 'role', UserRole::class);
 
         Schema::create('password_reset_tokens', function (Blueprint $table) {
             $table->string('email')->primary();
