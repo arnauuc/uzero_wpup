@@ -10,6 +10,7 @@ use App\Domain\Identity\Ability;
 use App\Domain\Sites\SiteAdministration;
 use App\Domain\Sites\SiteInput;
 use App\Domain\Sites\SiteValidationException;
+use App\Domain\Sites\WindowDays;
 use App\Enums\UpdateStrategy;
 use DomainException;
 
@@ -75,13 +76,15 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         $strategy ??= $strategyOption === null ? null : (UpdateStrategy::tryFrom($strategyOption)
             ?? throw new DomainException('L\'estratègia ha de ser in_place o staging_first.'));
 
+        $days = $this->stringOption('window-days');
+
         return new SiteInput(
             url: $url ?? $this->stringOption('url'),
             wpPath: $wpPath ?? $this->stringOption('wp-path'),
             phpBinary: $this->stringOption('php-binary'),
             tags: $this->listOption('tag'),
             strategy: $strategy,
-            windowDays: $this->parseDays($this->stringOption('window-days')),
+            windowDays: $days === null ? null : WindowDays::parse($days),
             windowStart: $this->stringOption('window-start'),
             windowEnd: $this->stringOption('window-end'),
             autoUpdate: $this->toggle('auto-update', 'no-auto-update'),
@@ -136,27 +139,6 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         }
 
         return $enable ? true : ($disable ? false : null);
-    }
-
-    /**
-     * @return list<int>|null
-     *
-     * @throws DomainException
-     */
-    private function parseDays(?string $spec): ?array
-    {
-        if ($spec === null) {
-            return null;
-        }
-        $days = [];
-        foreach (explode(',', $spec) as $part) {
-            if (preg_match('/^([1-7])(?:-([1-7]))?$/', trim($part), $m) !== 1) {
-                throw new DomainException('Els dies de la finestra tenen el format «1-5,7» (1 = dilluns, 7 = diumenge).');
-            }
-            array_push($days, ...range((int) $m[1], (int) ($m[2] ?? $m[1])));
-        }
-
-        return array_values(array_unique($days));
     }
 
     /**

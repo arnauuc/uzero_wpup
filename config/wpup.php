@@ -63,6 +63,8 @@ return [
         'default_window' => ['days' => [1, 2, 3, 4, 5, 6, 7], 'start' => '01:00', 'end' => '06:00'],
         'notification_channels' => ['email', 'telegram', 'slack'],
         'external_backup_types' => ['plesk', 'dropbox', 'plugin', 'other', 'none'],
+        // site:import refuses larger files (UZEROWPUP-26).
+        'import_max_bytes' => 1048576,
     ],
 
     /*
