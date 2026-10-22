@@ -1,0 +1,31 @@
+# Exemple d'importació de llocs (docs/importacio-de-llocs.md).
+# Dades fictícies: cap credencial, només dominis example.test.
+- name: botiga-exemple
+  url: https://botiga-exemple.example.test
+  wp_path: /var/www/vhosts/botiga-exemple/httpdocs
+  tags: [woo, nit]
+  strategy: staging_first
+  window: { days: "1-5", start: "01:00", end: "05:00" }
+  auto_update: true
+  verify_urls: [/, /cart, /shop]
+  mask: [.cookie-banner]
+  diff_threshold: 1.5
+  freeze: [woocommerce-subscriptions]
+  notify: [email]
+  include_uploads: false
+  server: { name: plesk-exemple, hostname: plesk-exemple.example.test, ssh_port: 22, panel: plesk }
+  account: { system_user: botiga_exemple, driver: ssh }
+
+- name: blog-exemple
+  url: https://blog-exemple.example.test
+  wp_path: /var/www/vhosts/blog-exemple/httpdocs
+  tags: [blog]
+  server: { name: plesk-exemple }
+  account: { system_user: blog_exemple }
+
+- name: web-agent-exemple
+  url: https://web-agent-exemple.example.test
+  wp_path: /home/webagent/public_html
+  php_binary: /usr/bin/php8.3
+  server: { name: sftp-exemple, hostname: sftp-exemple.example.test, ssh_port: 2222, panel: other }
+  account: { system_user: webagent, driver: agent }

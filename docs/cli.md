@@ -93,3 +93,12 @@ La primera vegada instal·la el WP-CLI fixat de l'eina a `~/.wpup` del compte, f
 - en mode no interactiu, amb `--trust-host-key=SHA256:…`.
 
 En el moment de fixar-la es torna a llegir la clau i es compara amb l'empremta confirmada. Un operador no pot fixar-la. Amb `--dry-run`, només mostra què es fixaria. Una host key que ja està fixada no es canvia mai des d'aquí: si el servidor la canvia, totes les connexions fallen fins que un admin ho investiga. La fixació queda a l'auditoria (`host_key.pin`).
+
+## `site:import`
+
+Només `admin`. Importa llocs en bloc des d'un CSV o YAML: tot o res, idempotent i amb `--dry-run`. Esquema, exemples i regles a [importacio-de-llocs.md](importacio-de-llocs.md).
+
+```bash
+sudo -u wpup wpup site:import llocs.yaml --dry-run
+sudo -u wpup wpup site:import llocs.csv
+```

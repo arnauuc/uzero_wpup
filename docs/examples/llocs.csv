@@ -1,0 +1,4 @@
+name,url,wp_path,php_binary,tags,strategy,window_days,window_start,window_end,auto_update,verify_urls,mask,diff_threshold,checkout_product,freeze,exclude,notify,include_uploads,external_backup,server,hostname,ssh_port,panel,account,driver
+botiga-exemple,https://botiga-exemple.example.test,/var/www/vhosts/botiga-exemple/httpdocs,,woo|nit,staging_first,1-5,01:00,05:00,true,/|/cart|/shop,.cookie-banner,1.5,,woocommerce-subscriptions,,email,false,,plesk-exemple,plesk-exemple.example.test,22,plesk,botiga_exemple,ssh
+blog-exemple,https://blog-exemple.example.test,/var/www/vhosts/blog-exemple/httpdocs,,blog,,,,,,,,,,,,,,,plesk-exemple,,,,blog_exemple,
+web-agent-exemple,https://web-agent-exemple.example.test,/home/webagent/public_html,/usr/bin/php8.3,,,,,,,,,,,,,,,,sftp-exemple,sftp-exemple.example.test,2222,other,webagent,agent
