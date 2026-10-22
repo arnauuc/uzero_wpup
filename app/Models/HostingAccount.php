@@ -17,6 +17,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string $system_user
  * @property SiteDriverType $driver
  * @property string|null $credential_ref
+ * @property string|null $ssh_public_key
+ * @property string|null $pending_credential_ref
+ * @property string|null $retiring_credential_ref
  * @property string|null $notes
  */
 class HostingAccount extends Model

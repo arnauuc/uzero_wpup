@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Audit\AuditLogger;
+use App\Domain\Credentials\SshKeyManager;
 use App\Domain\Drivers\Ssh\SshSettings;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
@@ -51,6 +53,7 @@ class AppServiceProvider extends ServiceProvider
             };
         });
 
+        $this->app->singleton(EnvelopeSecretStore::class);
         $this->app->singleton(SecretStore::class, EnvelopeSecretStore::class);
         $this->app->singleton(SecretRedactor::class);
 
@@ -83,6 +86,12 @@ class AppServiceProvider extends ServiceProvider
             workDir: self::configString('wpup.ssh.work_dir'),
             wpCliPhar: self::configString('wpup.ssh.wp_cli.phar'),
             wpCliSha256: self::configString('wpup.ssh.wp_cli.sha256'),
+        ));
+        $this->app->bind(SshKeyManager::class, static fn (Application $app): SshKeyManager => new SshKeyManager(
+            $app->make(SecretStore::class),
+            $app->make(AuditLogger::class),
+            $app->make(SshSettings::class),
+            self::stringOrNull(config('wpup.ssh.egress_ip')),
         ));
         $this->app->singleton(CliCommandGate::class, static function (): CliCommandGate {
             $allowed = config('wpup.cli.allowed_commands');

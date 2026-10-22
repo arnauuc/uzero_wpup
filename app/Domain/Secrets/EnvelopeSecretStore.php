@@ -9,6 +9,7 @@ use App\Domain\Audit\AuditLogger;
 use App\Domain\Secrets\Kek\KekProvider;
 use App\Enums\AuditResult;
 use App\Models\StoredSecret;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use SodiumException;
 
@@ -65,6 +66,55 @@ final readonly class EnvelopeSecretStore implements SecretStore
         $this->redactor->register($secret);
 
         return $secret;
+    }
+
+    /**
+     * Re-wraps the secret's data key with the current KEK (`secrets:rekey`).
+     * The ciphertext is untouched. Idempotent: returns false when the secret is
+     * already on the current KEK. Each row is checked to open with the new KEK
+     * before the transaction commits.
+     */
+    public function rewrap(string $id): bool
+    {
+        return DB::transaction(function () use ($id): bool {
+            $row = StoredSecret::query()->whereKey($id)->lockForUpdate()->first() ?? throw SecretStoreException::notFound($id);
+            $current = $this->kekProvider->currentVersion();
+
+            if ($row->kek_version === $current) {
+                return false;
+            }
+
+            $old = $this->kekProvider->key($row->kek_version);
+            $new = $this->kekProvider->key($current);
+            $dek = false;
+            $dekNonce = random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES);
+
+            try {
+                $dek = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt(
+                    self::decode($row->wrapped_dek, $row->id),
+                    self::dekAd($row->id, $row->kek_version),
+                    self::decode($row->dek_nonce, $row->id),
+                    $old->reveal(),
+                );
+                if ($dek === false) {
+                    throw SecretStoreException::decryptionFailed($row->id);
+                }
+                $wrapped = sodium_crypto_aead_xchacha20poly1305_ietf_encrypt($dek, self::dekAd($row->id, $current), $dekNonce, $new->reveal());
+            } catch (SodiumException) {
+                throw SecretStoreException::decryptionFailed($row->id);
+            } finally {
+                if (is_string($dek)) {
+                    sodium_memzero($dek);
+                }
+                $old->wipe();
+                $new->wipe();
+            }
+
+            $row->fill(['wrapped_dek' => base64_encode($wrapped), 'dek_nonce' => base64_encode($dekNonce), 'kek_version' => $current])->save();
+            $this->open($row)->wipe();
+
+            return true;
+        });
     }
 
     private function find(string $id): StoredSecret

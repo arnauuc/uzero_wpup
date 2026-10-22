@@ -6,6 +6,7 @@ namespace Tests\Support;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\Ssh\SshConnection;
+use App\Domain\Drivers\Ssh\SshTarget;
 use App\Domain\Secrets\Secret;
 use App\Domain\Secrets\SecretStore;
 use App\Models\HostingAccount;
@@ -26,6 +27,38 @@ final class Fixtures
         fclose($socket);
 
         return true;
+    }
+
+    /**
+     * The address the fixture sees the tests connect from (for from="…").
+     */
+    public static function clientIp(string $name = 'wp83'): string
+    {
+        $site = self::site($name);
+        $server = $site->hostingAccount()->firstOrFail()->hostingServer()->firstOrFail();
+        $key = new Secret((string) file_get_contents(base_path('docker/fixtures/.keys/id_ed25519')));
+        $target = new SshTarget($server->hostname, 22, "sub_{$name}", $server->pinned_host_key, '/', null);
+        $connection = new SshConnection($target, $key, 5);
+        $client = trim($connection->run('printf "%s" "$SSH_CLIENT"', 10)->stdout);
+        $connection->close();
+
+        return explode(' ', $client)[0];
+    }
+
+    /**
+     * Runs a command on the fixture as its subscription user, with the fixture key.
+     */
+    public static function run(string $name, string $command): string
+    {
+        $key = new Secret((string) file_get_contents(base_path('docker/fixtures/.keys/id_ed25519')));
+        $target = new SshTarget($name, 22, "sub_{$name}", SshConnection::fetchHostKey($name, 22, 5), '/', null);
+
+        $connection = new SshConnection($target, $key, 5);
+        try {
+            return $connection->run($command, 30)->stdout;
+        } finally {
+            $connection->close();
+        }
     }
 
     /**

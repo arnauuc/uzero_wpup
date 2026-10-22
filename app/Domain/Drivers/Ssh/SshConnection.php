@@ -8,6 +8,7 @@ use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Secrets\Secret;
+use Illuminate\Support\Sleep;
 use phpseclib3\Crypt\PublicKeyLoader;
 use phpseclib3\Net\SSH2;
 use Throwable;
@@ -18,6 +19,8 @@ use Throwable;
  */
 final class SshConnection
 {
+    private const RETRY_PAUSES_SECONDS = [2, 6];
+
     private ?SSH2 $ssh = null;
 
     public function __construct(
@@ -65,6 +68,11 @@ final class SshConnection
         );
     }
 
+    public function __destruct()
+    {
+        $this->close();
+    }
+
     public function close(): void
     {
         $this->ssh?->disconnect();
@@ -77,10 +85,15 @@ final class SshConnection
      */
     public static function fetchHostKey(string $host, int $port, int $timeoutSeconds): string
     {
+        $ssh = null;
         try {
-            $key = (new SSH2($host, $port, $timeoutSeconds))->getServerPublicHostKey();
+            $ssh = new SSH2($host, $port, $timeoutSeconds);
+            $key = $ssh->getServerPublicHostKey();
         } catch (Throwable $e) {
             throw new ConnectionFailed("No s'ha pogut connectar a {$host}:{$port}: {$e->getMessage()}");
+        } finally {
+            // Unauthenticated connections left open count against sshd's MaxStartups.
+            $ssh?->disconnect();
         }
 
         return is_string($key) ? $key : throw new ConnectionFailed("El servidor {$host}:{$port} no ha signat correctament la seva host key.");
@@ -95,11 +108,21 @@ final class SshConnection
         $pinned = $this->target->pinnedHostKey
             ?? throw new ConnectionFailed("La host key de {$this->target->host} no està fixada: fixa-la amb site:test abans de connectar.");
 
-        try {
-            $ssh = new SSH2($this->target->host, $this->target->port, $this->connectTimeoutSeconds);
-            $hostKey = $ssh->getServerPublicHostKey();
-        } catch (Throwable $e) {
-            throw new ConnectionFailed("No s'ha pogut connectar a {$this->target->label()}: {$e->getMessage()}");
+        // A server may drop a new connection right away (OpenSSH >= 9.8 penalises
+        // sources for a few seconds after a failed login): retry with a pause.
+        $attempt = 0;
+        while (true) {
+            try {
+                $ssh = new SSH2($this->target->host, $this->target->port, $this->connectTimeoutSeconds);
+                $hostKey = $ssh->getServerPublicHostKey();
+
+                break;
+            } catch (Throwable $e) {
+                if (++$attempt >= count(self::RETRY_PAUSES_SECONDS) + 1) {
+                    throw new ConnectionFailed("No s'ha pogut connectar a {$this->target->label()}: {$e->getMessage()}");
+                }
+                Sleep::sleep(self::RETRY_PAUSES_SECONDS[$attempt - 1]);
+            }
         }
 
         if (! is_string($hostKey) || SshTarget::normaliseHostKey($hostKey) !== SshTarget::normaliseHostKey($pinned)) {

@@ -102,3 +102,14 @@ Només `admin`. Importa llocs en bloc des d'un CSV o YAML: tot o res, idempotent
 sudo -u wpup wpup site:import llocs.yaml --dry-run
 sudo -u wpup wpup site:import llocs.csv
 ```
+
+## Claus i secrets (només `admin`, mai pel web)
+
+| Comanda | Què fa |
+| --- | --- |
+| `ssh-key:generate <servidor> <compte>` | Genera la clau Ed25519 del compte, la desa xifrada i mostra **només** la línia per a `~/.ssh/authorized_keys`, restringida a l'IP de sortida (`from="…",no-port-forwarding,no-agent-forwarding,no-X11-forwarding`). Cal `WPUP_EGRESS_IP` |
+| `ssh-key:rotate <servidor> <compte>` | Instal·la una clau nova amb l'actual, la prova, la fa vigent i retira l'antiga de `~/.ssh/authorized_keys`. Si s'interromp, es torna a executar i continua; sempre queda una clau que funciona. Avisa si l'antiga encara dona accés (p. ex. si la va instal·lar el proveïdor fora de `~/.ssh`) |
+| `secrets:set-password <servidor> <compte>` | Contrasenya SFTP d'un compte amb driver d'agent. S'escriu dues vegades sense eco, mai com a argument |
+| `secrets:rekey` | Torna a xifrar totes les claus de dades amb la KEK vigent. És idempotent. Vegeu [runbooks/rotacio-kek.md](runbooks/rotacio-kek.md) |
+
+Totes tenen `--dry-run` i queden a l'auditoria. La clau privada no surt mai a la sortida, als logs ni al disc.

@@ -57,10 +57,17 @@ KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 UsePAM no
 AllowUsers ${SITE_USER} ${NOSHELL_USER}
-AuthorizedKeysFile /etc/ssh/authorized_keys/%u
+# Root-managed base key (like the hosting provider's) plus the account's own file, which the tool manages.
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u .ssh/authorized_keys
 PrintMotd no
 Subsystem sftp internal-sftp
 SSHD
+
+# OpenSSH >= 9.8 penalises sources with failed or unauthenticated connections. The
+# negative tests cause both on purpose, so the test sites switch it off where supported.
+if /usr/sbin/sshd -T -o PerSourcePenalties=no >/dev/null 2>&1; then
+    echo 'PerSourcePenalties no' >> /etc/ssh/sshd_config
+fi
 
 # Apache listens on the same port that is published, so loopback requests from WordPress/WP-CLI work.
 printf 'Listen %s\n' "$HTTP_PORT" > /etc/apache2/ports.conf
