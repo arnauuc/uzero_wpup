@@ -101,6 +101,9 @@ return [
      * WP-CLI there (`make tools` downloads it on the tool server).
      */
     'ssh' => [
+        // Fixed public egress IP of the tool (ADR-0003). Every installed key is
+        // restricted to it with from="…" in authorized_keys.
+        'egress_ip' => env('WPUP_EGRESS_IP'),
         'connect_timeout_seconds' => 15,
         'command_timeout_seconds' => 300,
         'transfer_timeout_seconds' => 3600,
