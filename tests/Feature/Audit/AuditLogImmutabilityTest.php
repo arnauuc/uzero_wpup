@@ -8,6 +8,7 @@ use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
 use App\Models\AuditLogEntry;
 use App\Models\User;
+use Illuminate\Database\Connection;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
@@ -87,19 +88,19 @@ function asOwnerInRolledBackTransaction(Closure $attempt): void
 }
 
 it('rejects UPDATE even for the schema owner', function (): void {
-    asOwnerInRolledBackTransaction(function (Illuminate\Database\Connection $owner, int $id): void {
+    asOwnerInRolledBackTransaction(function (Connection $owner, int $id): void {
         $owner->table('audit_log')->where('id', $id)->update(['action' => 'tampered']);
     });
 })->throws(QueryException::class, 'audit_log is insert-only: UPDATE is not allowed');
 
 it('rejects DELETE even for the schema owner', function (): void {
-    asOwnerInRolledBackTransaction(function (Illuminate\Database\Connection $owner, int $id): void {
+    asOwnerInRolledBackTransaction(function (Connection $owner, int $id): void {
         $owner->table('audit_log')->where('id', $id)->delete();
     });
 })->throws(QueryException::class, 'audit_log is insert-only: DELETE is not allowed');
 
 it('rejects TRUNCATE even for the schema owner', function (): void {
-    asOwnerInRolledBackTransaction(function (Illuminate\Database\Connection $owner): void {
+    asOwnerInRolledBackTransaction(function (Connection $owner): void {
         $owner->statement('TRUNCATE audit_log');
     });
 })->throws(QueryException::class, 'audit_log is insert-only: TRUNCATE is not allowed');
