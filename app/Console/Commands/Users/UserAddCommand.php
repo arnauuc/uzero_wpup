@@ -4,13 +4,14 @@ declare(strict_types=1);
 
 namespace App\Console\Commands\Users;
 
+use App\Console\ChangesState;
 use App\Console\WpupCommand;
 use App\Domain\Identity\Ability;
 use App\Domain\Identity\UserAdministration;
 use App\Enums\UserRole;
 use DomainException;
 
-final class UserAddCommand extends WpupCommand
+final class UserAddCommand extends WpupCommand implements ChangesState
 {
     protected $signature = 'user:add
         {unix_username : Usuari Unix de la persona al servidor de l\'eina}

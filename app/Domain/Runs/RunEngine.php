@@ -77,7 +77,16 @@ final readonly class RunEngine
                 $lease = $this->locks->acquire($run->site, $run->actor, $run->id);
             }
 
-            $pipeline = $this->pipelines->resolve($run);
+            try {
+                $pipeline = $this->pipelines->resolve($run);
+            } catch (RunException $e) {
+                // A run that cannot even start must not stay queued in silence.
+                if ($run->status === RunStatus::Queued) {
+                    $this->finish($run, RunStatus::Failed, ['', $e->getMessage()]);
+                }
+
+                throw $e;
+            }
             $this->begin($run, $pipeline);
 
             $failure = $run->status === RunStatus::Running

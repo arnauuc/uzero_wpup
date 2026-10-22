@@ -7,7 +7,7 @@ export WPUP_UID ?= $(shell id -u)
 export WPUP_GID ?= $(shell id -g)
 
 .DEFAULT_GOAL := help
-.PHONY: help init build up down ps logs shell artisan composer migrate test psql redis-cli lint stan verifier agent-matrix ci hooks fixtures-keys fixtures-up fixtures-down fixtures-reset fixtures-snapshot fixtures-ssh
+.PHONY: help init build network up down ps logs shell artisan composer migrate test psql redis-cli lint stan verifier agent-matrix ci hooks fixtures-keys fixtures-up fixtures-down fixtures-reset fixtures-snapshot fixtures-ssh
 
 help: ## List the available targets
 	@grep -E '^[a-z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-13s %s\n", $$1, $$2}'
@@ -22,8 +22,11 @@ init: ## Prepare .env, vendor/, APP_KEY and the dev KEK if missing (idempotent)
 build: ## Build the Docker images
 	$(COMPOSE) build
 
-up: build init ## Build if needed, start the stack and wait until healthy
+up: build init network ## Build if needed, start the stack and wait until healthy
 	$(COMPOSE) up -d --wait
+
+network: ## Create the network shared with the test sites (if missing)
+	@docker network inspect uzero-wpup-fixtures-link >/dev/null 2>&1 || docker network create uzero-wpup-fixtures-link >/dev/null
 
 down: ## Stop the stack (keeps volumes)
 	$(COMPOSE) down
@@ -93,11 +96,9 @@ fixtures-keys: ## Generate the fixture SSH keypair in docker/fixtures/.keys/ (if
 	@test -f $(FIXTURES_DIR)/.keys/id_ed25519 || ssh-keygen -q -t ed25519 -N '' -C 'wpup-fixtures-test-only' -f $(FIXTURES_DIR)/.keys/id_ed25519
 	@touch $(FIXTURES_DIR)/.keys/known_hosts
 
-fixtures-up: fixtures-keys ## Build and start the test sites, seed those not seeded yet, snapshot if none
+fixtures-up: fixtures-keys network ## Build and start the test sites, seed those not seeded yet, snapshot if none
 	$(FIXTURES) build
 	$(FIXTURES) up -d --wait
-	@# The integration tests run in the app container and reach the sites by name (wp74:22…).
-	@docker network connect uzero-wpup-fixtures_fixtures $$($(COMPOSE) ps -q app) 2>/dev/null || true
 	@for s in $(FIXTURE_SITES); do $(FIXTURES_DIR)/seed.sh $$s || exit 1; done
 	@for s in $(FIXTURE_SITES); do $(FIXTURES_DIR)/snapshot.sh has $$s || { $(FIXTURES_DIR)/snapshot.sh snapshot $$s; }; done
 

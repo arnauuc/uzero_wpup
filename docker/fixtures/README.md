@@ -48,7 +48,7 @@ ssh -i docker/fixtures/.keys/id_ed25519 -p 2222 -o UserKnownHostsFile=docker/fix
 - WP-Cron està desactivat i no hi ha correu de sortida (`sendmail_path=/bin/true`).
 - Els errors de PHP (web i CLI) van a `/var/www/vhosts/<lloc>.fixtures.test/logs/php_error.log`, com a Plesk. Hi ha `rsync`.
 - Cada lloc té també l'usuari `sub_<lloc>_nosh`, amb la mateixa clau i el shell `/bin/false`, per als tests negatius del driver.
-- `make fixtures-up` connecta el contenidor `app` a la xarxa dels llocs: els tests d'integració (`tests/Integration`) hi arriben per nom (`wp74:22`…). Si els llocs no estan aixecats, aquests tests se salten amb un avís.
+- El contenidor `app` i els llocs comparteixen la xarxa `uzero-wpup-fixtures-link` (la crea `make up`; la BD dels llocs no hi és): els tests d'integració (`tests/Integration`) hi arriben per nom (`wp74:22`…). Si els llocs no estan aixecats, aquests tests se salten, i el resum de `make ci` ho mostra.
 
 ## Fitxers
 

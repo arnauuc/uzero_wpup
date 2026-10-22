@@ -22,6 +22,15 @@ use Illuminate\Console\Command;
  */
 abstract class WpupCommand extends Command
 {
+    /** Signature fragments shared by every command (UZEROWPUP-24, docs/cli.md). */
+    protected const TARGETS = '{sites?* : Noms dels llocs} {--tag=* : Llocs actius amb aquesta etiqueta} {--all : Tots els llocs actius}';
+
+    protected const DRY_RUN = '{--dry-run : Mostra què es faria sense fer-ho}';
+
+    protected const JSON = '{--json : Sortida en JSON, per a scripts}';
+
+    protected const QUEUED = '{--follow : Mostra el progrés en directe} {--wait : Espera que acabi; el codi de sortida en reflecteix el resultat}';
+
     protected User $operator;
 
     protected AuditLogger $audit;
@@ -62,6 +71,21 @@ abstract class WpupCommand extends Command
     protected function isDryRun(): bool
     {
         return $this->hasOption('dry-run') && $this->option('dry-run') === true;
+    }
+
+    protected function wantsJson(): bool
+    {
+        return $this->hasOption('json') && $this->option('json') === true;
+    }
+
+    /**
+     * Machine-readable output for --json: one JSON document on stdout.
+     *
+     * @param  array<mixed>  $data
+     */
+    protected function emitJson(array $data): void
+    {
+        $this->line((string) json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
     }
 
     protected function stringArgument(string $name): string

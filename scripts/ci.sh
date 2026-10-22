@@ -38,9 +38,10 @@ run_step() {
     if [ "$status" -eq 0 ]; then
         local detail=""
         if [ "$name" = "test" ]; then
-            local passed
+            local passed skipped
             passed=$(grep -oE '[0-9]+ passed' "$log" | tail -n1)
-            [ -n "$passed" ] && detail=" ($passed)"
+            skipped=$(grep -oE '[0-9]+ skipped' "$log" | tail -n1)
+            [ -n "$passed" ] && detail=" ($passed${skipped:+, $skipped})"
         fi
         if [ "$name" = "agent-matrix" ] && grep -q 'matrix skipped' "$log"; then
             record "$name" "SKIP (sense agent)"
@@ -48,7 +49,11 @@ run_step() {
             record "$name" "OK$detail"
         fi
     else
-        record "$name" "FAIL"
+        # Keep the full output of a failed step: intermittent failures must be
+        # diagnosable afterwards (UZEROWPUP-136).
+        local kept="storage/logs/ci/$(date +%Y%m%d-%H%M%S)-$name.log"
+        mkdir -p storage/logs/ci && cp "$log" "$kept"
+        record "$name" "FAIL (sortida a $kept)"
         FAILED=1
     fi
 }
