@@ -12,7 +12,7 @@ RUN . /etc/os-release && if [ "$VERSION_CODENAME" = "bullseye" ]; then \
     fi
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        openssh-server curl less unzip procps ca-certificates \
+        openssh-server rsync curl less unzip procps ca-certificates \
         default-mysql-client \
         libpng-dev libjpeg-dev libfreetype6-dev libwebp-dev libicu-dev libzip-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \

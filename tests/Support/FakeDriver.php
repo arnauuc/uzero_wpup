@@ -77,9 +77,9 @@ final class FakeDriver implements SiteDriver
 
         return match (true) {
             $args === ['core', 'version'] => $this->ok($this->coreVersion."\n"),
-            $args === ['maintenance-mode', 'status'] => $this->maintenance
-                ? $this->ok("Maintenance mode is active.\n")
-                : new CommandResult(1, "Maintenance mode is not active.\n", '', 1),
+            $args === ['maintenance-mode', 'is-active'] => $this->maintenance
+                ? $this->ok('')
+                : new CommandResult(1, '', '', 1),
             count($args) === 3 && $args[0] === 'option' && $args[1] === 'get' => isset($this->options[$args[2]])
                 ? $this->ok($this->options[$args[2]]."\n")
                 : new CommandResult(1, '', "Error: Could not get '{$args[2]}' option.\n", 1),

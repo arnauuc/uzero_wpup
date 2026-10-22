@@ -96,6 +96,8 @@ fixtures-keys: ## Generate the fixture SSH keypair in docker/fixtures/.keys/ (if
 fixtures-up: fixtures-keys ## Build and start the test sites, seed those not seeded yet, snapshot if none
 	$(FIXTURES) build
 	$(FIXTURES) up -d --wait
+	@# The integration tests run in the app container and reach the sites by name (wp74:22…).
+	@docker network connect uzero-wpup-fixtures_fixtures $$($(COMPOSE) ps -q app) 2>/dev/null || true
 	@for s in $(FIXTURE_SITES); do $(FIXTURES_DIR)/seed.sh $$s || exit 1; done
 	@for s in $(FIXTURE_SITES); do $(FIXTURES_DIR)/snapshot.sh has $$s || { $(FIXTURES_DIR)/snapshot.sh snapshot $$s; }; done
 
@@ -112,3 +114,15 @@ fixtures-ssh: ## SSH into a test site as its subscription user (SITE=wp81)
 	@test -n "$(SITE)" || { echo "usage: make fixtures-ssh SITE=wp81" >&2; exit 2; }
 	@ssh -i $(FIXTURES_DIR)/.keys/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=$(FIXTURES_DIR)/.keys/known_hosts -o StrictHostKeyChecking=accept-new \
 		-p $(patsubst $(SITE)=%,%,$(filter $(SITE)=%,$(FIXTURE_PORTS))) sub_$(SITE)@127.0.0.1
+
+# WP-CLI phar the tool uploads to the sites (UZEROWPUP-23): pinned version and checksum.
+WPCLI_VERSION := 2.12.0
+WPCLI_SHA512  := be928f6b8ca1e8dfb9d2f4b75a13aa4aee0896f8a9a0a1c45cd5d2c98605e6172e6d014dda2e27f88c98befc16c040cbb2bd1bfa121510ea5cdf5f6a30fe8832
+WPCLI_PHAR    := storage/app/tools/wp-cli-$(WPCLI_VERSION).phar
+
+.PHONY: tools
+tools: ## Download the pinned WP-CLI phar that the tool installs on the sites
+	@mkdir -p storage/app/tools
+	@test -f $(WPCLI_PHAR) || { curl -fsSL -o $(WPCLI_PHAR).part https://github.com/wp-cli/wp-cli/releases/download/v$(WPCLI_VERSION)/wp-cli-$(WPCLI_VERSION).phar \
+		&& echo "$(WPCLI_SHA512)  $(WPCLI_PHAR).part" | sha512sum -c --quiet && mv $(WPCLI_PHAR).part $(WPCLI_PHAR); }
+	@echo "$(WPCLI_SHA512)  $(WPCLI_PHAR)" | sha512sum -c --quiet && echo "WP-CLI $(WPCLI_VERSION): OK"

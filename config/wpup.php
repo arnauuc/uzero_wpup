@@ -81,4 +81,21 @@ return [
         'lock_retry_seconds' => 60,
     ],
 
+    /*
+     * SSH driver (UZEROWPUP-23, ADR-0002). Commands go through phpseclib with the
+     * key in memory; rsync uses a throwaway ssh-agent per transfer. The tool
+     * works in `work_dir` inside the account's home and installs its own pinned
+     * WP-CLI there (`make tools` downloads it on the tool server).
+     */
+    'ssh' => [
+        'connect_timeout_seconds' => 15,
+        'command_timeout_seconds' => 300,
+        'transfer_timeout_seconds' => 3600,
+        'work_dir' => '.wpup',
+        'wp_cli' => [
+            'phar' => storage_path('app/tools/wp-cli-2.12.0.phar'),
+            'sha256' => 'ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c',
+        ],
+    ],
+
 ];

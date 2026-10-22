@@ -11,8 +11,15 @@ if ! id "$SITE_USER" >/dev/null 2>&1; then
     groupadd -g "$SITE_UID" psacln
     useradd -u "$SITE_UID" -g psacln -d "$VHOST_DIR" -M -s /bin/bash -p '*' "$SITE_USER"
 fi
-mkdir -p "$DOCROOT"
-chown "$SITE_USER":psacln "$VHOST_DIR" "$DOCROOT"
+# Account without a usable shell (like /bin/false on Plesk), for the driver's negative tests.
+NOSHELL_USER="${SITE_USER}_nosh"
+id "$NOSHELL_USER" >/dev/null 2>&1 || useradd -g psacln -d /nonexistent -M -s /bin/false -p '*' "$NOSHELL_USER"
+
+mkdir -p "$DOCROOT" "${VHOST_DIR}/logs"
+chown "$SITE_USER":psacln "$VHOST_DIR" "$DOCROOT" "${VHOST_DIR}/logs"
+
+# PHP errors go to the subscription's logs/ directory, as on Plesk (web and CLI).
+printf 'log_errors=On\nerror_log=%s/logs/php_error.log\n' "$VHOST_DIR" > /usr/local/etc/php/conf.d/zz-fixture-log.ini
 
 # WP-CLI skips MySQL option files by default; the fixture DB needs the client's skip-ssl (see Dockerfile).
 mkdir -p "${VHOST_DIR}/.wp-cli"
@@ -36,6 +43,7 @@ chown -R "$SITE_USER":psacln "${VHOST_DIR}/.wp-cli"
 # Authorized key: copied (root-owned) from the read-only bind mount; never baked into the image.
 if [ -f /run/fixtures/authorized_key ]; then
     install -o root -g root -m 644 /run/fixtures/authorized_key "/etc/ssh/authorized_keys/${SITE_USER}"
+    install -o root -g root -m 644 /run/fixtures/authorized_key "/etc/ssh/authorized_keys/${NOSHELL_USER}"
 fi
 
 # Host keys persist in a volume so known_hosts stays valid across container recreation.
@@ -48,7 +56,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 UsePAM no
-AllowUsers ${SITE_USER}
+AllowUsers ${SITE_USER} ${NOSHELL_USER}
 AuthorizedKeysFile /etc/ssh/authorized_keys/%u
 PrintMotd no
 Subsystem sftp internal-sftp
