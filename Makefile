@@ -1,14 +1,16 @@
-# Development commands (UZEROWPUP-3). CI targets (ci, lint, stan...) arrive with UZEROWPUP-2.
+# Development commands (UZEROWPUP-3) and local CI (UZEROWPUP-2). GitHub CI is not used: `make ci` is the only quality gate.
 COMPOSE ?= docker compose
 APP     := $(COMPOSE) exec -T app
+VERIFIER := $(COMPOSE) exec -T verifier
+AGENT_PHP_VERSIONS ?= 7.4 8.0 8.1 8.2 8.3 8.4 8.5
 export WPUP_UID ?= $(shell id -u)
 export WPUP_GID ?= $(shell id -g)
 
 .DEFAULT_GOAL := help
-.PHONY: help init build up down ps logs shell artisan composer migrate test psql redis-cli
+.PHONY: help init build up down ps logs shell artisan composer migrate test psql redis-cli lint stan verifier agent-matrix ci hooks
 
 help: ## List the available targets
-	@grep -E '^[a-z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
+	@grep -E '^[a-z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-13s %s\n", $$1, $$2}'
 
 init: ## Prepare .env, vendor/ and APP_KEY if missing (idempotent)
 	@test -f .env || cp .env.example .env
@@ -51,3 +53,29 @@ migrate: ## Run migrations as wpup_owner against wpup
 test: ## Run Pest against wpup_test
 	$(APP) env DB_DATABASE=wpup_test php artisan migrate --database=pgsql_owner --force
 	$(APP) env DB_HOST=postgres DB_DATABASE=wpup_test ./vendor/bin/pest
+
+lint: ## Pint --test + ESLint
+	$(APP) ./vendor/bin/pint --test
+	$(VERIFIER) npm run lint
+
+stan: ## Larastan (level max) + tsc --noEmit
+	$(APP) ./vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+	$(VERIFIER) npm run typecheck
+
+verifier: ## Vitest tests of the verifier
+	$(VERIFIER) npm test
+
+agent-matrix: ## Agent tests against PHP $(AGENT_PHP_VERSIONS)
+	@if [ -z "$$(find agent -type f ! -name 'README*' 2>/dev/null)" ]; then \
+		echo "agent/ has no code yet: matrix skipped (ADR-0007: PHP 7.4–8.5)"; \
+	else \
+		for v in $(AGENT_PHP_VERSIONS); do \
+			echo "TODO: run agent tests on PHP $$v"; \
+		done; \
+	fi
+
+ci: ## Full local quality gate: lint, stan, test, verifier, agent-matrix
+	@./scripts/ci.sh
+
+hooks: ## Install the pre-push git hook (.githooks/)
+	git config core.hooksPath .githooks
