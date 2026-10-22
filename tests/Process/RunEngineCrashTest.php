@@ -66,12 +66,14 @@ function runWorker(Run $run, string $journal, string $crashAt, ?string $failAt =
 }
 
 /**
- * The dead worker's claim would expire after its TTL; expire it now.
+ * The dead worker's claim and slot would expire after their TTL; expire them now.
  */
 function expireClaim(Run $run): void
 {
     expect(Redis::connection('locks')->command('ttl', ["wpup:run:{$run->id}:claim"]))->toBeGreaterThan(0);
     Redis::connection('locks')->command('del', ["wpup:run:{$run->id}:claim"]);
+    // Its concurrency slot expires the same way.
+    Redis::connection('locks')->command('del', ['wpup:slots:global']);
 }
 
 /**

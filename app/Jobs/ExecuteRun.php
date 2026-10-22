@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Jobs;
 
 use App\Domain\Locks\LockedException;
+use App\Domain\Runs\Concurrency\ConcurrencyLimitReached;
 use App\Domain\Runs\Exceptions\RunAlreadyClaimed;
 use App\Domain\Runs\RunEngine;
 use App\Models\Run;
@@ -22,7 +23,7 @@ final class ExecuteRun implements ShouldQueue
     // The engine enforces step and run timeouts itself and takes over SIGALRM.
     public int $timeout = 0;
 
-    // Released (not failed) while the site is locked; any exception fails it at once.
+    // Released (not failed) while waiting for a slot or a lock; any exception fails it at once.
     public int $tries = 0;
 
     public int $maxExceptions = 1;
@@ -41,15 +42,18 @@ final class ExecuteRun implements ShouldQueue
             $engine->execute($run);
         } catch (RunAlreadyClaimed) {
             Log::info('Run already being executed by another worker.', ['run' => $this->runId]);
+        } catch (ConcurrencyLimitReached $e) {
+            // Waiting for a slot is normal (ADR-0006: one update at a time): no attempt is spent.
+            $this->release(self::seconds('wpup.concurrency.retry_seconds'));
         } catch (LockedException $e) {
             Log::info('Run waits for a busy lock.', ['run' => $this->runId, 'lock' => $e->getMessage()]);
-            $this->release(self::retrySeconds());
+            $this->release(self::seconds('wpup.runs.lock_retry_seconds'));
         }
     }
 
-    private static function retrySeconds(): int
+    private static function seconds(string $key): int
     {
-        $seconds = config('wpup.runs.lock_retry_seconds');
+        $seconds = config($key);
 
         return is_int($seconds) ? $seconds : 60;
     }

@@ -7,8 +7,9 @@ namespace App\Domain\Runs;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Locks\LockedException;
-use App\Domain\Locks\SiteLease;
 use App\Domain\Locks\SiteLockManager;
+use App\Domain\Runs\Concurrency\ConcurrencyGate;
+use App\Domain\Runs\Concurrency\ConcurrencyLimitReached;
 use App\Domain\Runs\Exceptions\ClaimLost;
 use App\Domain\Runs\Exceptions\InvalidTransition;
 use App\Domain\Runs\Exceptions\RunAlreadyClaimed;
@@ -44,6 +45,7 @@ final readonly class RunEngine
         private PipelineResolver $pipelines,
         private RunClaim $claims,
         private SiteLockManager $locks,
+        private ConcurrencyGate $gate,
         private SecretRedactor $redactor,
         private AuditLogger $audit,
         private StepTicker $ticker,
@@ -54,6 +56,7 @@ final readonly class RunEngine
      * Runs (or resumes) the run until it reaches a final state.
      *
      * @throws RunAlreadyClaimed when another worker is executing it
+     * @throws ConcurrencyLimitReached when a concurrency level is full (the run waits)
      * @throws LockedException when the site or its hosting account is busy
      * @throws ClaimLost when the worker lost its claim midway (recovery resumes it)
      */
@@ -65,7 +68,7 @@ final readonly class RunEngine
         }
 
         $token = $this->claims->claim($run->id) ?? throw new RunAlreadyClaimed("Run {$run->id} is already being executed.");
-        $lease = null;
+        $leases = new ExecutionLeases;
 
         try {
             $run->refresh();
@@ -73,8 +76,9 @@ final readonly class RunEngine
                 return $run;
             }
 
+            $leases->slots = $this->gate->acquire($run, $token);
             if ($run->site !== null) {
-                $lease = $this->locks->acquire($run->site, $run->actor, $run->id);
+                $leases->site = $this->locks->acquire($run->site, $run->actor, $run->id);
             }
 
             try {
@@ -90,19 +94,19 @@ final readonly class RunEngine
             $this->begin($run, $pipeline);
 
             $failure = $run->status === RunStatus::Running
-                ? $this->forward($run, $pipeline, $token, $lease)
+                ? $this->forward($run, $pipeline, $token, $leases)
                 : $this->recordedFailure($run);
 
             if ($failure === null) {
                 $this->finish($run, RunStatus::Succeeded);
             } else {
-                $this->rollback($run, $pipeline, $token, $lease, $failure);
+                $this->rollback($run, $pipeline, $token, $leases, $failure);
             }
 
             return $run;
         } finally {
             $this->ticker->stop();
-            $lease?->release();
+            $leases->release();
             $this->claims->release($run->id, $token);
         }
     }
@@ -178,7 +182,7 @@ final readonly class RunEngine
     /**
      * @return array{string, string}|null the failed step and why
      */
-    private function forward(Run $run, Pipeline $pipeline, string $token, ?SiteLease $lease): ?array
+    private function forward(Run $run, Pipeline $pipeline, string $token, ExecutionLeases $leases): ?array
     {
         $dryRun = ($run->flags['dry_run'] ?? false) === true;
 
@@ -205,7 +209,7 @@ final readonly class RunEngine
                 continue;
             }
 
-            $this->runStep($run, $row, $step->timeoutSeconds(), $run->deadline_at, static fn (): StepOutcome => $step->run($context), $token, $lease);
+            $this->runStep($run, $row, $step->timeoutSeconds(), $run->deadline_at, static fn (): StepOutcome => $step->run($context), $token, $leases);
 
             if ($row->status === RunStepStatus::Failed) {
                 return [$row->name, (string) $row->error];
@@ -218,7 +222,7 @@ final readonly class RunEngine
     /**
      * @param  array{string, string}  $failure
      */
-    private function rollback(Run $run, Pipeline $pipeline, string $token, ?SiteLease $lease, array $failure): void
+    private function rollback(Run $run, Pipeline $pipeline, string $token, ExecutionLeases $leases, array $failure): void
     {
         if ($run->status === RunStatus::Running) {
             $toUndo = $this->rows($run, RunStepKind::Forward)
@@ -249,7 +253,7 @@ final readonly class RunEngine
                     throw new RunException("Step «{$row->name}» has no compensation.");
                 }
                 $context = $this->context($run, $failure);
-                $this->runStep($run, $row, $step->timeoutSeconds(), null, static fn (): StepOutcome => $step->compensate($context), $token, $lease);
+                $this->runStep($run, $row, $step->timeoutSeconds(), null, static fn (): StepOutcome => $step->compensate($context), $token, $leases);
             }
 
             if ($row->status === RunStepStatus::Failed) {
@@ -265,7 +269,7 @@ final readonly class RunEngine
     /**
      * @param  Closure(): StepOutcome  $action
      */
-    private function runStep(Run $run, RunStep $row, int $timeout, ?CarbonImmutable $cap, Closure $action, string $token, ?SiteLease $lease): void
+    private function runStep(Run $run, RunStep $row, int $timeout, ?CarbonImmutable $cap, Closure $action, string $token, ExecutionLeases $leases): void
     {
         if ($row->attempts >= $this->settings->maxStepAttempts) {
             $this->stepTransition($row, RunStepStatus::Failed, [
@@ -290,9 +294,9 @@ final readonly class RunEngine
         ]);
 
         $heartbeat = $this->settings->heartbeatSeconds;
-        $this->ticker->start(min($heartbeat, self::secondsUntil($deadline)), function () use ($run, $token, $lease, $deadline, $heartbeat): int {
-            if (! $this->claims->refresh($run->id, $token) || ($lease !== null && ! $lease->refresh())) {
-                throw new ClaimLost("Run {$run->id}: the claim or the site lock was lost.");
+        $this->ticker->start(min($heartbeat, self::secondsUntil($deadline)), function () use ($run, $token, $leases, $deadline, $heartbeat): int {
+            if (! $this->claims->refresh($run->id, $token) || ! $leases->refresh()) {
+                throw new ClaimLost("Run {$run->id}: the claim, a concurrency slot or the site lock was lost.");
             }
             $left = self::secondsUntil($deadline);
             if ($left <= 0) {
