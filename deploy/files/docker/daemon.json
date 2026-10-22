@@ -1,0 +1,7 @@
+{
+  "ip": "127.0.0.1",
+  "iptables": true,
+  "ip6tables": true,
+  "userland-proxy": false,
+  "log-driver": "journald"
+}

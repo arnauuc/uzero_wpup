@@ -1,0 +1,44 @@
+// Tailnet policy for the Uzero wpup tool server (ADR-0003, UZEROWPUP-126).
+// Applied by hand in the Tailscale admin console (Access controls) and kept
+// here so every change goes through review. It only covers what the tool
+// server needs: merge it with the rest of the company policy, do not replace it.
+{
+	// Humans. Fill in the real members in the admin console, never in git:
+	// this group lists the operators AND the admins of the tool.
+	"groups": {
+		"group:wpup-operators": [],
+	},
+
+	// Who may put the tag on a node (the one-time auth key is created with it).
+	"tagOwners": {
+		"tag:wpup-server": ["autogroup:admin"],
+	},
+
+	"acls": [
+		// Only the operators reach the tool server, and only SSH and the HTTPS
+		// published by Tailscale Serve (web panel and /horizon).
+		{
+			"action": "accept",
+			"src":    ["group:wpup-operators"],
+			"dst":    ["tag:wpup-server:22,443"],
+		},
+		// There is deliberately NO rule with src "tag:wpup-server": the tool
+		// server cannot start connections to any other node of the tailnet.
+	],
+
+	// No "funnel" node attribute is granted to the tool server, and nobody is
+	// allowed to use it as an exit node.
+	"nodeAttrs": [],
+
+	"tests": [
+		{
+			"src":    "group:wpup-operators",
+			"accept": ["tag:wpup-server:22", "tag:wpup-server:443"],
+			"deny":   ["tag:wpup-server:80", "tag:wpup-server:5432", "tag:wpup-server:6379", "tag:wpup-server:8080"],
+		},
+		{
+			"src":  "tag:wpup-server",
+			"deny": ["group:wpup-operators:22"],
+		},
+	],
+}

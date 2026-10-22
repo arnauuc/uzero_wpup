@@ -63,3 +63,6 @@ Thumbs.db
 # Fixtures: throwaway SSH keys and snapshots
 /docker/fixtures/.keys/
 /docker/fixtures/.snapshots/
+
+# Local deployment settings (non-secret, per server)
+/deploy/config.env

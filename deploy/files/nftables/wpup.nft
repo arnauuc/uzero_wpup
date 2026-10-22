@@ -1,0 +1,50 @@
+#!/usr/sbin/nft -f
+# Firewall of the Uzero wpup tool server (ADR-0003, UZEROWPUP-126).
+#
+# This file owns ONLY the table "inet wpup". It must never `flush ruleset`:
+# Docker (iptables-nft) and Tailscale keep their own nftables tables, and
+# flushing everything would delete them. The "table / delete table / table"
+# idiom below recreates just our table and is safe to load repeatedly.
+#
+# Docker note: published container ports are DNATed in prerouting and then
+# traverse the FORWARD hook, never INPUT, so this "input" chain does not see
+# them. That is what the DOCKER-USER rules (deploy/files/systemd/
+# wpup-docker-user.sh) and the loopback-only "ip" in daemon.json are for.
+
+table inet wpup
+delete table inet wpup
+
+table inet wpup {
+	chain input {
+		type filter hook input priority filter; policy drop;
+
+		iifname "lo" accept
+		ct state established,related accept
+		ct state invalid drop
+
+		# ICMP is useful (path MTU, diagnostics) and cheap. IPv6 needs ND and
+		# router advertisements to have an address at all.
+		ip protocol icmp limit rate 20/second burst 50 packets accept
+		meta l4proto ipv6-icmp limit rate 20/second burst 50 packets accept
+
+		# DHCP replies for the VM itself (the client sends first; these are the
+		# server answers, which conntrack does not always match as "related").
+		# No service listens: remove these two lines if the VM has a static IP.
+		udp sport 67 udp dport 68 accept
+		udp sport 547 udp dport 546 accept
+
+		# The tailnet is the only door: SSH (22) and Tailscale Serve (443).
+		# Nothing else is open on any other interface, LAN included.
+		iifname "tailscale0" tcp dport { 22, 443 } ct state new accept
+	}
+
+	# Outbound is open (no destination allow-list, ADR-0003 section 4) but every
+	# new connection is logged to the kernel log, hence to journald. The rate
+	# limit keeps a scan from flooding the journal. "skuid" records which user
+	# opened it. Retention: deploy/files/journald/wpup.conf (90 days).
+	chain output {
+		type filter hook output priority filter; policy accept;
+
+		oifname != "lo" ct state new limit rate 30/second burst 100 packets log prefix "wpup-egress: " flags skuid
+	}
+}
