@@ -12,10 +12,12 @@ export WPUP_GID ?= $(shell id -g)
 help: ## List the available targets
 	@grep -E '^[a-z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-13s %s\n", $$1, $$2}'
 
-init: ## Prepare .env, vendor/ and APP_KEY if missing (idempotent)
+init: ## Prepare .env, vendor/, APP_KEY and the dev KEK if missing (idempotent)
 	@test -f .env || cp .env.example .env
 	@test -f vendor/autoload.php || $(COMPOSE) run --rm --no-deps -T app composer install --no-interaction
 	@grep -qE '^APP_KEY=.+' .env || $(COMPOSE) run --rm --no-deps -T app php artisan key:generate
+	@grep -qE '^WPUP_DEV_KEK=.+' .env || { grep -q '^WPUP_DEV_KEK=' .env || echo 'WPUP_DEV_KEK=' >> .env; sed -i "s|^WPUP_DEV_KEK=.*|WPUP_DEV_KEK=$$(head -c 32 /dev/urandom | base64)|" .env; }
+	@grep -q '^WPUP_KEK_PROVIDER=' .env || echo 'WPUP_KEK_PROVIDER=env' >> .env
 
 build: ## Build the Docker images
 	$(COMPOSE) build

@@ -29,6 +29,9 @@
         <env name="DB_DATABASE" value="wpup_test"/>
         <env name="DB_URL" value=""/>
         <env name="MAIL_MAILER" value="array"/>
+        <!-- Test-only KEK: protects nothing real (ADR-0002 dev/test provider). -->
+        <env name="WPUP_KEK_PROVIDER" value="env"/>
+        <env name="WPUP_DEV_KEK" value="ce1CKPFN8+2OT6TXkqt+CjLOw/XlAp4CvkGMdf7wup8="/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
         <env name="PULSE_ENABLED" value="false"/>
