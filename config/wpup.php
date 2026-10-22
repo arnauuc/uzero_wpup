@@ -54,4 +54,14 @@ return [
         ],
     ],
 
+    /*
+     * Locks (UZEROWPUP-19, UZEROWPUP-124): one run per site and per hosting
+     * account at a time. The lease expires after `ttl_seconds` unless the run
+     * refreshes it, so a dead worker never keeps a site locked forever.
+     */
+    'locks' => [
+        'connection' => 'locks',
+        'ttl_seconds' => (int) env('WPUP_LOCK_TTL', 120),
+    ],
+
 ];

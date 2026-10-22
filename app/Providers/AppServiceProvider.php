@@ -7,6 +7,7 @@ namespace App\Providers;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
+use App\Domain\Locks\SiteLockManager;
 use App\Domain\Secrets\EnvelopeSecretStore;
 use App\Domain\Secrets\Kek\EnvKekProvider;
 use App\Domain\Secrets\Kek\KekProvider;
@@ -17,7 +18,9 @@ use App\Domain\Secrets\SecretStoreException;
 use App\Support\Logging\RedactSecretsTap;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Redis\Connections\PhpRedisConnection;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -53,6 +56,15 @@ class AppServiceProvider extends ServiceProvider
             self::configString('wpup.identity.service_user'),
             $app->environment(),
         ));
+        $this->app->singleton(SiteLockManager::class, static function (): SiteLockManager {
+            $connection = Redis::connection(self::configString('wpup.locks.connection'));
+
+            if (! $connection instanceof PhpRedisConnection) {
+                throw new \UnexpectedValueException('Locks need the phpredis client (REDIS_CLIENT=phpredis).');
+            }
+
+            return new SiteLockManager($connection, self::configInt('wpup.locks.ttl_seconds'));
+        });
         $this->app->singleton(CliCommandGate::class, static function (): CliCommandGate {
             $allowed = config('wpup.cli.allowed_commands');
 
