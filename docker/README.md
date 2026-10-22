@@ -1,4 +1,11 @@
 # docker/
 
 Entorn de desenvolupament (Docker Compose), llocs WordPress/WooCommerce de prova (fixtures) i imatges de staging.
-S'hi treballa a les tasques UZEROWPUP-3 i UZEROWPUP-4.
+El `compose.yaml` és a l'arrel del repositori; vegeu «Desenvolupament» al [README](../README.md).
+
+| Carpeta | Contingut | Tasca |
+| --- | --- | --- |
+| `app/` | `Dockerfile` de l'orquestrador (serveis `app` i `horizon`) | UZEROWPUP-3 |
+| `postgres/init/` | SQL d'inicialització: rols `wpup_owner` i `wpup_app`, BD `wpup` i `wpup_test` | UZEROWPUP-3 |
+| `verifier/` | `Dockerfile` del verificador (imatge de Playwright) | UZEROWPUP-3 |
+| llocs de prova i imatges de staging | WordPress/WooCommerce de prova i staging | UZEROWPUP-4 |

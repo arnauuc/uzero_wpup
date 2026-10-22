@@ -1,0 +1,108 @@
+# Development environment for Uzero wpup (UZEROWPUP-3).
+# Every published port binds to 127.0.0.1 only (ADR-0003): never publish on 0.0.0.0.
+name: uzero-wpup
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: docker/app/Dockerfile
+    args:
+      WPUP_UID: ${WPUP_UID:-1000}
+      WPUP_GID: ${WPUP_GID:-1000}
+  image: uzero-wpup-app:dev
+  working_dir: /app
+  volumes:
+    - .:/app
+  environment:
+    # Explicit values win over the (possibly stale) .env file.
+    DB_CONNECTION: pgsql
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_DATABASE: wpup
+    DB_USERNAME: wpup_app
+    DB_OWNER_USERNAME: wpup_owner
+    DB_PASSWORD: ""
+    REDIS_HOST: redis
+    MAIL_HOST: mailpit
+    MAIL_PORT: "1025"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  app:
+    <<: *app
+    # Dev server only; production will use php-fpm.
+    command: php artisan serve --host=0.0.0.0 --port=8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\", 8000) ? 0 : 1);'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  horizon:
+    <<: *app
+    command: php artisan horizon
+
+  postgres:
+    image: postgres:17
+    environment:
+      # Dev only: trust auth. The port is NOT published, so the server is reachable
+      # only from the compose network (use `make psql`). Production uses a Unix
+      # socket with peer auth (ADR-0004).
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wpup_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:8025:8025"
+    # SMTP (1025) is reachable only from the compose network.
+    expose:
+      - "1025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  verifier:
+    build:
+      context: .
+      dockerfile: docker/verifier/Dockerfile
+    image: uzero-wpup-verifier:dev
+    user: "${WPUP_UID:-1000}:${WPUP_GID:-1000}"
+    working_dir: /app/verifier
+    init: true
+    ipc: host
+    volumes:
+      - .:/app
+    # Idle for now: the real protocol arrives in F4.
+    command: sleep infinity
+
+volumes:
+  postgres-data:
+  redis-data:
