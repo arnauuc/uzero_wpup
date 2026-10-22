@@ -23,7 +23,7 @@ enum RunStatus: string
     public function canTransitionTo(self $to): bool
     {
         return in_array($to, match ($this) {
-            self::Queued => [self::Running, self::Cancelled, self::Skipped],
+            self::Queued => [self::Running, self::Failed, self::Cancelled, self::Skipped],
             self::Running => [self::Succeeded, self::Failed, self::RollingBack, self::Interrupted],
             self::RollingBack => [self::RolledBack, self::Failed, self::Interrupted],
             self::Interrupted => [self::Running, self::RollingBack, self::Failed],

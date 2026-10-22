@@ -4,12 +4,13 @@ declare(strict_types=1);
 
 namespace App\Console\Commands\Users;
 
+use App\Console\ChangesState;
 use App\Console\WpupCommand;
 use App\Domain\Identity\Ability;
 use App\Domain\Identity\UserAdministration;
 use DomainException;
 
-final class UserDeactivateCommand extends WpupCommand
+final class UserDeactivateCommand extends WpupCommand implements ChangesState
 {
     protected $signature = 'user:deactivate
         {unix_username}

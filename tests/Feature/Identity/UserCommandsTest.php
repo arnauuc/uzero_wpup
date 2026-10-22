@@ -2,35 +2,11 @@
 
 declare(strict_types=1);
 
-use App\Domain\Identity\OperatorResolver;
-use App\Domain\Identity\ProcessIdentity;
 use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
 use App\Enums\UserRole;
 use App\Models\AuditLogEntry;
 use App\Models\User;
-use Illuminate\Testing\PendingCommand;
-
-use function Pest\Laravel\artisan;
-
-/**
- * @param  array<string, mixed>  $parameters
- */
-function command(string $name, array $parameters = []): PendingCommand
-{
-    $result = artisan($name, $parameters);
-
-    return $result instanceof PendingCommand ? $result : throw new LogicException('Mocked console output is disabled.');
-}
-
-/**
- * Runs the next commands as $unixUser invoking `sudo -u wpup wpup ...`.
- */
-function actingAsOperator(string $unixUser): void
-{
-    app()->instance(ProcessIdentity::class, new ProcessIdentity('wpup', $unixUser));
-    app()->instance(OperatorResolver::class, new OperatorResolver('sudo', 'wpup', 'testing'));
-}
 
 beforeEach(function (): void {
     User::factory()->create(['unix_username' => 'admin1', 'role' => UserRole::Admin]);

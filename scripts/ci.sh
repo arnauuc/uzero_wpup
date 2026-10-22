@@ -48,7 +48,11 @@ run_step() {
             record "$name" "OK$detail"
         fi
     else
-        record "$name" "FAIL"
+        # Keep the full output of a failed step: intermittent failures must be
+        # diagnosable afterwards (UZEROWPUP-136).
+        local kept="storage/logs/ci/$(date +%Y%m%d-%H%M%S)-$name.log"
+        mkdir -p storage/logs/ci && cp "$log" "$kept"
+        record "$name" "FAIL (sortida a $kept)"
         FAILED=1
     fi
 }

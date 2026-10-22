@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Console\Commands\Locks;
 
+use App\Console\ChangesState;
 use App\Console\WpupCommand;
 use App\Domain\Identity\Ability;
 use App\Domain\Locks\LockLevel;
@@ -15,7 +16,7 @@ use App\Models\Site;
  * Forced release of a lock (admin only). For when a run is known to be dead and
  * the operator does not want to wait for the TTL.
  */
-final class LockReleaseCommand extends WpupCommand
+final class LockReleaseCommand extends WpupCommand implements ChangesState
 {
     protected $signature = 'lock:release
         {site? : Nom del lloc}
