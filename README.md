@@ -34,7 +34,7 @@ make help      # llista totes les comandes (shell, artisan, composer, logs, ps, 
 
 - **Tots els ports es publiquen només a `127.0.0.1`** (ADR-0003); mai a `0.0.0.0`. El SMTP de Mailpit només és accessible dins de la xarxa de Compose.
 - L'aplicació corre com a `wpup_app` i les migracions com a `wpup_owner` (connexió `pgsql_owner`, ADR-0004). En desenvolupament l'autenticació és `trust` dins de la xarxa de Compose; a la VM és socket Unix amb `peer`.
-- El desenvolupament local **no fa servir `systemd-creds` ni el TPM**: l'ADR-0002 s'aplica a la VM de l'eina.
+- El desenvolupament local **no fa servir `systemd-creds` ni el TPM**: l'ADR-0002 s'aplica a la VM de l'eina. En local, el `SecretStore` fa servir el proveïdor `env` amb una KEK d'un sol ús (`WPUP_DEV_KEK`) que genera `make init`; aquest proveïdor es nega a funcionar si `APP_ENV=production`.
 - El servidor `php artisan serve` és només per a desenvolupament; producció usarà PHP-FPM.
 - L'UID/GID del contenidor és el de l'usuari del host (`WPUP_UID`/`WPUP_GID`).
 
