@@ -131,6 +131,6 @@ tools: ## Download the pinned WP-CLI phar that the tool installs on the sites
 # Server provisioning scripts (UZEROWPUP-126, UZEROWPUP-28). Not part of `make ci` yet.
 .PHONY: deploy-lint
 deploy-lint: ## bash -n and shellcheck (if installed) over deploy/**/*.sh
-	@set -e; scripts=$$(find deploy -name "*.sh" | sort); \
+	@set -e; scripts=$$(find deploy -name "*.sh" | sort; echo deploy/bin/wpup-kek-units deploy/files/bin/wpup deploy/files/bin/wpup-cli); \
 	for f in $$scripts; do bash -n "$$f"; done; echo "bash -n: OK"; \
 	if command -v shellcheck >/dev/null 2>&1; then shellcheck -x $$scripts && echo "shellcheck: OK"; else echo "shellcheck: not installed, skipped"; fi

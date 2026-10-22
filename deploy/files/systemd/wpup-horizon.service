@@ -1,0 +1,58 @@
+[Unit]
+Description=Uzero wpup: Horizon (queue workers)
+Documentation=file:///opt/uzero-wpup/docs/runbooks/desplegament.md
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target postgresql.service redis-server.service
+ConditionPathExists=/opt/uzero-wpup/artisan
+
+[Service]
+Type=simple
+User=wpup
+Group=wpup
+WorkingDirectory=/opt/uzero-wpup
+Environment=HOME=/var/lib/wpup
+ExecStart=/usr/bin/php artisan horizon
+# Horizon stops gracefully on SIGTERM and waits for the running job. A run can
+# last up to runs.timeout_seconds (7200); keep a margin over it.
+KillSignal=SIGTERM
+TimeoutStopSec=7500
+# Deployments call `artisan horizon:terminate`; systemd then starts it again.
+Restart=always
+RestartSec=5
+
+# The KEK, sealed with the TPM and the host key (ADR-0002), is loaded with
+# LoadCredentialEncrypted=wpup-kek-v<N>:/etc/credstore.encrypted/wpup-kek-v<N>
+# from the drop-in 10-kek.conf that deploy/bin/wpup-kek-units generates (one
+# line per version present in /etc/credstore.encrypted, so a rotation only
+# needs `provision.sh --only 55`). Without that drop-in the unit has no KEK.
+
+# State and temporary files. /tmp is private to the unit and must stay
+# writable: the ssh-agent sockets for rsync live there (0700 directories).
+StateDirectory=wpup
+StateDirectoryMode=0700
+PrivateTmp=yes
+UMask=0077
+
+# Sandbox. KEEP IN SYNC with deploy/files/bin/wpup-cli.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/uzero-wpup/storage /opt/uzero-wpup/bootstrap/cache /var/lib/wpup
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+# PHP's JIT and phpseclib need writable+executable memory; do not set
+# MemoryDenyWriteExecute. RestrictNamespaces is not set either: the staging
+# phase talks to Docker through its socket and may need to adjust it.
+
+[Install]
+WantedBy=multi-user.target
