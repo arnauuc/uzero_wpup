@@ -78,6 +78,19 @@ return [
     ],
 
     /*
+     * Concurrency (UZEROWPUP-20, ADR-0006): the VM runs one update at a time.
+     * Raise these only if the VM grows. A run that finds a level full waits in
+     * the queue (released every `retry_seconds`, without spending attempts).
+     */
+    'concurrency' => [
+        'global' => (int) env('WPUP_CONCURRENCY_GLOBAL', 1),
+        'per_hosting_server' => (int) env('WPUP_CONCURRENCY_PER_SERVER', 1),
+        'staging' => (int) env('WPUP_CONCURRENCY_STAGING', 1),
+        'lease_seconds' => 60,
+        'retry_seconds' => 30,
+    ],
+
+    /*
      * Run engine (UZEROWPUP-21). A worker holds a claim on the run while it
      * executes it and refreshes it every `heartbeat_seconds`; a run whose claim
      * expired is interrupted and `engine:recover` resumes or rolls it back.

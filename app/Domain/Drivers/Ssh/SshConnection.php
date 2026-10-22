@@ -21,6 +21,13 @@ final class SshConnection
 {
     private const RETRY_PAUSES_SECONDS = [2, 6];
 
+    private const CLIENT_GRACE_SECONDS = 15;
+
+    /** Exit codes of coreutils `timeout` (TERM, then KILL after -k). */
+    private const TIMEOUT_EXIT = 124;
+
+    private const KILLED_EXIT = 137;
+
     private ?SSH2 $ssh = null;
 
     public function __construct(
@@ -39,11 +46,14 @@ final class SshConnection
     public function run(string $command, int $timeoutSeconds): CommandResult
     {
         $ssh = $this->session();
-        $ssh->setTimeout($timeoutSeconds);
+        // The limit is enforced on the server (coreutils timeout), which also kills
+        // the remote process; the client timeout is only a safety net.
+        $ssh->setTimeout($timeoutSeconds + self::CLIENT_GRACE_SECONDS);
         $start = hrtime(true);
+        $remote = sprintf('timeout -k 5 %d sh -c %s', $timeoutSeconds, escapeshellarg($command));
 
         try {
-            $stdout = $ssh->exec($command);
+            $stdout = $ssh->exec($remote);
         } catch (Throwable $e) {
             $this->close();
 
@@ -58,6 +68,9 @@ final class SshConnection
         }
 
         $exit = $ssh->getExitStatus();
+        if ($exit === self::TIMEOUT_EXIT || $exit === self::KILLED_EXIT) {
+            throw new RemoteCommandFailed("La comanda remota ha superat el temps màxim ({$timeoutSeconds} s).");
+        }
         $stderr = $ssh->getStdError();
 
         return new CommandResult(

@@ -34,7 +34,7 @@ final class SshDriver implements SiteDriver
 {
     private const SHELL_MARKER = 'wpup-shell-ok';
 
-    private const REQUIRED_TOOLS = ['tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head'];
+    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head'];
 
     private ?string $home = null;
 
@@ -57,6 +57,11 @@ final class SshDriver implements SiteDriver
 
         $checks = [new ProbeCheck('connexió', CheckResult::Ok, "{$this->target->label()}, host key fixada")];
 
+        if ($shell->exitCode === 127 && str_contains($shell->stderr, 'timeout')) {
+            $checks[] = new ProbeCheck('eines', CheckResult::Error, 'Falta `timeout` (coreutils) al compte: l\'eina el fa servir per limitar cada comanda.');
+
+            return new ProbeResult($checks);
+        }
         if (! str_contains($shell->stdout, self::SHELL_MARKER)) {
             $checks[] = new ProbeCheck('shell', CheckResult::Error, "El compte {$this->target->user} no té un shell que executi comandes (p. ex. /bin/false). A Plesk, cal l'accés SSH amb /bin/bash, no chrooted.");
 

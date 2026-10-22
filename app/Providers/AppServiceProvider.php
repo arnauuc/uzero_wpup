@@ -11,6 +11,7 @@ use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
 use App\Domain\Locks\SiteLockManager;
+use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunClaim;
 use App\Domain\Runs\RunEngineSettings;
@@ -70,6 +71,15 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(RunClaim::class, static fn (): RunClaim => new RunClaim(
             self::locksConnection(),
             self::configInt('wpup.runs.claim_ttl_seconds'),
+        ));
+        $this->app->singleton(ConcurrencyGate::class, static fn (): ConcurrencyGate => new ConcurrencyGate(
+            self::locksConnection(),
+            [
+                'global' => self::configInt('wpup.concurrency.global'),
+                'per_hosting_server' => self::configInt('wpup.concurrency.per_hosting_server'),
+                'staging' => self::configInt('wpup.concurrency.staging'),
+            ],
+            self::configInt('wpup.concurrency.lease_seconds'),
         ));
         $this->app->singleton(PipelineResolver::class);
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(

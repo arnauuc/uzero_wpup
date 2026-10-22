@@ -34,6 +34,8 @@ Execució #42 encuada (update, botiga-a).
 
 Interrompre `--follow` o `--wait` (Ctrl-C) no atura l'execució, que continua al worker.
 
+**Cua i concurrència** (ADR-0006, `config/wpup.php` → `concurrency`). Per defecte la VM fa **una execució alhora**: 1 global, 1 per servidor d'hosting i 1 de staging, a més del lock per lloc i per compte d'hosting. Una execució que troba un nivell ple es queda `queued` i es torna a provar cada `retry_seconds`, sense gastar intents ni fallar per temps. Si un worker mor, les places que tenia s'alliberen en un minut com a molt. Una execució marcada `now` (només un admin, auditada) se salta la cua global però no la del servidor ni els locks.
+
 **Codi de sortida** amb `--follow` o `--wait` (preval el pitjor resultat):
 
 | Codi | Significat |

@@ -37,7 +37,7 @@ it('re-wraps every data key with the current KEK, idempotently', function (): vo
     foreach (['a', 'b', 'c'] as $value) {
         $ids[$value] = app(SecretStore::class)->put('test', new Secret("valor-{$value}-secret"), AuditActor::system('tests'));
     }
-    $ciphertexts = StoredSecret::query()->whereIn('id', $ids)->pluck('ciphertext', 'id')->all();
+    $ciphertexts = StoredSecret::query()->whereIn('id', $ids)->orderBy('id')->pluck('ciphertext', 'id')->all();
 
     useKeks(2);
     app(EnvelopeSecretStore::class)->rewrap($ids['a']); // an interrupted earlier run
@@ -47,7 +47,7 @@ it('re-wraps every data key with the current KEK, idempotently', function (): vo
     command('secrets:rekey')->expectsOutputToContain('ja són amb la KEK vigent')->assertSuccessful();
 
     expect(StoredSecret::query()->whereIn('id', $ids)->pluck('kek_version')->unique()->all())->toBe([2])
-        ->and(StoredSecret::query()->whereIn('id', $ids)->pluck('ciphertext', 'id')->all())->toBe($ciphertexts);
+        ->and(StoredSecret::query()->whereIn('id', $ids)->orderBy('id')->pluck('ciphertext', 'id')->all())->toBe($ciphertexts);
 
     // Only the new KEK is needed from now on.
     app()->instance(KekProvider::class, new StaticKekProvider([2 => KEK_V2], 2));
