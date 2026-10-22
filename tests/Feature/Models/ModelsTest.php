@@ -25,10 +25,12 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 it('creates a valid row with every factory', function (Factory $factory): void {
+    // Relative count: audit_log is insert-only and keeps rows committed by tests/Process.
+    $before = $factory->newModel()->newQuery()->count();
     $created = $factory->createOne();
 
     expect($created->exists)->toBeTrue()
-        ->and($created->newQuery()->count())->toBe(1);
+        ->and($created->newQuery()->count())->toBe($before + 1);
 })->with(fn (): array => [
     User::factory(), HostingServer::factory(), HostingAccount::factory(), Site::factory(),
     SiteProfile::factory(), SiteSnapshot::factory(), AuditLogEntry::factory(), Run::factory(),

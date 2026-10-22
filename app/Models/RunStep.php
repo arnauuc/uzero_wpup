@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\RunStepKind;
 use App\Enums\RunStepStatus;
 use Carbon\CarbonImmutable;
 use Database\Factories\RunStepFactory;
@@ -16,6 +17,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $run_id
  * @property int $sequence
  * @property string $name
+ * @property RunStepKind $kind
  * @property RunStepStatus $status
  * @property int $attempts
  * @property CarbonImmutable|null $started_at
@@ -24,6 +26,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string|null $summary
  * @property string|null $output
  * @property CarbonImmutable|null $output_purged_at
+ * @property int|null $timeout_seconds
+ * @property string|null $error
+ * @property array<string, mixed>|null $result
  */
 class RunStep extends Model
 {
@@ -40,12 +45,15 @@ class RunStep extends Model
     {
         return [
             'sequence' => 'integer',
+            'kind' => RunStepKind::class,
             'status' => RunStepStatus::class,
             'attempts' => 'integer',
             'started_at' => 'immutable_datetime',
             'finished_at' => 'immutable_datetime',
             'duration_ms' => 'integer',
             'output_purged_at' => 'immutable_datetime',
+            'timeout_seconds' => 'integer',
+            'result' => 'array',
         ];
     }
 

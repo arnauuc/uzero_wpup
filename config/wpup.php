@@ -64,4 +64,21 @@ return [
         'ttl_seconds' => (int) env('WPUP_LOCK_TTL', 120),
     ],
 
+    /*
+     * Run engine (UZEROWPUP-21). A worker holds a claim on the run while it
+     * executes it and refreshes it every `heartbeat_seconds`; a run whose claim
+     * expired is interrupted and `engine:recover` resumes or rolls it back.
+     */
+    'runs' => [
+        'timeout_seconds' => (int) env('WPUP_RUN_TIMEOUT', 7200),
+        'claim_ttl_seconds' => 60,
+        'heartbeat_seconds' => 10,
+        // A step that was interrupted this many times is not tried again: the run rolls back.
+        'max_step_attempts' => 2,
+        'summary_max_chars' => 500,
+        'output_max_bytes' => 1_048_576,
+        // How long a queued run waits before trying again when its site is locked.
+        'lock_retry_seconds' => 60,
+    ],
+
 ];

@@ -98,6 +98,9 @@ return [
             'prefix' => '',
             'prefix_indexes' => true,
             'search_path' => 'public',
+            // Laravel writes timestamps without offset in the app timezone; the
+            // session must use the same one or timestamptz values shift.
+            'timezone' => env('APP_TIMEZONE', 'Europe/Madrid'),
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 
@@ -114,6 +117,9 @@ return [
             'prefix' => '',
             'prefix_indexes' => true,
             'search_path' => 'public',
+            // Laravel writes timestamps without offset in the app timezone; the
+            // session must use the same one or timestamptz values shift.
+            'timezone' => env('APP_TIMEZONE', 'Europe/Madrid'),
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 

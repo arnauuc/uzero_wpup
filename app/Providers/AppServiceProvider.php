@@ -8,6 +8,9 @@ use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
 use App\Domain\Locks\SiteLockManager;
+use App\Domain\Runs\PipelineResolver;
+use App\Domain\Runs\RunClaim;
+use App\Domain\Runs\RunEngineSettings;
 use App\Domain\Secrets\EnvelopeSecretStore;
 use App\Domain\Secrets\Kek\EnvKekProvider;
 use App\Domain\Secrets\Kek\KekProvider;
@@ -56,15 +59,22 @@ class AppServiceProvider extends ServiceProvider
             self::configString('wpup.identity.service_user'),
             $app->environment(),
         ));
-        $this->app->singleton(SiteLockManager::class, static function (): SiteLockManager {
-            $connection = Redis::connection(self::configString('wpup.locks.connection'));
-
-            if (! $connection instanceof PhpRedisConnection) {
-                throw new \UnexpectedValueException('Locks need the phpredis client (REDIS_CLIENT=phpredis).');
-            }
-
-            return new SiteLockManager($connection, self::configInt('wpup.locks.ttl_seconds'));
-        });
+        $this->app->singleton(SiteLockManager::class, static fn (): SiteLockManager => new SiteLockManager(
+            self::locksConnection(),
+            self::configInt('wpup.locks.ttl_seconds'),
+        ));
+        $this->app->singleton(RunClaim::class, static fn (): RunClaim => new RunClaim(
+            self::locksConnection(),
+            self::configInt('wpup.runs.claim_ttl_seconds'),
+        ));
+        $this->app->singleton(PipelineResolver::class);
+        $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(
+            runTimeoutSeconds: self::configInt('wpup.runs.timeout_seconds'),
+            heartbeatSeconds: self::configInt('wpup.runs.heartbeat_seconds'),
+            maxStepAttempts: self::configInt('wpup.runs.max_step_attempts'),
+            summaryMaxChars: self::configInt('wpup.runs.summary_max_chars'),
+            outputMaxBytes: self::configInt('wpup.runs.output_max_bytes'),
+        ));
         $this->app->singleton(CliCommandGate::class, static function (): CliCommandGate {
             $allowed = config('wpup.cli.allowed_commands');
 
@@ -99,6 +109,15 @@ class AppServiceProvider extends ServiceProvider
 
             config(["logging.channels.{$name}.tap" => $taps]);
         }
+    }
+
+    private static function locksConnection(): PhpRedisConnection
+    {
+        $connection = Redis::connection(self::configString('wpup.locks.connection'));
+
+        return $connection instanceof PhpRedisConnection
+            ? $connection
+            : throw new \UnexpectedValueException('Locks need the phpredis client (REDIS_CLIENT=phpredis).');
     }
 
     private static function stringOrNull(mixed $value): ?string
