@@ -75,3 +75,21 @@ Només a `site:add`: `--server` i `--account` (obligatoris; es reutilitzen si ja
 - **Edició:** només canvia el que s'indica. Les opcions de llista substitueixen la llista sencera. Per buidar un camp, `--clear=<camp>` (repetible): `tag`, `php-binary`, `window`, `verify-url`, `mask`, `checkout-product`, `freeze`, `exclude`, `notify`, `external-backup`. No es pot indicar un valor i esborrar-lo alhora.
 - **Interactiu:** si falten valors obligatoris i hi ha terminal, `site:add` els pregunta; `site:edit` sense opcions ofereix URL, camí i estratègia. Amb `--no-interaction` els valors que falten són un error de validació.
 - `--dry-run` mostra què es crearia o canviaria sense escriure ni auditar; `--json` dóna la sortida per a scripts.
+
+## `site:test`
+
+```bash
+sudo -u wpup wpup site:test botiga-a
+sudo -u wpup wpup site:test --tag=woo --json
+```
+
+Prova la connexió i els prerequisits de cada lloc sense tocar WordPress. Mostra una taula per lloc amb el resultat de cada comprovació (ok, avís o error): connexió, shell, eines, PHP del domini, WP-CLI, WordPress, permisos d'escriptura i disc. Si algun lloc té un error, surt amb codi 1.
+
+La primera vegada instal·la el WP-CLI fixat de l'eina a `~/.wpup` del compte, fora del lloc.
+
+**Primer contacte amb un servidor (fixació de la host key, ADR-0002).** Si el servidor encara no té host key fixada, `site:test` en mostra l'empremta (`SHA256:…`), i un **admin** l'ha de confirmar després de comprovar-la al servidor (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`):
+
+- en mode interactiu, amb una pregunta;
+- en mode no interactiu, amb `--trust-host-key=SHA256:…`.
+
+En el moment de fixar-la es torna a llegir la clau i es compara amb l'empremta confirmada. Un operador no pot fixar-la. Amb `--dry-run`, només mostra què es fixaria. Una host key que ja està fixada no es canvia mai des d'aquí: si el servidor la canvia, totes les connexions fallen fins que un admin ho investiga. La fixació queda a l'auditoria (`host_key.pin`).

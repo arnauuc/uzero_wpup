@@ -10,57 +10,30 @@ use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\Ssh\SshConnection;
 use App\Domain\Drivers\Ssh\SshDriver;
 use App\Domain\Drivers\Ssh\SshDriverFactory;
-use App\Domain\Secrets\Secret;
-use App\Domain\Secrets\SecretStore;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
-use App\Models\HostingAccount;
-use App\Models\HostingServer;
-use App\Models\Site;
 use Tests\Contracts\SiteDriverContract;
+use Tests\Support\Fixtures;
 
 /*
  * SshDriver against the Docker test sites (make fixtures-up). Never against a
  * real site. Skipped, with a visible reason, when the fixtures are not running.
  */
 
-function fixtureUp(string $host): bool
-{
-    $socket = @fsockopen($host, 22, $code, $message, 2);
-    if ($socket === false) {
-        return false;
-    }
-    fclose($socket);
-
-    return true;
-}
-
 function sshFixture(string $name = 'wp83', ?string $user = null, ?string $hostKey = null, bool $pin = true): SshDriver
 {
-    $actor = AuditActor::system('tests');
-    $key = (string) file_get_contents(base_path('docker/fixtures/.keys/id_ed25519'));
-    $server = HostingServer::factory()->create([
-        'hostname' => $name,
-        'pinned_host_key' => $pin ? ($hostKey ?? SshConnection::fetchHostKey($name, 22, 5)) : null,
-    ]);
-    $account = HostingAccount::factory()->for($server)->create([
-        'system_user' => $user ?? "sub_{$name}",
-        'credential_ref' => app(SecretStore::class)->put('ssh-key', new Secret($key), $actor),
-    ]);
-    $site = Site::factory()->for($account)->create(['wp_path' => "/var/www/vhosts/{$name}.fixtures.test/httpdocs"]);
-
-    return app(SshDriverFactory::class)->forSite($site, $actor);
+    return app(SshDriverFactory::class)->forSite(Fixtures::site($name, $user, $hostKey, $pin), AuditActor::system('tests'));
 }
 
 foreach (['wp74', 'wp83'] as $fixture) {
-    if (fixtureUp($fixture)) {
+    if (Fixtures::up($fixture)) {
         SiteDriverContract::register(fn (): SiteDriver => sshFixture($fixture), "SshDriver ({$fixture})");
     } else {
         it("passes the SiteDriver contract on {$fixture}")->skip('Llocs de prova aturats: make fixtures-up');
     }
 }
 
-if (! fixtureUp('wp74') || ! fixtureUp('wp83')) {
+if (! Fixtures::up('wp74') || ! Fixtures::up('wp83')) {
     it('works against the test sites')->skip('Llocs de prova aturats: make fixtures-up');
 
     return;
