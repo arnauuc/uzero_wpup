@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# /usr/local/libexec/wpup-cli: runs the wpup CLI for an operator (ADR-0002).
+#
+# WHY THIS EXISTS. The KEK is a systemd credential sealed with the TPM and the
+# host key. Only the service manager (root) can decrypt it, and it only hands it
+# to units with LoadCredentialEncrypted=. A plain `sudo -u wpup wpup ...` would
+# start the CLI without $CREDENTIALS_DIRECTORY, so it could not read any secret.
+# This helper is the one thing operators may run as root (sudoers: see
+# deploy/files/sudoers/wpup). It starts a transient systemd service that:
+#   - runs as the service user, never as root;
+#   - receives the KEK through LoadCredentialEncrypted= (CREDENTIALS_DIRECTORY);
+#   - has the same sandbox as the Horizon and scheduler units;
+#   - gets SUDO_USER from sudo (it cannot be forged: sudo overwrites it), which
+#     the app maps to a row of `users`.
+# Arguments are passed through untouched to /opt/uzero-wpup/wpup, which only
+# accepts the tool's own commands (no tinker, no migrate...).
+#
+# KEEP THE HARDENING LIST IN SYNC with deploy/files/systemd/wpup-horizon.service.
+set -euo pipefail
+
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+app_dir=/opt/uzero-wpup
+service_user=wpup
+credstore=/etc/credstore.encrypted
+operators_group=@OPERATORS_GROUP@
+admins_group=@ADMINS_GROUP@
+
+die() { echo "wpup: $*" >&2; exit 1; }
+
+[[ "$(id -u)" -eq 0 ]] || die "internal helper: use the 'wpup' command."
+operator="${SUDO_USER:-}"
+[[ -n "$operator" && "${SUDO_UID:-0}" -ne 0 ]] || die "has d'executar-ho amb sudo, com a operador (wpup <comanda>)."
+
+# Defence in depth: sudoers already restricts this to the two groups.
+groups_of_operator="$(id -nG "$operator" 2>/dev/null || true)"
+case " $groups_of_operator " in
+    *" $operators_group "* | *" $admins_group "*) ;;
+    *) die "l'usuari $operator no és al grup d'operadors." ;;
+esac
+
+# One LoadCredentialEncrypted= per KEK version sealed on this host
+# (several exist while a rotation is in progress, see rotacio-kek.md).
+props=()
+found=0
+for f in "$credstore"/wpup-kek-v[0-9]*; do
+    [[ -f "$f" ]] || continue
+    props+=("-p" "LoadCredentialEncrypted=$(basename "$f"):$f")
+    found=1
+done
+[[ $found -eq 1 ]] || die "no hi ha cap KEK segellada a $credstore."
+
+# Interactive prompts (secret() without echo) need a terminal.
+if [[ -t 0 && -t 1 ]]; then io=(--pty); else io=(--pipe); fi
+
+logger -t wpup-cli -p auth.info "operator=$operator command=${1:-list}"
+
+exec systemd-run "${io[@]}" --wait --collect --quiet \
+    --description="wpup CLI for $operator" \
+    -p "User=$service_user" -p "Group=$service_user" \
+    -p "WorkingDirectory=$app_dir" \
+    -p "StateDirectory=wpup" -p "StateDirectoryMode=0700" \
+    -p "UMask=0077" \
+    "${props[@]}" \
+    -p "NoNewPrivileges=yes" -p "PrivateTmp=yes" -p "PrivateDevices=yes" \
+    -p "ProtectSystem=strict" \
+    -p "ReadWritePaths=$app_dir/storage $app_dir/bootstrap/cache /var/lib/wpup" \
+    -p "ProtectHome=yes" -p "ProtectKernelTunables=yes" -p "ProtectKernelModules=yes" \
+    -p "ProtectKernelLogs=yes" -p "ProtectControlGroups=yes" -p "ProtectClock=yes" \
+    -p "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6" \
+    -p "RestrictRealtime=yes" -p "RestrictSUIDSGID=yes" -p "LockPersonality=yes" \
+    -p "SystemCallArchitectures=native" -p "CapabilityBoundingSet=" \
+    --setenv="SUDO_USER=$operator" \
+    --setenv="HOME=/var/lib/wpup" \
+    -- "$app_dir/wpup" "$@"
