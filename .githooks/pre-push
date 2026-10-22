@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Pre-push hook (UZEROWPUP-2): runs the local CI gate before every push.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+if ! make ci; then
+    echo >&2
+    echo "Push cancel·lat: 'make ci' ha fallat. Corregeix els errors i torna-ho a provar." >&2
+    echo "No facis servir --no-verify: AGENTS.md ho prohibeix." >&2
+    exit 1
+fi
