@@ -1,0 +1,130 @@
+# Test WordPress/WooCommerce fleet (UZEROWPUP-4). SEPARATE compose project from the dev stack.
+# Everything here is throwaway and test-only: the credentials below are never used anywhere else.
+# ADR-0003: every published port is bound to 127.0.0.1, never 0.0.0.0.
+name: uzero-wpup-fixtures
+
+x-site: &site
+  depends_on:
+    db:
+      condition: service_healthy
+  networks: [fixtures]
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "curl -s -o /dev/null http://127.0.0.1:$${HTTP_PORT}/ && pgrep sshd >/dev/null"]
+    interval: 5s
+    timeout: 5s
+    retries: 30
+    start_period: 5s
+
+x-site-env: &site-env
+  DB_HOST: db
+  # Test-only fixture credentials (see db service).
+  FIXTURE_ADMIN_USER: admin
+  FIXTURE_ADMIN_PASSWORD: fixture-admin-test-only
+  FIXTURE_ADMIN_EMAIL: admin@fixtures.test
+
+services:
+  db:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: fixture-root-test-only
+      FIXTURE_SITES: "wp74 wp81 wp83"
+      DB_PASSWORD_WP74: fixture-db-wp74-test-only
+      DB_PASSWORD_WP81: fixture-db-wp81-test-only
+      DB_PASSWORD_WP83: fixture-db-wp83-test-only
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./db/init.sh:/docker-entrypoint-initdb.d/10-fixtures.sh:ro
+    networks: [fixtures]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  wp74:
+    <<: *site
+    build: { context: ./site, args: { PHP_VERSION: "7.4" } }
+    image: uzero-wpup-fixture-site:php7.4
+    ports: ["127.0.0.1:8081:8081", "127.0.0.1:2221:22"]
+    environment:
+      <<: *site-env
+      SITE_NAME: wp74
+      SITE_USER: sub_wp74
+      SITE_UID: "10074"
+      SITE_DOMAIN: wp74.fixtures.test
+      HTTP_PORT: "8081"
+      SITE_URL: http://127.0.0.1:8081
+      DB_NAME: wp74
+      DB_USER: wp74
+      DB_PASSWORD: fixture-db-wp74-test-only
+      # Last WordPress/WooCommerce line that runs on PHP 7.4.
+      WP_VERSION: "6.6.2"
+      WC_VERSION: "9.3.3"
+    volumes:
+      - wp74_vhost:/var/www/vhosts/wp74.fixtures.test
+      - wp74_hostkeys:/var/lib/hostkeys
+      - ./.keys/id_ed25519.pub:/run/fixtures/authorized_key:ro
+      - ./plugins:/opt/fixtures/plugins:ro
+
+  wp81:
+    <<: *site
+    build: { context: ./site, args: { PHP_VERSION: "8.1" } }
+    image: uzero-wpup-fixture-site:php8.1
+    ports: ["127.0.0.1:8082:8082", "127.0.0.1:2222:22"]
+    environment:
+      <<: *site-env
+      SITE_NAME: wp81
+      SITE_USER: sub_wp81
+      SITE_UID: "10081"
+      SITE_DOMAIN: wp81.fixtures.test
+      HTTP_PORT: "8082"
+      SITE_URL: http://127.0.0.1:8082
+      DB_NAME: wp81
+      DB_USER: wp81
+      DB_PASSWORD: fixture-db-wp81-test-only
+      WP_VERSION: "6.7.2"
+      WC_VERSION: "9.6.2"
+    volumes:
+      - wp81_vhost:/var/www/vhosts/wp81.fixtures.test
+      - wp81_hostkeys:/var/lib/hostkeys
+      - ./.keys/id_ed25519.pub:/run/fixtures/authorized_key:ro
+      - ./plugins:/opt/fixtures/plugins:ro
+
+  wp83:
+    <<: *site
+    build: { context: ./site, args: { PHP_VERSION: "8.3" } }
+    image: uzero-wpup-fixture-site:php8.3
+    ports: ["127.0.0.1:8083:8083", "127.0.0.1:2223:22"]
+    environment:
+      <<: *site-env
+      SITE_NAME: wp83
+      SITE_USER: sub_wp83
+      SITE_UID: "10083"
+      SITE_DOMAIN: wp83.fixtures.test
+      HTTP_PORT: "8083"
+      SITE_URL: http://127.0.0.1:8083
+      DB_NAME: wp83
+      DB_USER: wp83
+      DB_PASSWORD: fixture-db-wp83-test-only
+      WP_VERSION: "6.8.1"
+      WC_VERSION: "9.8.5"
+    volumes:
+      - wp83_vhost:/var/www/vhosts/wp83.fixtures.test
+      - wp83_hostkeys:/var/lib/hostkeys
+      - ./.keys/id_ed25519.pub:/run/fixtures/authorized_key:ro
+      - ./plugins:/opt/fixtures/plugins:ro
+
+networks:
+  fixtures:
+
+volumes:
+  db_data:
+  wp74_vhost:
+  wp81_vhost:
+  wp83_vhost:
+  wp74_hostkeys:
+  wp81_hostkeys:
+  wp83_hostkeys:
