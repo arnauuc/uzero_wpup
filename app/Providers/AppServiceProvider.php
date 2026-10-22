@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Drivers\Ssh\SshSettings;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
@@ -74,6 +75,14 @@ class AppServiceProvider extends ServiceProvider
             maxStepAttempts: self::configInt('wpup.runs.max_step_attempts'),
             summaryMaxChars: self::configInt('wpup.runs.summary_max_chars'),
             outputMaxBytes: self::configInt('wpup.runs.output_max_bytes'),
+        ));
+        $this->app->bind(SshSettings::class, static fn (): SshSettings => new SshSettings(
+            connectTimeoutSeconds: self::configInt('wpup.ssh.connect_timeout_seconds'),
+            commandTimeoutSeconds: self::configInt('wpup.ssh.command_timeout_seconds'),
+            transferTimeoutSeconds: self::configInt('wpup.ssh.transfer_timeout_seconds'),
+            workDir: self::configString('wpup.ssh.work_dir'),
+            wpCliPhar: self::configString('wpup.ssh.wp_cli.phar'),
+            wpCliSha256: self::configString('wpup.ssh.wp_cli.sha256'),
         ));
         $this->app->singleton(CliCommandGate::class, static function (): CliCommandGate {
             $allowed = config('wpup.cli.allowed_commands');

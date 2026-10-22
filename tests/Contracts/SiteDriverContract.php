@@ -136,12 +136,12 @@ final class SiteDriverContract
                 try {
                     $driver->setMaintenanceMode(true);
                     $driver->setMaintenanceMode(true);
-                    expect($driver->wp(['maintenance-mode', 'status'])->successful())->toBeTrue();
+                    expect($driver->wp(['maintenance-mode', 'is-active'])->successful())->toBeTrue();
                 } finally {
                     $driver->setMaintenanceMode(false);
                 }
 
-                expect($driver->wp(['maintenance-mode', 'status'])->successful())->toBeFalse();
+                expect($driver->wp(['maintenance-mode', 'is-active'])->successful())->toBeFalse();
             });
 
             it('returns only new PHP log lines after a cursor', function () use ($factory): void {

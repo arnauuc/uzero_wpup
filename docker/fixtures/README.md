@@ -46,6 +46,9 @@ ssh -i docker/fixtures/.keys/id_ed25519 -p 2222 -o UserKnownHostsFile=docker/fix
 - Els snapshots (volcat de BD + tarball del docroot, per lloc) són a `docker/fixtures/.snapshots/` (ignorat per git). `fixtures-reset` buida el docroot, el restaura i reimporta la BD.
 - Les claus de host SSH es conserven en un volum; si elimines els volums (`docker compose -f docker/fixtures/compose.yaml down -v`), esborra també `.keys/known_hosts` i `.snapshots/`.
 - WP-Cron està desactivat i no hi ha correu de sortida (`sendmail_path=/bin/true`).
+- Els errors de PHP (web i CLI) van a `/var/www/vhosts/<lloc>.fixtures.test/logs/php_error.log`, com a Plesk. Hi ha `rsync`.
+- Cada lloc té també l'usuari `sub_<lloc>_nosh`, amb la mateixa clau i el shell `/bin/false`, per als tests negatius del driver.
+- `make fixtures-up` connecta el contenidor `app` a la xarxa dels llocs: els tests d'integració (`tests/Integration`) hi arriben per nom (`wp74:22`…). Si els llocs no estan aixecats, aquests tests se salten amb un avís.
 
 ## Fitxers
 
@@ -60,4 +63,4 @@ ssh -i docker/fixtures/.keys/id_ed25519 -p 2222 -o UserKnownHostsFile=docker/fix
 
 ## Pendent (tasques de seguiment)
 
-Lloc només SFTP (sense SSH), lloc amb límits d'allotjament compartit, variant MySQL 8.0, i el nom de domini real per lloc (ara s'usa `http://127.0.0.1:<port>`).
+Vegeu UZEROWPUP-135: lloc només SFTP, límits d'allotjament compartit, MySQL 8.0, dominis reals i imatges fixades per digest.
