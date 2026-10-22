@@ -30,7 +30,7 @@ Requisits que pesen en la decisió:
 ### Auditoria blindada
 
 - `REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM wpup_app`.
-- Un trigger `BEFORE UPDATE OR DELETE OR TRUNCATE` a `audit_log` que llança un error per a qualsevol rol, fins i tot `wpup_owner`. Només un superusuari pot desactivar-lo, i aquesta acció queda registrada als logs de PostgreSQL.
+- Un trigger `BEFORE UPDATE OR DELETE OR TRUNCATE` a `audit_log` que llança un error per a qualsevol rol, fins i tot `wpup_owner`. Per desactivar-lo cal fer DDL explícit (`ALTER TABLE ... DISABLE TRIGGER`), que pot fer un superusuari o el propietari de la taula (`wpup_owner`). Per això `wpup_owner` només es fa servir per a les migracions en desplegar, mai des de l'aplicació, i a producció PostgreSQL registra tot el DDL (`log_statement = 'ddl'`). *(Correcció del 2026-10-22: la versió inicial deia que només ho podia fer un superusuari.)*
 - Els tests d'integració comproven les dues proteccions.
 
 ### Ús de les característiques de PostgreSQL
