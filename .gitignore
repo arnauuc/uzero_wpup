@@ -59,3 +59,7 @@ Thumbs.db
 
 # Worktrees dels agents de Claude Code
 /.claude/worktrees/
+
+# Fixtures: throwaway SSH keys and snapshots
+/docker/fixtures/.keys/
+/docker/fixtures/.snapshots/

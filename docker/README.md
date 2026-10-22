@@ -8,4 +8,5 @@ El `compose.yaml` és a l'arrel del repositori; vegeu «Desenvolupament» al [RE
 | `app/` | `Dockerfile` de l'orquestrador (serveis `app` i `horizon`) | UZEROWPUP-3 |
 | `postgres/init/` | SQL d'inicialització: rols `wpup_owner` i `wpup_app`, BD `wpup` i `wpup_test` | UZEROWPUP-3 |
 | `verifier/` | `Dockerfile` del verificador (imatge de Playwright) | UZEROWPUP-3 |
-| llocs de prova i imatges de staging | WordPress/WooCommerce de prova i staging | UZEROWPUP-4 |
+| `fixtures/` | Llocs WordPress/WooCommerce de prova (PHP 7.4, 8.1, 8.3), projecte Compose separat; vegeu [fixtures/README.md](fixtures/README.md) | UZEROWPUP-4 |
+| imatges de staging | Staging | pendent |

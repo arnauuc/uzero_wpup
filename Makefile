@@ -7,7 +7,7 @@ export WPUP_UID ?= $(shell id -u)
 export WPUP_GID ?= $(shell id -g)
 
 .DEFAULT_GOAL := help
-.PHONY: help init build up down ps logs shell artisan composer migrate test psql redis-cli lint stan verifier agent-matrix ci hooks
+.PHONY: help init build up down ps logs shell artisan composer migrate test psql redis-cli lint stan verifier agent-matrix ci hooks fixtures-keys fixtures-up fixtures-down fixtures-reset fixtures-snapshot fixtures-ssh
 
 help: ## List the available targets
 	@grep -E '^[a-z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-13s %s\n", $$1, $$2}'
@@ -81,3 +81,34 @@ ci: ## Full local quality gate: lint, stan, test, verifier, agent-matrix
 
 hooks: ## Install the pre-push git hook (.githooks/)
 	git config core.hooksPath .githooks
+
+# Test WordPress/WooCommerce sites (UZEROWPUP-4): separate compose project, throwaway test-only data.
+FIXTURES_DIR   := docker/fixtures
+FIXTURES       := docker compose -f $(FIXTURES_DIR)/compose.yaml
+FIXTURE_SITES  := wp74 wp81 wp83
+FIXTURE_PORTS  := wp74=2221 wp81=2222 wp83=2223
+
+fixtures-keys: ## Generate the fixture SSH keypair in docker/fixtures/.keys/ (if missing)
+	@mkdir -p $(FIXTURES_DIR)/.keys && chmod 700 $(FIXTURES_DIR)/.keys
+	@test -f $(FIXTURES_DIR)/.keys/id_ed25519 || ssh-keygen -q -t ed25519 -N '' -C 'wpup-fixtures-test-only' -f $(FIXTURES_DIR)/.keys/id_ed25519
+	@touch $(FIXTURES_DIR)/.keys/known_hosts
+
+fixtures-up: fixtures-keys ## Build and start the test sites, seed those not seeded yet, snapshot if none
+	$(FIXTURES) build
+	$(FIXTURES) up -d --wait
+	@for s in $(FIXTURE_SITES); do $(FIXTURES_DIR)/seed.sh $$s || exit 1; done
+	@for s in $(FIXTURE_SITES); do $(FIXTURES_DIR)/snapshot.sh has $$s || { $(FIXTURES_DIR)/snapshot.sh snapshot $$s; }; done
+
+fixtures-down: ## Stop the test sites (keeps volumes and snapshots)
+	$(FIXTURES) down
+
+fixtures-snapshot: ## Store the current state of the test sites as the known state
+	$(FIXTURES_DIR)/snapshot.sh snapshot
+
+fixtures-reset: ## Restore every test site to the stored snapshot
+	$(FIXTURES_DIR)/snapshot.sh restore
+
+fixtures-ssh: ## SSH into a test site as its subscription user (SITE=wp81)
+	@test -n "$(SITE)" || { echo "usage: make fixtures-ssh SITE=wp81" >&2; exit 2; }
+	@ssh -i $(FIXTURES_DIR)/.keys/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=$(FIXTURES_DIR)/.keys/known_hosts -o StrictHostKeyChecking=accept-new \
+		-p $(patsubst $(SITE)=%,%,$(filter $(SITE)=%,$(FIXTURE_PORTS))) sub_$(SITE)@127.0.0.1
