@@ -222,6 +222,7 @@ Una fallada en aquesta eina pot tombar una botiga en producció o fer perdre com
   | Tasca | Decisió | Bloqueja |
   | --- | --- | --- |
   | UZEROWPUP-110 | Criteri per identificar les factures de manteniment a Quipu (etiqueta o concepte) | Classificador i sincronització de F9 |
+  | UZEROWPUP-137 | ADR-0011: la CLI no té mai la clau mestra (KEK asimètrica, operacions amb credencials als workers) | UZEROWPUP-138, UZEROWPUP-28 |
 
 ## Quan has de parar i preguntar
 
