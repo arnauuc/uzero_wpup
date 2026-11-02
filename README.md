@@ -16,7 +16,7 @@ L'entorn de desenvolupament corre amb Docker Compose (projecte `uzero-wpup`).
 Requisits: Docker amb Compose v2 i `make`. No cal PHP, Composer ni Node al host.
 
 ```bash
-make up        # construeix les imatges, prepara .env/vendor/APP_KEY, arrenca i espera que tot estigui healthy
+make up        # construeix les imatges, prepara .env/vendor/APP_KEY, baixa el WP-CLI fixat (make tools), arrenca i espera que tot estigui healthy
 make migrate   # migracions a la BD `wpup` com a `wpup_owner`
 make test      # Pest dins del contenidor, contra la BD `wpup_test`
 make ci        # porta de qualitat local completa (vegeu avall)
@@ -47,5 +47,5 @@ La CI de GitHub no es fa servir: `make ci` és l'única porta de qualitat i ha d
 - **Una sola suite alhora.** Tots els checkouts i worktrees comparteixen el mateix entorn Docker (projecte `uzero-wpup`): la mateixa BD de tests, el mateix Redis i el mateix muntatge de `/app`, que es torna a apuntar al directori des d'on s'ha fet `make up`. No llancis `make ci` ni `make test` des de dos llocs alhora: els tests s'interfereixen (`flushdb`, claims, places de concurrència) i fallen de manera aleatòria.
 - Si un pas de `make ci` falla, la sortida completa queda a `storage/logs/ci/<data>-<pas>.log` (la ruta surt al resum). El resum també mostra els tests saltats: els d'integració se salten si els llocs de prova no estan aixecats (`make fixtures-up`).
 - `make ci` aixeca l'entorn si cal, instal·la les dependències del verificador si falten i executa `lint`, `stan`, `test`, `verifier` i `agent-matrix`. Els executa tots encara que un falli i acaba amb un resum (apte per enganxar al PR) i codi de sortida diferent de zero si algun ha fallat.
-- `make hooks` activa el hook `.githooks/pre-push`, que executa `make ci` i cancel·la el push si falla. `--no-verify` està prohibit.
+- `make hooks` activa el hook `.githooks/pre-push`, que executa `make ci` i cancel·la el push si falla. També configura un *keepalive* SSH per al repositori (`core.sshCommand`): Git obre la connexió amb GitHub abans d'executar el hook i, sense *keepalive*, es tanca durant els minuts que dura `make ci` i el push falla (codi 141). `--no-verify` està prohibit.
 - Comandes parcials: `make lint` (Pint `--test` + ESLint), `make stan` (Larastan nivell `max` + `tsc --noEmit`), `make test` (Pest), `make verifier` (Vitest) i `make agent-matrix` (de moment s'omet perquè `agent/` encara no té codi; després recorrerà PHP 7.4–8.5, variable `AGENT_PHP_VERSIONS`).
