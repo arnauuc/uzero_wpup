@@ -25,7 +25,7 @@ function sshFixture(string $name = 'wp83', ?string $user = null, ?string $hostKe
     return app(SshDriverFactory::class)->forSite(Fixtures::site($name, $user, $hostKey, $pin), AuditActor::system('tests'));
 }
 
-foreach (['wp74', 'wp83'] as $fixture) {
+foreach (['wp74', 'wp83', 'wp82'] as $fixture) {
     if (Fixtures::up($fixture)) {
         SiteDriverContract::register(fn (): SiteDriver => sshFixture($fixture), "SshDriver ({$fixture})");
     } else {

@@ -88,8 +88,8 @@ hooks: ## Install the pre-push git hook (.githooks/)
 # Test WordPress/WooCommerce sites (UZEROWPUP-4): separate compose project, throwaway test-only data.
 FIXTURES_DIR   := docker/fixtures
 FIXTURES       := docker compose -f $(FIXTURES_DIR)/compose.yaml
-FIXTURE_SITES  := wp74 wp81 wp83
-FIXTURE_PORTS  := wp74=2221 wp81=2222 wp83=2223
+FIXTURE_SITES  := wp74 wp81 wp83 wp80 wp82
+FIXTURE_PORTS  := wp74=2221 wp81=2222 wp83=2223 wp80=2225 wp82=2224
 
 fixtures-keys: ## Generate the fixture SSH keypair in docker/fixtures/.keys/ (if missing)
 	@mkdir -p $(FIXTURES_DIR)/.keys && chmod 700 $(FIXTURES_DIR)/.keys
@@ -99,17 +99,19 @@ fixtures-keys: ## Generate the fixture SSH keypair in docker/fixtures/.keys/ (if
 fixtures-up: fixtures-keys network ## Build and start the test sites, seed those not seeded yet, snapshot if none
 	$(FIXTURES) build
 	$(FIXTURES) up -d --wait
+	@# initdb only runs on an empty volume: re-run the (idempotent) init so sites added later get their DB and user.
+	@for db in db db80; do $(FIXTURES) exec -T $$db /docker-entrypoint-initdb.d/10-fixtures.sh >/dev/null || exit 1; done
 	@for s in $(FIXTURE_SITES); do $(FIXTURES_DIR)/seed.sh $$s || exit 1; done
-	@for s in $(FIXTURE_SITES); do $(FIXTURES_DIR)/snapshot.sh has $$s || { $(FIXTURES_DIR)/snapshot.sh snapshot $$s; }; done
+	@for s in $(FIXTURE_SITES); do $(FIXTURES_DIR)/snapshot.sh has $$s || { FIXTURE_SITES="$(FIXTURE_SITES)" $(FIXTURES_DIR)/snapshot.sh snapshot $$s; }; done
 
 fixtures-down: ## Stop the test sites (keeps volumes and snapshots)
 	$(FIXTURES) down
 
 fixtures-snapshot: ## Store the current state of the test sites as the known state
-	$(FIXTURES_DIR)/snapshot.sh snapshot
+	FIXTURE_SITES="$(FIXTURE_SITES)" $(FIXTURES_DIR)/snapshot.sh snapshot
 
 fixtures-reset: ## Restore every test site to the stored snapshot
-	$(FIXTURES_DIR)/snapshot.sh restore
+	FIXTURE_SITES="$(FIXTURE_SITES)" $(FIXTURES_DIR)/snapshot.sh restore
 
 fixtures-ssh: ## SSH into a test site as its subscription user (SITE=wp81)
 	@test -n "$(SITE)" || { echo "usage: make fixtures-ssh SITE=wp81" >&2; exit 2; }

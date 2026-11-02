@@ -1,9 +1,10 @@
 # Test WordPress site mimicking a Plesk subscription (UZEROWPUP-4).
-# One image, parametrised by PHP version: docker build --build-arg PHP_VERSION=7.4 ...
-ARG PHP_VERSION=8.3
-FROM php:${PHP_VERSION}-apache
+# One image, parametrised by the base image, pinned by digest (see compose.yaml and README to refresh):
+#   docker build --build-arg PHP_IMAGE=php:8.3-apache@sha256:... ...
+ARG PHP_IMAGE=php:8.3-apache@sha256:a2d500abd37ddb8b999e52c11f7bb340772ad5665b254bbb0b2762d6f131acb9
+FROM ${PHP_IMAGE}
 
-# PHP 7.4 images are based on Debian bullseye, whose mirrors moved to archive.debian.org after end of life.
+# PHP 7.4 and 8.0 images are based on Debian bullseye, whose mirrors moved to archive.debian.org after end of life.
 RUN . /etc/os-release && if [ "$VERSION_CODENAME" = "bullseye" ]; then \
         rm -f /etc/apt/sources.list.d/*; \
         echo 'deb http://archive.debian.org/debian bullseye main' > /etc/apt/sources.list; \

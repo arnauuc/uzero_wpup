@@ -69,13 +69,32 @@ if /usr/sbin/sshd -T -o PerSourcePenalties=no >/dev/null 2>&1; then
     echo 'PerSourcePenalties no' >> /etc/ssh/sshd_config
 fi
 
+# SFTP-only account (shared hosting without shell, for the future AgentDriver). A Match block runs to the
+# end of the file, so it must stay the last thing written to sshd_config. No chroot: the docroot is user-owned.
+if [ "${SITE_SFTP_ONLY:-}" = "1" ]; then
+    cat >> /etc/ssh/sshd_config <<SSHD
+
+Match User ${SITE_USER}
+    ForceCommand internal-sftp
+    AllowTcpForwarding no
+    X11Forwarding no
+    PermitTTY no
+    AllowAgentForwarding no
+SSHD
+fi
+
+# Shared-hosting web limits: only the web server gets them (mod_php); the CLI used for seeding keeps its own.
+LIMITS=""
+[ -z "${PHP_WEB_MEMORY_LIMIT:-}" ] || LIMITS+="    php_admin_value memory_limit ${PHP_WEB_MEMORY_LIMIT}"$'\n'
+[ -z "${PHP_WEB_MAX_EXECUTION_TIME:-}" ] || LIMITS+="    php_admin_value max_execution_time ${PHP_WEB_MAX_EXECUTION_TIME}"$'\n'
+
 # Apache listens on the same port that is published, so loopback requests from WordPress/WP-CLI work.
 printf 'Listen %s\n' "$HTTP_PORT" > /etc/apache2/ports.conf
 cat > /etc/apache2/sites-available/site.conf <<VHOST
 <VirtualHost *:${HTTP_PORT}>
     ServerName ${SITE_DOMAIN}
     DocumentRoot ${DOCROOT}
-    <Directory ${DOCROOT}>
+${LIMITS}    <Directory ${DOCROOT}>
         AllowOverride All
         Require all granted
     </Directory>

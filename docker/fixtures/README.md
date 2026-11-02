@@ -6,15 +6,24 @@ Flota de llocs de prova per als tests d'integració (SshDriver, inventari, còpi
 
 ## Llocs
 
-| Lloc | PHP | WordPress | WooCommerce | HTTP | SSH | Usuari SSH |
-| --- | --- | --- | --- | --- | --- | --- |
-| `wp74` | 7.4 | 6.6.2 | 9.3.3 | `http://127.0.0.1:8081` | `127.0.0.1:2221` | `sub_wp74` |
-| `wp81` | 8.1 | 6.7.2 | 9.6.2 | `http://127.0.0.1:8082` | `127.0.0.1:2222` | `sub_wp81` |
-| `wp83` | 8.3 | 6.8.1 | 9.8.5 | `http://127.0.0.1:8083` | `127.0.0.1:2223` | `sub_wp83` |
+| Lloc | PHP | BD | WordPress | WooCommerce | HTTP | SSH | Usuari SSH |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `wp74` | 7.4 | MariaDB 10.11 | 6.6.2 | 9.3.3 | `http://127.0.0.1:8081` | `127.0.0.1:2221` | `sub_wp74` |
+| `wp81` | 8.1 | MariaDB 10.11 | 6.7.2 | 9.6.2 | `http://127.0.0.1:8082` | `127.0.0.1:2222` | `sub_wp81` |
+| `wp83` | 8.3 | MariaDB 10.11 | 6.8.1 | 9.8.5 | `http://127.0.0.1:8083` | `127.0.0.1:2223` | `sub_wp83` |
+| `wp80` | 8.0 | MariaDB 10.11 | 6.7.2 | 9.6.2 | `http://127.0.0.1:8085` | `127.0.0.1:2225` (només SFTP) | `sub_wp80` |
+| `wp82` | 8.2 | MySQL 8.0 | 6.8.1 | 9.8.5 | `http://127.0.0.1:8084` | `127.0.0.1:2224` | `sub_wp82` |
 
-Tots els ports es publiquen **només a `127.0.0.1`** (ADR-0003). La BD (MariaDB 10.11) només és a la xarxa interna `fixtures`.
+Tots els ports es publiquen **només a `127.0.0.1`** (ADR-0003). Les BD (serveis `db`, MariaDB 10.11, i `db80`, MySQL 8.0) només són a la xarxa interna `fixtures`. Amb `wp80` i `wp82` la flota té dos contenidors de lloc i una BD més, així que cal vigilar la RAM (`db80` va amb `innodb-buffer-pool-size=64M` i `performance-schema=OFF`).
 
 Cada lloc imita una subscripció de Plesk: usuari de sistema no root (`sub_<lloc>`, shell `/bin/bash`), docroot `/var/www/vhosts/<lloc>.fixtures.test/httpdocs`, Apache servint com aquest usuari, i SSH només amb clau (`PasswordAuthentication no`, `PermitRootLogin no`).
+
+### Allotjament compartit (`wp80`) i MySQL 8.0 (`wp82`)
+
+- **`wp80` només té SFTP**, com un allotjament compartit sense shell (per al futur `AgentDriver`): `sshd` té un bloc `Match User sub_wp80` amb `ForceCommand internal-sftp` (sense reenviaments ni TTY, sense chroot). Qualsevol comanda per SSH és refusada, de manera que `make fixtures-ssh SITE=wp80` no funciona; fes servir `sftp -i docker/fixtures/.keys/id_ed25519 -P 2225 -o UserKnownHostsFile=docker/fixtures/.keys/known_hosts sub_wp80@127.0.0.1`. La sembra i els snapshots entren amb `docker compose exec`, no per `sshd`, i continuen funcionant.
+- **Límits de l'allotjament compartit a `wp80`:** `memory_limit=128M` i `max_execution_time=20`, aplicats només al web amb `php_admin_value` al vhost (variables `PHP_WEB_MEMORY_LIMIT` i `PHP_WEB_MAX_EXECUTION_TIME`). El PHP CLI no els té, perquè la sembra amb WP-CLI els necessita i els allotjaments compartits no tenen CLI.
+- **`wp82` usa MySQL 8.0** (servei `db80`). Els usuaris de BD es creen amb `mysql_native_password`: el client MariaDB de les imatges dels llocs va amb `skip-ssl` i no pot fer l'autenticació completa de `caching_sha2_password` (per defecte a MySQL 8) sense TLS ni intercanvi de clau RSA.
+- Els errors de PHP de tots els llocs (també `wp80` i `wp82`) van a `logs/php_error.log` de la subscripció.
 
 Contingut de cada lloc (`seed.sh`):
 
@@ -54,13 +63,28 @@ ssh -i docker/fixtures/.keys/id_ed25519 -p 2222 -o UserKnownHostsFile=docker/fix
 
 | Fitxer | Funció |
 | --- | --- |
-| `compose.yaml` | Serveis `db`, `wp74`, `wp81`, `wp83` i versions fixades |
-| `site/` | `Dockerfile` (arg `PHP_VERSION`) i `entrypoint.sh` (usuari, sshd, Apache) |
+| `compose.yaml` | Serveis `db`, `db80`, `wp74`, `wp81`, `wp83`, `wp80`, `wp82` i versions fixades |
+| `site/` | `Dockerfile` (arg `PHP_IMAGE`) i `entrypoint.sh` (usuari, sshd, Apache) |
 | `db/init.sh` | Crea una BD i un usuari per lloc |
 | `seed.sh <lloc>` | Sembra un lloc amb WP-CLI com a usuari de la subscripció (idempotent) |
 | `snapshot.sh` | `snapshot` / `restore` / `has` |
 | `plugins/wpup-php-guard/` | Plugin local que exigeix PHP 8.2 |
 
+## Imatges fixades per digest
+
+Les imatges base (`php:X.Y-apache`, `mariadb:10.11`, `mysql:8.0`) es fixen amb `tag@sha256:…` a `compose.yaml`, de manera que una reconstrucció no canvia res sense que ho decideixis. Per actualitzar un digest (índex multiarquitectura):
+
+```bash
+docker buildx imagetools inspect php:8.2-apache | head -3    # línia «Digest:»
+# o, sense Docker:
+TOKEN=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/php:pull" | jq -r .token)
+curl -fsSI -H "Authorization: Bearer $TOKEN" \
+  -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+  https://registry-1.docker.io/v2/library/php/manifests/8.2-apache | grep -i docker-content-digest
+```
+
+Substitueix el digest a `compose.yaml` (`PHP_IMAGE`, `db` i `db80`) i reconstrueix amb `make fixtures-up`.
+
 ## Pendent (tasques de seguiment)
 
-Vegeu UZEROWPUP-135: lloc només SFTP, límits d'allotjament compartit, MySQL 8.0, dominis reals i imatges fixades per digest.
+Vegeu UZEROWPUP-135: queden els dominis reals de prova (resolució DNS i certificats).
