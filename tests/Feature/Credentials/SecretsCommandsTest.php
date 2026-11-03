@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Secrets\EnvelopeSecretStore;
-use App\Domain\Secrets\Kek\KekProvider;
 use App\Domain\Secrets\Secret;
 use App\Domain\Secrets\SecretStore;
 use App\Enums\SiteDriverType;
@@ -26,9 +25,7 @@ beforeEach(function (): void {
 
 function useKeks(int $current): void
 {
-    app()->forgetInstance(EnvelopeSecretStore::class);
-    app()->forgetInstance(SecretStore::class);
-    app()->instance(KekProvider::class, new StaticKekProvider([1 => KEK_V1, 2 => KEK_V2], $current));
+    (new StaticKekProvider([1 => KEK_V1, 2 => KEK_V2], $current))->bind();
 }
 
 it('re-wraps every data key with the current KEK, idempotently', function (): void {
@@ -50,9 +47,7 @@ it('re-wraps every data key with the current KEK, idempotently', function (): vo
         ->and(StoredSecret::query()->whereIn('id', $ids)->orderBy('id')->pluck('ciphertext', 'id')->all())->toBe($ciphertexts);
 
     // Only the new KEK is needed from now on.
-    app()->instance(KekProvider::class, new StaticKekProvider([2 => KEK_V2], 2));
-    app()->forgetInstance(EnvelopeSecretStore::class);
-    app()->forgetInstance(SecretStore::class);
+    (new StaticKekProvider([2 => KEK_V2], 2))->bind();
     expect(app(SecretStore::class)->reveal($ids['c'], AuditActor::system('tests'), 'test')->reveal())->toBe('valor-c-secret')
         ->and(AuditLogEntry::query()->where('action', 'secrets.rekey')->latest('id')->value('context'))->toEqualCanonicalizing(['rewrapped' => 2, 'pending' => 0]);
 });

@@ -8,27 +8,23 @@ use App\Domain\Secrets\Secret;
 use App\Domain\Secrets\SecretStoreException;
 
 /**
- * Production provider: reads the KEK that systemd decrypts from the TPM-sealed
- * credential and exposes in $CREDENTIALS_DIRECTORY (LoadCredentialEncrypted=).
- * The file holds the key base64-encoded, as kept in the custodian's KeePassXC.
+ * Production private keys (ADR-0011): the X25519 secret key that systemd decrypts
+ * from the TPM-sealed credential and exposes in $CREDENTIALS_DIRECTORY
+ * (LoadCredentialEncrypted=). Only the worker and scheduler units load it; the
+ * CLI and the web never have it, so anything that reveals a secret runs on the
+ * workers. The file holds the key base64-encoded, as kept in the custodian's KeePassXC.
  */
 final readonly class SystemdCredentialKekProvider implements KekProvider
 {
     public function __construct(
         private ?string $credentialsDirectory,
         private string $credentialPrefix,
-        private int $currentVersion,
     ) {}
 
-    public function currentVersion(): int
-    {
-        return $this->currentVersion;
-    }
-
-    public function key(int $version): Secret
+    public function privateKey(int $version): Secret
     {
         if ($this->credentialsDirectory === null || $this->credentialsDirectory === '') {
-            throw SecretStoreException::kekUnavailable('$CREDENTIALS_DIRECTORY is not set (is the process running under the wpup systemd unit?).');
+            throw SecretStoreException::kekUnavailable('this process has no private key ($CREDENTIALS_DIRECTORY is not set). Only the wpup worker services can read secrets (ADR-0011).');
         }
 
         $path = rtrim($this->credentialsDirectory, '/').'/'.$this->credentialPrefix.$version;
@@ -43,6 +39,10 @@ final readonly class SystemdCredentialKekProvider implements KekProvider
             throw SecretStoreException::kekUnavailable(sprintf('credential "%s%d" could not be read.', $this->credentialPrefix, $version));
         }
 
-        return KekDecoder::decode(trim($encoded));
+        try {
+            return KekDecoder::decode($encoded);
+        } finally {
+            sodium_memzero($encoded);
+        }
     }
 }

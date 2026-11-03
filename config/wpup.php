@@ -20,8 +20,24 @@ return [
      */
     'secrets' => [
         'kek_provider' => env('WPUP_KEK_PROVIDER', 'systemd'),
+        // Version used to seal new secrets (ADR-0011).
         'kek_version' => (int) env('WPUP_KEK_VERSION', 1),
+        // systemd credential holding the X25519 private key of each version; only
+        // the worker and scheduler units load it (LoadCredentialEncrypted=).
         'credential_prefix' => 'wpup-kek-v',
+        // Public keys (not secret), one per version: WPUP_SECRETS_PUBLIC_KEY_V<n>.
+        'public_keys' => (static function (): array {
+            $keys = [];
+            foreach (array_merge(getenv(), $_ENV) as $name => $value) {
+                if (is_string($name) && is_string($value) && preg_match('/^WPUP_SECRETS_PUBLIC_KEY_V([1-9][0-9]*)$/', $name, $m) === 1) {
+                    $keys[(int) $m[1]] = $value;
+                }
+            }
+            ksort($keys);
+
+            return $keys;
+        })(),
+        // Development and tests only: the X25519 private key (base64) of version 1.
         'dev_kek' => env('WPUP_DEV_KEK'),
     ],
 
