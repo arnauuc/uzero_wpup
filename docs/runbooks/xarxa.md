@@ -73,6 +73,8 @@ Docker a Debian 13 fa servir `iptables-nft`: les seves regles són a taules nfta
 2. `"ip": "127.0.0.1"` a `/etc/docker/daemon.json`: si algú oblida l'adreça, Docker lliga a localhost.
 3. `wpup-docker-user.service` omple la cadena `DOCKER-USER` (que Docker no buida mai) cada cop que arrenca Docker: accepta el tràfic establert i el que ve dels ponts de Docker, i **descarta la resta**, és a dir, qualsevol connexió nova que arribi per una interfície real o per `tailscale0` cap a un contenidor.
 
+**IPv6:** el Docker de Debian 13 (26.1) només crea regles IPv6 (`"ip6tables": true`) si s'activen les funcions experimentals, i sense això el daemon no arrenca. Per això `daemon.json` no ho activa i **cap xarxa de Docker pot tenir IPv6** (`enable_ipv6`): sense regles IPv6, la cadena `DOCKER-USER` no protegiria aquest tràfic. `deploy/checks/network.sh` falla si en troba alguna. No s'activen les funcions experimentals a la VM de l'eina.
+
 Si en el futur cal restringir la sortida dels contenidors de staging (UZEROWPUP-102), afegeix les regles **abans** del `DROP` final de `DOCKER-USER`, amb un altre fitxer que s'executi després d'aquest.
 
 ## sshd

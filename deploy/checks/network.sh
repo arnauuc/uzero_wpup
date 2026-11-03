@@ -150,6 +150,14 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     else
         fail "DOCKER-USER chain has no DROP rule (systemctl status wpup-docker-user)"
     fi
+    # Docker 26 creates no IPv6 rules (daemon.json has no "ip6tables"), so an
+    # IPv6-enabled network would have no DOCKER-USER guard.
+    ipv6_nets="$(docker network ls -q | xargs -r docker network inspect -f '{{if .EnableIPv6}}{{.Name}}{{end}}' | grep -v '^$' || true)"
+    if [[ -z "$ipv6_nets" ]]; then
+        pass "no Docker network has IPv6 enabled"
+    else
+        fail "Docker networks with IPv6 enabled (no DOCKER-USER guard for IPv6): $(tr '\n' ' ' <<<"$ipv6_nets")"
+    fi
 else
     skip "Docker is not installed or not running: no containers to check"
 fi

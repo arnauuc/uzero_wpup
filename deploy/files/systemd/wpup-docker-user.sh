@@ -4,8 +4,12 @@
 # by wpup-docker-user.service every time Docker (re)starts.
 #
 # Interplay with nftables: Docker on Debian 13 uses iptables-nft, so the rules
-# below end up as nftables rules in Docker's own "ip filter" / "ip6 filter"
-# tables, hooked into FORWARD. The "inet wpup" table of this tool is a separate
+# below end up as nftables rules in Docker's own "ip filter" table, hooked into
+# FORWARD. Docker 26 (Debian 13) only creates IPv6 rules with experimental
+# features enabled, so daemon.json leaves "ip6tables" off and no Docker network
+# may enable IPv6 (deploy/checks/network.sh fails if one does); the ip6tables
+# pass below is then a no-op and starts working by itself on a Docker that
+# creates the IPv6 DOCKER-USER chain. The "inet wpup" table of this tool is a separate
 # table; both are evaluated and a drop in either wins. Docker recreates its
 # chains on restart but never empties DOCKER-USER, which is why we flush and
 # refill only that chain, in one go, and never touch the others.
