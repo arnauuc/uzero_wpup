@@ -22,7 +22,9 @@ init: ## Prepare .env, vendor/, APP_KEY and the dev KEK if missing (idempotent)
 build: ## Build the Docker images
 	$(COMPOSE) build
 
-up: build init network ## Build if needed, start the stack and wait until healthy
+# network before init: `init` runs `compose run`, which needs the external fixtures network.
+# tools: the integration tests upload the pinned WP-CLI phar to the test sites.
+up: build network init tools ## Build if needed, start the stack and wait until healthy
 	$(COMPOSE) up -d --wait
 
 network: ## Create the network shared with the test sites (if missing)
@@ -84,6 +86,8 @@ ci: ## Full local quality gate: lint, stan, test, verifier, agent-matrix
 
 hooks: ## Install the pre-push git hook (.githooks/)
 	git config core.hooksPath .githooks
+	@# git opens the SSH connection before the hook; keep it alive during `make ci` (several minutes).
+	git config core.sshCommand 'ssh -o ServerAliveInterval=20 -o ServerAliveCountMax=60'
 
 # Test WordPress/WooCommerce sites (UZEROWPUP-4): separate compose project, throwaway test-only data.
 FIXTURES_DIR   := docker/fixtures
