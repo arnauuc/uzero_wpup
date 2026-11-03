@@ -1,6 +1,6 @@
 # ADR-0002: Gestió de secrets i accés als servidors
 
-**Estat:** Acceptat (2026-10-21)
+**Estat:** Acceptat (2026-10-21). Modificat per l'[ADR-0011](0011-cli-sense-clau-mestra.md) (punts 2 i 7).
 **Data:** 2026-10-21
 **Decideixen:** Arnau
 **Tasca:** UZEROWPUP-122
@@ -31,6 +31,8 @@ Restriccions i fets:
 - Els operadors no tenen accés de lectura a `/opt/uzero-wpup`, al `.env`, a les credencials de systemd ni a la BD.
 
 ### 2. Xifratge en sobre amb una clau mestra fora de la BD i del `.env`
+
+> **Modificat per l'[ADR-0011](0011-cli-sense-clau-mestra.md):** la KEK passa a ser un parell de claus X25519. Amb la clau pública (no secreta) es pot xifrar; la privada, segellada igual que aquí, només la reben els workers i el scheduler. No hi ha cap helper per a la CLI: les operacions que necessiten un secret en clar s'encuen als workers.
 
 - Cada secret es xifra amb una clau de dades pròpia (*DEK*, aleatòria, XChaCha20-Poly1305 amb libsodium). La DEK es xifra amb la **clau mestra** (*KEK*). A la BD només hi ha el text xifrat, la DEK xifrada, l'identificador de la versió de la KEK i les metadades.
 - La KEK es guarda com a credencial de systemd segellada amb el TPM 2.0 virtual de la VM i amb la clau del host (`systemd-creds encrypt --with-key=tpm2+host`). Es fa servir `tpm2+host`, i no `auto`, perquè si el TPM no hi és o falla, la creació falli en lloc de rebaixar la protecció en silenci. systemd la desxifra i l'entrega només als serveis de l'usuari `wpup` (`LoadCredentialEncrypted=`). Per a la CLI via sudo, s'obté amb un helper restringit.
@@ -80,6 +82,8 @@ Restriccions i fets:
 - Introducció interactiva sense eco (`secret()`), mai com a argument de la línia de comandes, perquè quedaria a l'historial i a `ps`.
 
 ### 7. Rotació de la clau mestra
+
+> **Substituït per l'[ADR-0011](0011-cli-sense-clau-mestra.md), punt 3:** root crea i segella el parell nou i `secrets:rekey` s'executa als workers.
 
 - `wpup secrets:rekey` crea una KEK nova i torna a xifrar totes les DEK. És idempotent i reprenible, i les DEK antigues continuen llegibles fins que acaba. Només `admin`.
 

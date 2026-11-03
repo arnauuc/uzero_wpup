@@ -1,6 +1,6 @@
 # ADR-0011: La CLI no té mai la clau mestra
 
-**Estat:** Proposat
+**Estat:** Acceptat (2026-11-03)
 **Data:** 2026-10-23
 **Decideixen:** Arnau
 **Tasca:** UZEROWPUP-137
