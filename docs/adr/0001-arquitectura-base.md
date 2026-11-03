@@ -1,6 +1,6 @@
 # ADR-0001: Arquitectura base d'Uzero wpup
 
-**Estat:** Proposat
+**Estat:** Acceptat (2026-11-03)
 **Data:** 2026-10-20
 **Decideixen:** Arnau
 **Tasca:** UZEROWPUP-5
