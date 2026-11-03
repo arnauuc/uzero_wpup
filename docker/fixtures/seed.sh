@@ -5,7 +5,7 @@ set -euo pipefail
 
 if [ -z "${SITE_NAME:-}" ]; then
     # Host mode.
-    site="${1:?usage: seed.sh <wp74|wp81|wp83>}"
+    site="${1:?usage: seed.sh <wp74|wp81|wp83|wp80|wp82>}"
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     exec docker compose -f "$here/compose.yaml" exec -T -e SEED_DEBUG="${SEED_DEBUG:-}" -u "sub_${site}" "$site" bash -c "$(cat "$here/seed.sh")"
 fi

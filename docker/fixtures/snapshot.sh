@@ -8,7 +8,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 snap="$here/.snapshots"
 dc() { docker compose -f "$here/compose.yaml" "$@"; }
-ALL_SITES="wp74 wp81 wp83"
+ALL_SITES="${FIXTURE_SITES:-wp74 wp81 wp83 wp80 wp82}"
 
 cmd="${1:?usage: snapshot.sh snapshot|restore|has [site...]}"
 shift

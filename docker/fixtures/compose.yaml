@@ -26,13 +26,14 @@ x-site-env: &site-env
 
 services:
   db:
-    image: mariadb:10.11
+    image: mariadb:10.11@sha256:d769e37960821dfdcf096954f6e7ac89f747e116c1bba98e48edd265dfc7deae
     environment:
       MARIADB_ROOT_PASSWORD: fixture-root-test-only
-      FIXTURE_SITES: "wp74 wp81 wp83"
+      FIXTURE_SITES: "wp74 wp81 wp83 wp80"
       DB_PASSWORD_WP74: fixture-db-wp74-test-only
       DB_PASSWORD_WP81: fixture-db-wp81-test-only
       DB_PASSWORD_WP83: fixture-db-wp83-test-only
+      DB_PASSWORD_WP80: fixture-db-wp80-test-only
     volumes:
       - db_data:/var/lib/mysql
       - ./db/init.sh:/docker-entrypoint-initdb.d/10-fixtures.sh:ro
@@ -47,7 +48,7 @@ services:
 
   wp74:
     <<: *site
-    build: { context: ./site, args: { PHP_VERSION: "7.4" } }
+    build: { context: ./site, args: { PHP_IMAGE: "php:7.4-apache@sha256:c9d7e608f73832673479770d66aacc8100011ec751d1905ff63fae3fe2e0ca6d" } }
     image: uzero-wpup-fixture-site:php7.4
     ports: ["127.0.0.1:8081:8081", "127.0.0.1:2221:22"]
     environment:
@@ -72,7 +73,7 @@ services:
 
   wp81:
     <<: *site
-    build: { context: ./site, args: { PHP_VERSION: "8.1" } }
+    build: { context: ./site, args: { PHP_IMAGE: "php:8.1-apache@sha256:72f0c0134922985022d55a39b0390d35dc7a10e961aa6c44fa35b4c3102f4268" } }
     image: uzero-wpup-fixture-site:php8.1
     ports: ["127.0.0.1:8082:8082", "127.0.0.1:2222:22"]
     environment:
@@ -96,7 +97,7 @@ services:
 
   wp83:
     <<: *site
-    build: { context: ./site, args: { PHP_VERSION: "8.3" } }
+    build: { context: ./site, args: { PHP_IMAGE: "php:8.3-apache@sha256:a2d500abd37ddb8b999e52c11f7bb340772ad5665b254bbb0b2762d6f131acb9" } }
     image: uzero-wpup-fixture-site:php8.3
     ports: ["127.0.0.1:8083:8083", "127.0.0.1:2223:22"]
     environment:
@@ -118,6 +119,82 @@ services:
       - ./.keys/id_ed25519.pub:/run/fixtures/authorized_key:ro
       - ./plugins:/opt/fixtures/plugins:ro
 
+  # MySQL 8.0 for the sites that must not run on MariaDB (UZEROWPUP-135). Small buffers: the box has little RAM.
+  db80:
+    image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+    command: ["--innodb-buffer-pool-size=64M", "--performance-schema=OFF"]
+    environment:
+      MYSQL_ROOT_PASSWORD: fixture-root80-test-only
+      FIXTURE_SITES: "wp82"
+      DB_PASSWORD_WP82: fixture-db-wp82-test-only
+    volumes:
+      - db80_data:/var/lib/mysql
+      - ./db/init.sh:/docker-entrypoint-initdb.d/10-fixtures.sh:ro
+    networks: [fixtures]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  wp80:
+    <<: *site
+    build: { context: ./site, args: { PHP_IMAGE: "php:8.0-apache@sha256:c87b4c94d53b35520467b6d026f38656ab9a6d446fa3a0fbba1bc633125f9ad2" } }
+    image: uzero-wpup-fixture-site:php8.0
+    ports: ["127.0.0.1:8085:8085", "127.0.0.1:2225:22"]
+    environment:
+      <<: *site-env
+      SITE_NAME: wp80
+      SITE_USER: sub_wp80
+      SITE_UID: "10080"
+      SITE_DOMAIN: wp80.fixtures.test
+      HTTP_PORT: "8085"
+      SITE_URL: http://127.0.0.1:8085
+      DB_NAME: wp80
+      DB_USER: wp80
+      DB_PASSWORD: fixture-db-wp80-test-only
+      WP_VERSION: "6.7.2"
+      WC_VERSION: "9.6.2"
+      # Shared hosting: SFTP only (no shell) and low web limits (CLI unaffected, see entrypoint.sh).
+      SITE_SFTP_ONLY: "1"
+      PHP_WEB_MEMORY_LIMIT: 128M
+      PHP_WEB_MAX_EXECUTION_TIME: "20"
+    volumes:
+      - wp80_vhost:/var/www/vhosts/wp80.fixtures.test
+      - wp80_hostkeys:/var/lib/hostkeys
+      - ./.keys/id_ed25519.pub:/run/fixtures/authorized_key:ro
+      - ./plugins:/opt/fixtures/plugins:ro
+
+  wp82:
+    <<: *site
+    depends_on:
+      db80:
+        condition: service_healthy
+    build: { context: ./site, args: { PHP_IMAGE: "php:8.2-apache@sha256:89e5f7bde208a146519d12100c11e71a1d0119a10703cfc454d1bdca274147ec" } }
+    image: uzero-wpup-fixture-site:php8.2
+    ports: ["127.0.0.1:8084:8084", "127.0.0.1:2224:22"]
+    environment:
+      <<: *site-env
+      DB_HOST: db80
+      SITE_NAME: wp82
+      SITE_USER: sub_wp82
+      SITE_UID: "10082"
+      SITE_DOMAIN: wp82.fixtures.test
+      HTTP_PORT: "8084"
+      SITE_URL: http://127.0.0.1:8084
+      DB_NAME: wp82
+      DB_USER: wp82
+      DB_PASSWORD: fixture-db-wp82-test-only
+      WP_VERSION: "6.8.1"
+      WC_VERSION: "9.8.5"
+    volumes:
+      - wp82_vhost:/var/www/vhosts/wp82.fixtures.test
+      - wp82_hostkeys:/var/lib/hostkeys
+      - ./.keys/id_ed25519.pub:/run/fixtures/authorized_key:ro
+      - ./plugins:/opt/fixtures/plugins:ro
+
 networks:
   fixtures:
   fixtures-link:
@@ -126,9 +203,14 @@ networks:
 
 volumes:
   db_data:
+  db80_data:
   wp74_vhost:
   wp81_vhost:
   wp83_vhost:
+  wp80_vhost:
+  wp82_vhost:
   wp74_hostkeys:
   wp81_hostkeys:
   wp83_hostkeys:
+  wp80_hostkeys:
+  wp82_hostkeys:
