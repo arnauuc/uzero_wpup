@@ -39,6 +39,12 @@ final class FakeDriver implements SiteDriver
 
     public bool $maintenance = false;
 
+    public string $dbServerVersion = '10.11.9-MariaDB';
+
+    public string $activeTheme = 'storefront';
+
+    public ?string $parentTheme = null;
+
     /** @var list<list<string>> every WP-CLI call, for assertions */
     public array $wpCalls = [];
 
@@ -68,7 +74,7 @@ final class FakeDriver implements SiteDriver
 
     public function installedComponents(): InstalledComponents
     {
-        return new InstalledComponents($this->coreVersion, $this->phpVersion, '10.11.9-MariaDB', array_values($this->components), 'storefront');
+        return new InstalledComponents($this->coreVersion, $this->phpVersion, $this->dbServerVersion, array_values($this->components), $this->activeTheme, $this->parentTheme);
     }
 
     public function wp(array $args, ?int $timeoutSeconds = null): CommandResult
