@@ -80,6 +80,25 @@ interface SiteDriver
     public function dumpDatabase(string $remotePath): RemoteFile;
 
     /**
+     * Every table with the site's prefix (what dumpDatabase() must contain).
+     *
+     * @return list<string>
+     *
+     * @throws DriverException
+     */
+    public function databaseTables(): array;
+
+    /**
+     * The tables a dump made by dumpDatabase() contains (its CREATE TABLE
+     * statements), read on the site without downloading the file.
+     *
+     * @return list<string>
+     *
+     * @throws DriverException including when the dump is not a valid gzip
+     */
+    public function dumpedTables(RemoteFile $dump): array;
+
+    /**
      * Archives the site's code (tar.gz) to $remotePath.
      *
      * @param  list<string>  $excludes  paths relative to the WordPress root

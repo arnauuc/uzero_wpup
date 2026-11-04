@@ -164,6 +164,10 @@ return [
     'backups' => [
         // Read size when hashing an object at its destination.
         'hash_chunk_bytes' => 1_048_576,
+        // Database dump (UZEROWPUP-38). sprintf(): run label, random suffix.
+        'database' => [
+            'file_name' => 'db-%s-%s.sql.gz',
+        ],
     ],
 
     'inventory' => [
