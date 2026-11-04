@@ -19,6 +19,8 @@ use Symfony\Component\Process\Process;
  */
 final readonly class RsyncTransfer
 {
+    public const PARTIAL_DIR = '.wpup-rsync-partial';
+
     public function __construct(
         private SshTarget $target,
         private Secret $key,
@@ -26,13 +28,14 @@ final readonly class RsyncTransfer
     ) {}
 
     /**
-     * Resumable: a shorter file already at $localPath (an interrupted transfer)
-     * is continued, after rsync checks that what is there matches the source
-     * (--append-verify); otherwise it is sent again. The local copy is 0600.
+     * Resumable: an interrupted transfer leaves its partial file in a hidden
+     * directory next to $localPath (never under the final name), and the next
+     * call continues from it. A final file already there (old or corrupt) is
+     * compared by checksum and replaced if it differs. The local copy is 0600.
      */
     public function download(string $remotePath, string $localPath): void
     {
-        $this->rsync($this->remote($remotePath), $localPath, ['--append-verify', '--chmod=F600']);
+        $this->rsync($this->remote($remotePath), $localPath, ['--partial', '--partial-dir='.self::PARTIAL_DIR, '--checksum', '--chmod=F600']);
     }
 
     public function upload(string $localPath, string $remotePath): void

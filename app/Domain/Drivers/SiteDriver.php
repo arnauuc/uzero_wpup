@@ -99,6 +99,22 @@ interface SiteDriver
     public function dumpedTables(RemoteFile $dump): array;
 
     /**
+     * The physical directory (symlinks resolved) archiveFiles() archives: the
+     * WordPress root.
+     *
+     * @throws DriverException
+     */
+    public function archiveRoot(): string;
+
+    /**
+     * The tool's own work directory relative to archiveRoot(), when it lives
+     * inside it (it must never be archived); null when it is outside.
+     *
+     * @throws DriverException
+     */
+    public function workDirExclude(): ?string;
+
+    /**
      * Archives the site's code (tar.gz) to $remotePath.
      *
      * @param  list<string>  $excludes  paths relative to the WordPress root

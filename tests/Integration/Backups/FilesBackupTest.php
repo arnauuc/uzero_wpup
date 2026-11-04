@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Backups\FilesBackup;
+use App\Domain\Drivers\Ssh\RsyncTransfer;
 use App\Domain\Drivers\Ssh\SshDriver;
 use App\Domain\Drivers\Ssh\SshDriverFactory;
+use Illuminate\Support\Facades\File;
 use Tests\Support\Fixtures;
 
 /*
@@ -21,6 +23,27 @@ if (! Fixtures::up('wp83')) {
 function filesDriver(): SshDriver
 {
     return app(SshDriverFactory::class)->forSite(Fixtures::site('wp83'), AuditActor::system('tests'));
+}
+
+/**
+ * Writes $bytes bytes of $byte (or a copy of the first $bytes of $from) in 1 MB
+ * steps: the archives are tens of MB and PHP runs the tests with 128 MB.
+ */
+function writeChunked(string $to, int $bytes, string $byte = 'x', ?string $from = null): void
+{
+    $out = fopen($to, 'wb');
+    $in = $from === null ? null : fopen($from, 'rb');
+    if ($out === false || $in === false) {
+        throw new RuntimeException('Cannot open the test files.');
+    }
+    for ($done = 0; $done < $bytes; $done += 1_048_576) {
+        $size = max(1, min(1_048_576, $bytes - $done));
+        fwrite($out, $in === null ? str_repeat($byte, $size) : (string) fread($in, $size));
+    }
+    fclose($out);
+    if ($in !== null) {
+        fclose($in);
+    }
 }
 
 /**
@@ -86,23 +109,40 @@ it('includes uploads when the profile says so, still without the backups of othe
     }
 });
 
-it('does not put the work directory of the tool in the archive', function (): void {
+it('keeps the work directory of the tool out of the archive when it is inside the WordPress root', function (): void {
+    // The work directory is relative to the account's home; the fixture's docroot is httpdocs.
+    config(['wpup.ssh.work_dir' => 'httpdocs/.wpup-in-root']);
+    app()->forgetInstance(SshDriverFactory::class);
     $driver = filesDriver();
-    $result = app(FilesBackup::class)->run($driver, false, 'it'.bin2hex(random_bytes(3)));
+    $result = null;
 
     try {
-        expect(implode("\n", archiveListing($result->file->path)))->not->toContain('.wpup/');
+        $result = app(FilesBackup::class)->run($driver, false, 'it'.bin2hex(random_bytes(3)));
+        $listing = implode("\n", array_values(array_filter(explode("\n", Fixtures::run('wp83', 'tar -tzf $HOME/httpdocs/.wpup-in-root/'.$result->file->path)))));
+
+        expect($driver->workDirExclude())->toBe('.wpup-in-root')
+            ->and($result->excludes)->toContain('.wpup-in-root')
+            ->and($listing)->toContain('./wp-config.php')
+            ->and($listing)->not->toContain('.wpup-in-root/')
+            ->and($listing)->not->toContain('wp-cli.phar')
+            ->and($listing)->toContain("\n.wpup-excludes");
+        // The manifest inside the archive matches what the result reports.
+        $manifest = Fixtures::run('wp83', 'tar -xzOf $HOME/httpdocs/.wpup-in-root/'.$result->file->path.' .wpup-excludes');
+        expect(array_values(array_filter(explode("\n", $manifest))))->toBe($result->excludes);
     } finally {
-        $driver->remove($result->file->path);
+        Fixtures::run('wp83', 'rm -rf $HOME/httpdocs/.wpup-in-root');
+        config(['wpup.ssh.work_dir' => '.wpup']);
+        app()->forgetInstance(SshDriverFactory::class);
     }
 });
 
-it('resumes an interrupted download and detects a corrupt partial file', function (): void {
+it('resumes an interrupted download from the partial directory, and never shows a partial file as final', function (): void {
     $driver = filesDriver();
     $result = app(FilesBackup::class)->run($driver, false, 'it'.bin2hex(random_bytes(3)));
-    $full = tempnam(sys_get_temp_dir(), 'wpup-full-');
-    $partial = tempnam(sys_get_temp_dir(), 'wpup-part-');
-    $corrupt = tempnam(sys_get_temp_dir(), 'wpup-bad-');
+    $dir = sys_get_temp_dir().'/wpup-resume-'.bin2hex(random_bytes(4));
+    mkdir($dir, 0700);
+    $full = $dir.'/full';
+    $final = $dir.'/restore-point.tar.gz';
 
     try {
         $driver->download($result->file, $full);
@@ -110,18 +150,43 @@ it('resumes an interrupted download and detects a corrupt partial file', functio
         expect(hash_file('sha256', $full))->toBe($result->file->sha256)
             ->and(substr(sprintf('%o', (int) fileperms($full)), -4))->toBe('0600');
 
-        // An interrupted transfer: only the first half is there (streamed: archives are big).
-        file_put_contents($partial, (string) file_get_contents($full, false, null, 0, $half));
-        $driver->download($result->file, $partial);
+        // What an interrupted rsync leaves: the first half, in the hidden directory.
+        mkdir($dir.'/'.RsyncTransfer::PARTIAL_DIR, 0700);
+        writeChunked($dir.'/'.RsyncTransfer::PARTIAL_DIR.'/restore-point.tar.gz', $half, from: $full);
+        expect(file_exists($final))->toBeFalse();
 
-        // A partial file whose bytes are wrong: rsync verifies and sends it again.
-        file_put_contents($corrupt, str_repeat('x', $half));
-        $driver->download($result->file, $corrupt);
+        $driver->download($result->file, $final);
 
-        expect(hash_file('sha256', $partial))->toBe($result->file->sha256)
-            ->and(hash_file('sha256', $corrupt))->toBe($result->file->sha256);
+        expect(hash_file('sha256', $final))->toBe($result->file->sha256)
+            ->and(file_exists($dir.'/'.RsyncTransfer::PARTIAL_DIR.'/restore-point.tar.gz'))->toBeFalse();
     } finally {
-        array_map(unlink(...), [$full, $partial, $corrupt]);
+        File::deleteDirectory($dir);
+        $driver->remove($result->file->path);
+    }
+});
+
+it('replaces an old or corrupt final file, even of the same size, and a partial with wrong bytes', function (): void {
+    $driver = filesDriver();
+    $result = app(FilesBackup::class)->run($driver, false, 'it'.bin2hex(random_bytes(3)));
+    $dir = sys_get_temp_dir().'/wpup-replace-'.bin2hex(random_bytes(4));
+    mkdir($dir, 0700);
+    $same = $dir.'/same-size.tar.gz';
+    $short = $dir.'/short.tar.gz';
+
+    try {
+        writeChunked($same, $result->file->sizeBytes);
+        touch($same, time() + 3600);
+        file_put_contents($short, 'old');
+        mkdir($dir.'/'.RsyncTransfer::PARTIAL_DIR, 0700);
+        file_put_contents($dir.'/'.RsyncTransfer::PARTIAL_DIR.'/short.tar.gz', str_repeat('y', 4096));
+
+        $driver->download($result->file, $same);
+        $driver->download($result->file, $short);
+
+        expect(hash_file('sha256', $same))->toBe($result->file->sha256)
+            ->and(hash_file('sha256', $short))->toBe($result->file->sha256);
+    } finally {
+        File::deleteDirectory($dir);
         $driver->remove($result->file->path);
     }
 });

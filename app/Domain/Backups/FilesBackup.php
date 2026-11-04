@@ -26,6 +26,12 @@ final class FilesBackup
         $name = BackupFileName::make(config()->string('wpup.backups.files.file_name'), $label);
         $excludes = $this->excludes($includeUploads);
 
+        // The tool's own work directory, when it is inside the root, never goes in.
+        $workDir = $driver->workDirExclude();
+        if ($workDir !== null && ! in_array($workDir, $excludes, true)) {
+            $excludes[] = $workDir;
+        }
+
         $file = $driver->archiveFiles($name, $excludes);
 
         return new FilesBackupResult($file, $excludes, $this->warnings($driver));
@@ -51,22 +57,24 @@ final class FilesBackup
      */
     private function warnings(SiteDriver $driver): array
     {
+        $unknown = ['No s\'ha pogut comprovar on és wp-config.php: verifica que l\'arxiu el conté.'];
+
         try {
             $config = $driver->wp(['config', 'path']);
-            $root = $driver->wp(['eval', 'echo rtrim(ABSPATH, "/");']);
+            $path = trim($config->stdout);
+            if (! $config->successful() || $path === '') {
+                return $unknown;
+            }
+            // Both sides physical: symlinks (Plesk, deployments) must not look like a difference.
+            $dir = $driver->wp(['eval', 'echo realpath(dirname('.var_export($path, true).'));']);
+            $inside = $driver->archiveRoot() === trim($dir->stdout);
         } catch (DriverException) {
-            return ['No s\'ha pogut comprovar on és wp-config.php: verifica que l\'arxiu el conté.'];
+            return $unknown;
         }
 
-        $path = trim($config->stdout);
-        $abspath = trim($root->stdout);
-        if (! $config->successful() || ! $root->successful() || $path === '' || $abspath === '') {
-            return ['No s\'ha pogut comprovar on és wp-config.php: verifica que l\'arxiu el conté.'];
-        }
-
-        return rtrim(dirname($path), '/') === rtrim($abspath, '/')
-            ? []
-            : ["wp-config.php és fora de l'arrel de WordPress ({$path}): no és dins l'arxiu i la restauració no el tornarà a posar."];
+        return ! $dir->successful() || trim($dir->stdout) === ''
+            ? $unknown
+            : ($inside ? [] : ["wp-config.php és fora de l'arrel de WordPress ({$path}): no és dins l'arxiu i la restauració no el tornarà a posar."]);
     }
 
     /**

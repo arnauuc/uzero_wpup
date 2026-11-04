@@ -54,6 +54,24 @@ it('warns when wp-config.php lives above the WordPress root', function (): void 
         ->and($result->warnings[0])->toContain('wp-config.php és fora de l\'arrel')->toContain('/var/www/wp-config.php');
 });
 
+it('does not warn when wp-config.php is in the real root, whatever the path used to reach it', function (): void {
+    $driver = new FakeDriver;
+    $driver->archiveRoot = '/srv/releases/42';
+    $driver->configPath = '/srv/releases/42/wp-config.php';
+
+    expect(app(FilesBackup::class)->run($driver, false, '42')->warnings)->toBe([]);
+});
+
+it('excludes the work directory of the tool when it is inside the root, and reports it', function (): void {
+    $driver = new FakeDriver;
+    $driver->workDirInRoot = '.wpup';
+
+    $result = app(FilesBackup::class)->run($driver, false, '42');
+
+    expect($result->excludes)->toContain('.wpup')
+        ->and(unserialize($driver->files[$result->file->path], ['allowed_classes' => false]))->toMatchArray(['excludes' => $result->excludes]);
+});
+
 it('warns instead of failing when the location of wp-config.php cannot be checked', function (): void {
     $driver = new FakeDriver;
     $driver->failingCommands = ['config path'];

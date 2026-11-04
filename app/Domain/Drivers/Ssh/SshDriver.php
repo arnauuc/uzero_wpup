@@ -236,15 +236,35 @@ final class SshDriver implements SiteDriver
         return self::names($lines);
     }
 
+    public function archiveRoot(): string
+    {
+        return $this->physicalPath($this->target->wpPath, 'L\'arrel de WordPress');
+    }
+
+    public function workDirExclude(): ?string
+    {
+        $root = rtrim($this->archiveRoot(), '/').'/';
+        $work = $this->physicalPath($this->workDir(), 'El directori de treball');
+
+        return str_starts_with($work.'/', $root) && $work.'/' !== $root ? substr($work, strlen($root)) : null;
+    }
+
+    /**
+     * `cd … && pwd -P` on the site: the real directory, as tar and the web see it.
+     */
+    private function physicalPath(string $path, string $what): string
+    {
+        $out = trim($this->mustExec('cd '.escapeshellarg($path).' && pwd -P', $what)->stdout);
+
+        return str_starts_with($out, '/') ? $out : throw new RemoteCommandFailed("{$what} no té una ruta física vàlida: «{$out}».");
+    }
+
     public function archiveFiles(string $remotePath, array $excludes): RemoteFile
     {
         $path = $this->path($remotePath);
         $tmp = escapeshellarg($path.'.part');
         $manifest = ': > "$m/.wpup-excludes"';
         $options = '';
-        // The tool's own work directory (backups, WP-CLI) never goes into the archive.
-        $root = rtrim($this->target->wpPath, '/').'/';
-        $excludes = array_values(array_unique([...$excludes, ...(str_starts_with($this->workDir().'/', $root) ? [substr($this->workDir(), strlen($root))] : [])]));
         foreach ($excludes as $exclude) {
             $exclude = self::relativePath($exclude);
             $manifest .= ' && printf "%s\n" '.escapeshellarg($exclude).' >> "$m/.wpup-excludes"';

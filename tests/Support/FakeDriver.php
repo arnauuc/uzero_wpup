@@ -137,6 +137,12 @@ class FakeDriver implements SiteDriver
     /** Where the fake site keeps wp-config.php (`wp config path`). */
     public string $configPath = '/var/www/html/wp-config.php';
 
+    /** The physical root archiveFiles() archives. */
+    public string $archiveRoot = '/var/www/html';
+
+    /** Where the tool's work dir is relative to the root, null: outside it. */
+    public ?string $workDirInRoot = null;
+
     /** @var list<string> tables dumpDatabase() leaves out of the dump (a broken mysqldump) */
     public array $dumpOmits = [];
 
@@ -243,7 +249,7 @@ class FakeDriver implements SiteDriver
                 array_values($this->dbTables),
             ))),
             $args === ['config', 'path'] => $this->ok($this->configPath."\n"),
-            $args === ['eval', 'echo rtrim(ABSPATH, "/");'] => $this->ok('/var/www/html'),
+            count($args) === 2 && $args[0] === 'eval' && preg_match("/^echo realpath\\(dirname\\('(.*)'\\)\\);\$/", $args[1], $m) === 1 => $this->ok(dirname($m[1])),
             $args === ['core', 'version'] => $this->ok($this->coreVersion."\n"),
             $args === ['maintenance-mode', 'is-active'] => $this->maintenance
                 ? $this->ok('')
@@ -291,6 +297,16 @@ class FakeDriver implements SiteDriver
         $tables = is_array($data) && is_array($data['tables'] ?? null) ? $data['tables'] : [];
 
         return array_values(array_filter($tables, is_string(...)));
+    }
+
+    public function archiveRoot(): string
+    {
+        return $this->archiveRoot;
+    }
+
+    public function workDirExclude(): ?string
+    {
+        return $this->workDirInRoot;
     }
 
     public function archiveFiles(string $remotePath, array $excludes): RemoteFile
