@@ -6,13 +6,13 @@ namespace App\Console\Commands\Sites;
 
 use App\Console\ChangesState;
 use App\Console\Concerns\SelectsSites;
+use App\Console\Concerns\WaitsForWorkers;
 use App\Console\WpupCommand;
 use App\Domain\Drivers\Data\ProbeCheck;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Ssh\HostKeyPinning;
 use App\Domain\Identity\Ability;
-use App\Domain\Runs\RunFollower;
 use App\Domain\Runs\RunLauncher;
 use App\Domain\Sites\SiteTestStep;
 use App\Enums\CheckResult;
@@ -38,6 +38,7 @@ final class SiteTestCommand extends WpupCommand implements ChangesState
     protected $description = 'Prova la connexió i els prerequisits dels llocs sense modificar-los';
 
     use SelectsSites;
+    use WaitsForWorkers;
 
     protected function ability(): Ability
     {
@@ -102,11 +103,18 @@ final class SiteTestCommand extends WpupCommand implements ChangesState
 
         if ($queue !== []) {
             $runs = app(RunLauncher::class)->launch(RunType::SiteTest, $queue, $this->actor(), ['dry_run' => $this->isDryRun()]);
-            $final = app(RunFollower::class)->wait(array_map(static fn (Run $run): int => $run->id, $runs));
+            $timeout = config('wpup.credential_operations.site_test_timeout_seconds');
+            $final = $this->waitForWorkers($runs, is_int($timeout) ? $timeout : 300);
 
-            foreach ($final as $run) {
+            foreach ($final ?? [] as $run) {
                 $site = $run->site()->firstOrFail();
                 $results[$site->name] = [$site, self::resultOf($run)];
+            }
+
+            if ($final === null) {
+                foreach ($queue as $site) {
+                    $results[$site->name] = [$site, new ProbeResult([new ProbeCheck('execució', CheckResult::Error, "La CLI ha deixat d'esperar el worker; l'execució continua.")])];
+                }
             }
         }
 

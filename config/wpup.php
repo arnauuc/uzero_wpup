@@ -47,6 +47,11 @@ return [
      */
     'credential_operations' => [
         'site_test_timeout_seconds' => 300,
+        // The CLI waits for these runs up to their step timeout plus this margin
+        // (queue and lock waits), and warns if they are still queued after
+        // queued_notice_seconds (no worker, or a busy lock).
+        'wait_margin_seconds' => 600,
+        'queued_notice_seconds' => 15,
     ],
 
     /*

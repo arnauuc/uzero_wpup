@@ -5,17 +5,21 @@ declare(strict_types=1);
 use App\Domain\Audit\AuditActor;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
+use App\Domain\Runs\Exceptions\RunWaitTimedOut;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunEngine;
+use App\Domain\Runs\RunFollower;
 use App\Domain\Runs\RunLauncher;
 use App\Domain\Runs\StepOutcome;
 use App\Domain\Secrets\Secret;
+use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Secrets\SecretStore;
 use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
 use App\Enums\RunStatus;
 use App\Enums\RunType;
+use App\Enums\UserRole;
 use App\Jobs\ExecuteRun;
 use App\Models\AuditLogEntry;
 use App\Models\HostingAccount;
@@ -25,6 +29,7 @@ use App\Models\User;
 use Illuminate\Redis\Connections\PhpRedisConnection;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Redis;
+use Illuminate\Support\Sleep;
 use Tests\Support\Runs\ScriptedStep;
 
 /*
@@ -95,4 +100,53 @@ it('puts only the run id on the queue, never the credential', function (): void 
             && ! str_contains($payload, 'OPENSSH');
     });
     expect(json_encode($run->fresh()?->flags, JSON_THROW_ON_ERROR))->toBe('{"dry_run":false}');
+});
+
+it('forgets the revealed secrets when the worker finishes a run', function (): void {
+    app(PipelineResolver::class)->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([
+        new ScriptedStep('site_test', static fn (): StepOutcome => StepOutcome::succeeded('ok')),
+    ]));
+    $redactor = app(SecretRedactor::class);
+    $redactor->register('revealed-during-the-run');
+    $run = Run::factory()->create(['site_id' => Site::factory()->create()->id, 'type' => RunType::SiteTest]);
+
+    (new ExecuteRun($run->id))->handle(app(RunEngine::class), $redactor);
+
+    expect($redactor->redact('revealed-during-the-run'))->toBe('revealed-during-the-run');
+});
+
+it('stops waiting for a run that no worker takes, and says so', function (): void {
+    Sleep::fake(syncWithCarbon: true);
+    $queued = Run::factory()->create(['type' => RunType::SiteTest]);
+    $noticed = 0;
+    $timedOut = false;
+
+    try {
+        app(RunFollower::class)->wait([$queued->id], timeoutSeconds: 5, onStillQueued: function () use (&$noticed): void {
+            $noticed++;
+        }, queuedNoticeSeconds: 2);
+    } catch (RunWaitTimedOut) {
+        $timedOut = true;
+    }
+
+    expect($timedOut)->toBeTrue()->and($noticed)->toBe(1);
+});
+
+it('warns and gives up in site:test when no worker runs', function (): void {
+    Queue::fake();
+    Sleep::fake(syncWithCarbon: true);
+    config([
+        'wpup.credential_operations.site_test_timeout_seconds' => 3,
+        'wpup.credential_operations.wait_margin_seconds' => 0,
+        'wpup.credential_operations.queued_notice_seconds' => 1,
+    ]);
+    User::factory()->create(['unix_username' => 'oper1', 'role' => UserRole::Operator]);
+    actingAsOperator('oper1');
+    $site = Site::factory()->create();
+    $site->hostingAccount()->firstOrFail()->hostingServer()->firstOrFail()->update(['pinned_host_key' => 'ssh-ed25519 AAAAtest']);
+
+    command('site:test', ['sites' => [$site->name]])
+        ->expectsOutputToContain('Encara en cua')
+        ->expectsOutputToContain("Deixo d'esperar")
+        ->assertFailed();
 });
