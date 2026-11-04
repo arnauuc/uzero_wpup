@@ -37,6 +37,17 @@ function flysystemTargetIn(string $dir): FlysystemTarget
     return new FlysystemTarget(new Filesystem(new LocalFilesystemAdapter($dir)), app(SecretRedactor::class), 1_048_576);
 }
 
+/**
+ * @param  array<string, mixed>  $attributes
+ */
+function linkedBackupTarget(Site $site, array $attributes): BackupTargetRecord
+{
+    $record = BackupTargetRecord::factory()->create($attributes);
+    $site->backupTargets()->attach($record->id);
+
+    return $record;
+}
+
 BackupTargetContract::register(fn (): BackupTarget => localBackupTarget(), 'FlysystemTarget (local)');
 
 it('accepts only relative keys of safe segments', function (): void {
@@ -79,19 +90,11 @@ it('resolves a registered destination type and refuses unknown or inactive ones'
     $site = Site::factory()->create();
     $actor = AuditActor::system('tests');
 
-    /** @param array<string, mixed> $attributes */
-    $linked = static function (array $attributes) use ($site): BackupTargetRecord {
-        $record = BackupTargetRecord::factory()->create($attributes);
-        $site->backupTargets()->attach($record->id);
-
-        return $record;
-    };
-
-    expect($registry->for($linked(['type' => BackupTargetType::Sftp]), $site, $actor))->toBe($target)
+    expect($registry->for(linkedBackupTarget($site, ['type' => BackupTargetType::Sftp]), $site, $actor))->toBe($target)
         ->and($registry->has(BackupTargetType::S3))->toBeFalse()
-        ->and(fn () => $registry->for($linked(['type' => BackupTargetType::S3]), $site, $actor))
+        ->and(fn () => $registry->for(linkedBackupTarget($site, ['type' => BackupTargetType::S3]), $site, $actor))
         ->toThrow(BackupTargetException::class, 'cap destinació de còpia registrada')
-        ->and(fn () => $registry->for($linked(['type' => BackupTargetType::Sftp, 'active' => false]), $site, $actor))
+        ->and(fn () => $registry->for(linkedBackupTarget($site, ['type' => BackupTargetType::Sftp, 'active' => false]), $site, $actor))
         ->toThrow(BackupTargetException::class, 'desactivada')
         ->and(fn () => $registry->for(BackupTargetRecord::factory()->create(['type' => BackupTargetType::Sftp]), $site, $actor))
         ->toThrow(BackupTargetException::class, 'no és del lloc');
