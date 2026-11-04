@@ -3,9 +3,12 @@
 declare(strict_types=1);
 
 use App\Domain\Drivers\Data\ComponentVersion;
+use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Inventory\SiteInventory;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
+use App\Enums\RunType;
+use App\Models\Run;
 use App\Models\Site;
 use Tests\Support\FakeDriver;
 
@@ -36,7 +39,7 @@ it('stores core, php and database versions with the configured php source', func
         ->and($snapshot->php_source)->toBe(PhpVersionSource::Configured)
         ->and($snapshot->db_server_version)->toBe('10.11.9-MariaDB')
         ->and($snapshot->pending_updates)->toBe([])
-        ->and($snapshot->environment)->toBe([]);
+        ->and($snapshot->environment)->toBe(['php' => ['binary' => 'php', 'warnings' => []]]);
 });
 
 it('separates plugins, themes, drop-ins and mu-plugins and keeps inactive ones', function (): void {
@@ -72,4 +75,16 @@ it('marks the active theme, its parent and the inactive ones', function (): void
         ->and(bySlug($snapshot->themes, 'storefront'))->toMatchArray(['status' => SiteInventory::THEME_PARENT])
         ->and(bySlug($snapshot->themes, 'twentytwentyfive'))->toMatchArray(['status' => SiteInventory::THEME_INACTIVE])
         ->and($snapshot->db_server_version)->toBe('8.0.40');
+});
+
+it('records where the PHP version came from and its warnings', function (): void {
+    $driver = new FakeDriver;
+    $driver->phpRuntime = new PhpRuntime('7.4.33', 'php', PhpVersionSource::Cli, ['no verificat']);
+    $run = Run::factory()->create(['type' => RunType::Inventory]);
+
+    $snapshot = (new SiteInventory)->take($run->site()->firstOrFail(), $driver, $run);
+
+    expect($snapshot->php_version)->toBe('7.4.33')
+        ->and($snapshot->php_source)->toBe(PhpVersionSource::Cli)
+        ->and($snapshot->environment)->toBe(['php' => ['binary' => 'php', 'warnings' => ['no verificat']]]);
 });

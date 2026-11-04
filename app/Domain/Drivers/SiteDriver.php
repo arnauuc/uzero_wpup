@@ -7,6 +7,7 @@ namespace App\Domain\Drivers;
 use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\Data\LogCursor;
+use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\UpdatePackage;
@@ -35,6 +36,15 @@ interface SiteDriver
      * Connectivity and prerequisites, without changing anything (`site:test`).
      */
     public function probe(): ProbeResult;
+
+    /**
+     * The PHP that serves the site (the domain's handler where the panel lets
+     * the subscription user read it), never just the CLI default when better
+     * is known. WP-CLI runs with this binary.
+     *
+     * @throws DriverException
+     */
+    public function phpRuntime(): PhpRuntime;
 
     /**
      * Versions of core, plugins, themes, drop-ins and must-use plugins.

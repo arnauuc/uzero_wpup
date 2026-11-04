@@ -8,7 +8,6 @@ use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\SiteDriver;
 use App\Enums\ComponentType;
-use App\Enums\PhpVersionSource;
 use App\Models\Run;
 use App\Models\Site;
 use App\Models\SiteSnapshot;
@@ -36,19 +35,22 @@ final readonly class SiteInventory
     public function take(Site $site, SiteDriver $driver, ?Run $run = null): SiteSnapshot
     {
         $installed = $driver->installedComponents();
+        $php = $driver->phpRuntime();
 
         $values = [
             'site_id' => $site->id,
             'core_version' => $installed->coreVersion,
-            'php_version' => $installed->phpVersion,
-            // Real PHP detection (Plesk handler / HTTP probe) arrives with UZEROWPUP-29.
-            'php_source' => PhpVersionSource::Configured,
+            // The PHP the domain is served with as far as the driver can tell
+            // (UZEROWPUP-29); the HTTP probe (UZEROWPUP-30) cross-checks it.
+            'php_version' => $php->version,
+            'php_source' => $php->source,
             'db_server_version' => $installed->dbServerVersion,
             'plugins' => $this->plugins($installed),
             'themes' => $this->themes($installed),
             'dropins' => $this->simple($installed, ComponentType::Dropin),
             'mu_plugins' => $this->simple($installed, ComponentType::MuPlugin),
             'pending_updates' => [],
+            'environment' => ['php' => ['binary' => $php->binary, 'warnings' => $php->warnings]],
             'taken_at' => now(),
         ];
 

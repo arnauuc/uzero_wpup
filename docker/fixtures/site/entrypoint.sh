@@ -103,6 +103,18 @@ VHOST
 a2ensite -q site >/dev/null
 echo "ServerName ${SITE_DOMAIN}" > /etc/apache2/conf-enabled/servername.conf
 
+# Plesk's PHP layout (UZEROWPUP-29): the domain's PHP-FPM pool sits under the
+# PHP build that serves it, and the subscription user can list it. Only on the
+# sites that set PLESK_PHP_LAYOUT=1; the others test the fallback to the CLI PHP.
+if [ "${PLESK_PHP_LAYOUT:-0}" = 1 ]; then
+    PHP_MINOR=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+    mkdir -p "/opt/plesk/php/${PHP_MINOR}/bin" "/opt/plesk/php/${PHP_MINOR}/etc/php-fpm.d"
+    ln -sf "$(command -v php)" "/opt/plesk/php/${PHP_MINOR}/bin/php"
+    printf '; Fixture: Plesk-style pool marker for %s (not used by Apache here).\n[%s]\n' "$SITE_DOMAIN" "$SITE_DOMAIN" \
+        > "/opt/plesk/php/${PHP_MINOR}/etc/php-fpm.d/${SITE_DOMAIN}.conf"
+    chmod 0644 "/opt/plesk/php/${PHP_MINOR}/etc/php-fpm.d/${SITE_DOMAIN}.conf"
+fi
+
 /usr/sbin/sshd
 
 # Serve the web as the subscription user, like a Plesk subscription with suexec/FPM.

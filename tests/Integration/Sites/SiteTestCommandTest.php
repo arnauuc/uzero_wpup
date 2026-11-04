@@ -117,5 +117,6 @@ it('tests several sites and prints JSON for scripts', function (): void {
 
     expect($json)->toHaveKey('sites')
         ->and(data_get($json, 'sites.'.$a->name.'.result'))->toBe('ok')
-        ->and(data_get($json, 'sites.'.$b->name.'.result'))->toBe('ok');
+        // wp74 has no readable Plesk handler: its CLI PHP is reported as unverified.
+        ->and(data_get($json, 'sites.'.$b->name.'.result'))->toBe('warning');
 });

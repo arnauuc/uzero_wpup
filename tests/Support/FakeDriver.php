@@ -8,6 +8,7 @@ use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\Data\LogCursor;
+use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\Data\ProbeCheck;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Data\RemoteFile;
@@ -17,6 +18,7 @@ use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
+use App\Enums\PhpVersionSource;
 
 /**
  * In-memory WordPress site for unit tests (AGENTS.md: FakeDriver in unit tests,
@@ -38,6 +40,9 @@ final class FakeDriver implements SiteDriver
     public array $phpLog = [];
 
     public bool $maintenance = false;
+
+    /** Null: the configured PHP, with $phpVersion. */
+    public ?PhpRuntime $phpRuntime = null;
 
     public string $dbServerVersion = '10.11.9-MariaDB';
 
@@ -70,6 +75,11 @@ final class FakeDriver implements SiteDriver
             new ProbeCheck('wp-cli', CheckResult::Ok, 'fake'),
             new ProbeCheck('php', CheckResult::Ok, $this->phpVersion),
         ]);
+    }
+
+    public function phpRuntime(): PhpRuntime
+    {
+        return $this->phpRuntime ?? new PhpRuntime($this->phpVersion, 'php', PhpVersionSource::Configured);
     }
 
     public function installedComponents(): InstalledComponents

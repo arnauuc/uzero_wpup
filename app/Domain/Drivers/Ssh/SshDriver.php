@@ -8,6 +8,7 @@ use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\Data\LogCursor;
+use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\Data\ProbeCheck;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Data\RemoteFile;
@@ -19,6 +20,7 @@ use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
+use App\Enums\PhpVersionSource;
 
 /**
  * SiteDriver over SSH (UZEROWPUP-23): commands through phpseclib, files through
@@ -39,6 +41,8 @@ final class SshDriver implements SiteDriver
     private ?string $home = null;
 
     private bool $wpCliReady = false;
+
+    private ?PhpRuntime $runtime = null;
 
     public function __construct(
         private readonly SshTarget $target,
@@ -76,13 +80,18 @@ final class SshDriver implements SiteDriver
         }
         $checks[] = new ProbeCheck('eines', CheckResult::Ok, implode(', ', self::REQUIRED_TOOLS));
 
-        $php = $this->exec(escapeshellarg($this->php()).' -r '.escapeshellarg('echo PHP_VERSION;'), 30);
-        if (! $php->successful()) {
-            $checks[] = new ProbeCheck('php', CheckResult::Error, "No es pot executar el PHP del domini ({$this->php()}).");
+        try {
+            $runtime = $this->phpRuntime();
+        } catch (DriverException $e) {
+            $checks[] = new ProbeCheck('php', CheckResult::Error, "No es pot executar el PHP del domini: {$e->getMessage()}");
 
             return new ProbeResult($checks);
         }
-        $checks[] = new ProbeCheck('php', CheckResult::Ok, trim($php->stdout)." ({$this->php()})");
+        $checks[] = new ProbeCheck(
+            'php',
+            $runtime->warnings === [] ? CheckResult::Ok : CheckResult::Warning,
+            trim("{$runtime->version} ({$runtime->binary}, {$runtime->source->value}) ".implode(' ', $runtime->warnings)),
+        );
 
         try {
             $version = $this->wpOk(['cli', 'version'], 'WP-CLI');
@@ -116,7 +125,7 @@ final class SshDriver implements SiteDriver
     public function installedComponents(): InstalledComponents
     {
         $core = trim($this->wpOk(['core', 'version'], 'La lectura de la versió del core')->stdout);
-        $php = trim($this->mustExec(escapeshellarg($this->php()).' -r '.escapeshellarg('echo PHP_VERSION;'), 'La lectura de la versió de PHP')->stdout);
+        $php = $this->phpRuntime()->version;
         $db = trim($this->wpOk(['eval', 'echo $GLOBALS["wpdb"]->db_server_info();'], 'La lectura de la versió de la BD')->stdout);
 
         $components = [];
@@ -480,9 +489,97 @@ final class SshDriver implements SiteDriver
         return [ctype_digit($size) ? (int) $size : 0, $inode];
     }
 
+    public function phpRuntime(): PhpRuntime
+    {
+        return $this->runtime ??= $this->detectPhp();
+    }
+
     private function php(): string
     {
-        return $this->target->phpBinary ?? 'php';
+        return $this->phpRuntime()->binary;
+    }
+
+    /**
+     * The domain's handler on Plesk, else the binary configured for the site,
+     * else the account's default `php` (UZEROWPUP-29). A configured binary that
+     * disagrees with the handler is overridden, with a warning.
+     */
+    private function detectPhp(): PhpRuntime
+    {
+        $warnings = [];
+        $configured = $this->target->phpBinary;
+        $handler = $this->target->pleskDomain === null ? null : $this->pleskHandlerBinary($warnings);
+
+        if ($handler !== null) {
+            try {
+                $version = $this->phpVersionOf($handler);
+
+                if ($configured !== null && $configured !== $handler) {
+                    $warnings[] = "El PHP configurat al lloc ({$configured}) no és el del domini a Plesk ({$handler}): es fa servir el del domini.";
+                }
+
+                return new PhpRuntime($version, $handler, PhpVersionSource::PleskHandler, $warnings);
+            } catch (RemoteCommandFailed) {
+                $warnings[] = "El PHP del pool del domini ({$handler}) no s'ha pogut executar.";
+            }
+        }
+
+        if ($configured !== null) {
+            return new PhpRuntime($this->phpVersionOf($configured), $configured, PhpVersionSource::Configured, $warnings);
+        }
+
+        $warnings[] = 'Es fa servir el PHP per defecte del compte (`php`), que pot no ser el que serveix el web.';
+
+        return new PhpRuntime($this->phpVersionOf('php'), 'php', PhpVersionSource::Cli, $warnings);
+    }
+
+    /**
+     * Finds the domain's PHP-FPM pool as the subscription user (never root):
+     * Plesk's own PHP builds (/opt/plesk/php/X.Y) or the OS vendor's (/etc/php/X.Y).
+     * Only readable directory listings are needed, not the pool files' contents.
+     *
+     * @param  list<string>  $warnings
+     */
+    private function pleskHandlerBinary(array &$warnings): ?string
+    {
+        $domain = (string) $this->target->pleskDomain;
+        if (preg_match('/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/', $domain) !== 1) {
+            $warnings[] = "El domini «{$domain}» no és vàlid: no es busca el seu PHP a Plesk.";
+
+            return null;
+        }
+
+        $globs = [];
+        foreach (array_unique([$domain, (string) preg_replace('/^www\./', '', $domain)]) as $name) {
+            $file = escapeshellarg($name.'.conf');
+            $globs[] = "/opt/plesk/php/*/etc/php-fpm.d/{$file}";
+            $globs[] = "/etc/php/*/fpm/pool.d/{$file}";
+        }
+        $found = $this->exec('for f in '.implode(' ', $globs).'; do [ -e "$f" ] && printf "%s\n" "$f"; done; true', 30)->stdout;
+
+        $binaries = [];
+        foreach (array_filter(explode("\n", $found)) as $path) {
+            if (preg_match('#^/opt/plesk/php/(\d+\.\d+)/etc/php-fpm\.d/#', $path, $m) === 1) {
+                $binaries["/opt/plesk/php/{$m[1]}/bin/php"] = true;
+            } elseif (preg_match('#^/etc/php/(\d+\.\d+)/fpm/pool\.d/#', $path, $m) === 1) {
+                $binaries["/usr/bin/php{$m[1]}"] = true;
+            }
+        }
+
+        if (count($binaries) === 1) {
+            return (string) array_key_first($binaries);
+        }
+
+        $warnings[] = $binaries === []
+            ? "No s'ha trobat el pool de PHP-FPM del domini {$domain} a Plesk (handler FastCGI o sense permís de lectura)."
+            : "El domini {$domain} té diversos pools de PHP-FPM (".implode(', ', array_keys($binaries)).'): no se sap quin serveix el web.';
+
+        return null;
+    }
+
+    private function phpVersionOf(string $binary): string
+    {
+        return trim($this->mustExec(escapeshellarg($binary).' -r '.escapeshellarg('echo PHP_VERSION;'), "La lectura de la versió de PHP ({$binary})", 30)->stdout);
     }
 
     private function exec(string $command, ?int $timeoutSeconds = null): CommandResult
