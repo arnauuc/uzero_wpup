@@ -4,14 +4,16 @@ declare(strict_types=1);
 
 namespace App\Console\Commands\Credentials;
 
+use App\Console\Concerns\WaitsForWorkers;
 use App\Domain\Credentials\KeyRotationStep;
-use App\Domain\Runs\RunFollower;
 use App\Domain\Runs\RunLauncher;
 use App\Enums\RunStatus;
 use App\Enums\RunType;
 
 final class SshKeyRotateCommand extends CredentialCommand
 {
+    use WaitsForWorkers;
+
     protected $signature = 'ssh-key:rotate
         {server : Nom del servidor d\'hosting}
         {account : Usuari de sistema del compte}
@@ -39,7 +41,11 @@ final class SshKeyRotateCommand extends CredentialCommand
 
         // Revealing the keys needs the private KEK, which only the workers have (ADR-0011).
         $run = app(RunLauncher::class)->launchForAccount(RunType::KeyRotation, $account, $this->actor());
-        $final = app(RunFollower::class)->wait([$run->id])[0];
+        $timeout = config('wpup.credential_operations.key_rotation_timeout_seconds');
+        $final = $this->waitForWorkers([$run], is_int($timeout) ? $timeout : 300)[0] ?? null;
+        if ($final === null) {
+            return self::FAILURE;
+        }
         $step = $final->steps()->where('name', KeyRotationStep::NAME)->first();
 
         if ($final->status !== RunStatus::Succeeded) {

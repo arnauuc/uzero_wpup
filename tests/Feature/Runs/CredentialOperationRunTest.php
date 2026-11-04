@@ -19,12 +19,14 @@ use App\Domain\Secrets\SecretStore;
 use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
 use App\Enums\RunStatus;
+use App\Enums\RunStepStatus;
 use App\Enums\RunType;
 use App\Enums\UserRole;
 use App\Jobs\ExecuteRun;
 use App\Models\AuditLogEntry;
 use App\Models\HostingAccount;
 use App\Models\Run;
+use App\Models\RunStep;
 use App\Models\Site;
 use App\Models\User;
 use Illuminate\Redis\Connections\PhpRedisConnection;
@@ -186,4 +188,32 @@ it('warns and gives up in site:test when no worker runs', function (): void {
         ->expectsOutputToContain('Encara en cua')
         ->expectsOutputToContain("Deixo d'esperar")
         ->assertFailed();
+});
+
+it('reports the progress a running step writes to its summary', function (): void {
+    $run = Run::factory()->create(['type' => RunType::SecretsRekey, 'site_id' => null, 'status' => RunStatus::Running]);
+    $step = RunStep::factory()->for($run)->create(['name' => 'secrets_rekey', 'status' => RunStepStatus::Running, 'summary' => '50/100']);
+    $polls = 0;
+    Sleep::fake();
+    Sleep::whenFakingSleep(static function () use (&$polls, $run, $step): void {
+        $polls++;
+        $polls === 1
+            ? $step->update(['summary' => '100/100'])
+            : $run->update(['status' => RunStatus::Succeeded]);
+    });
+    $seen = [];
+
+    app(RunFollower::class)->wait([$run->id], function (Run $run, RunStep $step) use (&$seen): void {
+        $seen[] = $step->summary;
+    });
+
+    expect($seen)->toBe(['50/100', '100/100']);
+});
+
+it('labels a key rotation run with its hosting account, not as fleet-wide', function (): void {
+    $account = HostingAccount::factory()->create(['system_user' => 'botiga']);
+    $run = Run::factory()->create(['site_id' => null, 'hosting_account_id' => $account->id, 'type' => RunType::KeyRotation]);
+
+    expect($run->fresh()?->targetLabel())->toBe("compte botiga@{$account->hostingServer()->firstOrFail()->name}")
+        ->and(Run::factory()->create(['site_id' => null])->targetLabel())->toBe('flota');
 });

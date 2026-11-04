@@ -31,9 +31,10 @@ El parell el crea i el segella **root**. L'eina (usuari `wpup`) no pot fer-ho i 
 3. **Carregar totes dues versions.**
    - Al `.env` de l'eina, afegeix `WPUP_SECRETS_PUBLIC_KEY_V2=<clau pública del pas 1>` sense treure la `V1`, i posa `WPUP_KEK_VERSION=2`.
    - A les unitats de systemd dels **workers i del scheduler** (mai a la CLI ni al web), afegeix `LoadCredentialEncrypted=wpup-kek-v2` sense treure la `v1`.
+   - Regenera la memòria cau de configuració (`sudo -u wpup php artisan config:cache`): les claus públiques i la versió vigent es llegeixen del `.env` en carregar la configuració, i sense aquest pas la CLI, el web i els workers continuarien amb la configuració antiga.
    - Fes `systemctl daemon-reload`, reinicia els workers i el scheduler, i recarrega PHP-FPM perquè llegeixi la configuració nova.
 
-   Des d'ara, els secrets nous es tanquen amb la v2 i els antics encara es poden obrir amb la v1. Si la clau privada carregada no correspon a la pública de la configuració, els workers ho detecten i es neguen a obrir res.
+   Des d'ara, els secrets nous es tanquen amb la v2 i els antics encara es poden obrir amb la v1. En menys d'un minut, el scheduler comprova que la clau privada v2 correspon a la pública. Fins llavors, i si no hi correspon, la CLI i el web **es neguen a desar secrets** ("has not been confirmed") i el scheduler ho registra com a error crític. Revisa la clau pública del pas 1 abans de continuar.
 
 4. **Tornar a tancar les claus de dades.** Un `admin` executa:
 
@@ -48,6 +49,6 @@ El parell el crea i el segella **root**. L'eina (usuari `wpup`) no pot fer-ho i 
    - treu `LoadCredentialEncrypted=wpup-kek-v1` de les unitats;
    - treu `WPUP_SECRETS_PUBLIC_KEY_V1` del `.env`;
    - esborra `/etc/credstore.encrypted/wpup-kek-v1`;
-   - reinicia els workers i el scheduler.
+   - regenera la memòria cau de configuració (`config:cache`) i reinicia els workers i el scheduler.
 
    El custodi marca l'entrada antiga del KeePassXC com a retirada. No l'esborris fins que hagi caducat la còpia de la BD de l'eina feta abans de la rotació: per restaurar-la cal la clau privada antiga.

@@ -10,6 +10,7 @@ use App\Domain\Runs\Step;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
 use App\Domain\Secrets\SecretStoreException;
+use App\Enums\RunStepStatus;
 
 /**
  * `secrets:rekey` on the worker (ADR-0011, point 3): opening each data key needs
@@ -19,6 +20,8 @@ use App\Domain\Secrets\SecretStoreException;
 final readonly class SecretsRekeyStep implements Step
 {
     public const string NAME = 'secrets_rekey';
+
+    private const int PROGRESS_EVERY = 50;
 
     public function __construct(
         private SecretsRekey $rekey,
@@ -48,8 +51,16 @@ final readonly class SecretsRekeyStep implements Step
             return StepOutcome::failed(RunAuthorization::deniedMessage($context->run));
         }
 
+        // Progress for the waiting CLI (RunFollower reports summary changes).
+        $step = $context->run->steps()->where('name', self::NAME)->where('status', RunStepStatus::Running);
+        $progress = static function (int $done, int $total) use ($step): void {
+            if ($done === $total || $done % self::PROGRESS_EVERY === 0) {
+                $step->update(['summary' => "{$done}/{$total} claus de dades tornades a tancar…"]);
+            }
+        };
+
         try {
-            $done = $this->rekey->run($actor);
+            $done = $this->rekey->run($actor, $progress);
         } catch (SecretStoreException $e) {
             return StepOutcome::failed("S'ha aturat: {$e->getMessage()} Torna-ho a executar per continuar.");
         }

@@ -81,6 +81,23 @@ class Run extends Model
     }
 
     /**
+     * What the run targets, for listings: its site, its hosting account (key
+     * rotation) or the whole fleet.
+     */
+    public function targetLabel(): string
+    {
+        if ($this->site !== null) {
+            return $this->site->name;
+        }
+
+        $account = $this->hostingAccount;
+
+        return $account !== null
+            ? "compte {$account->system_user}@".($account->hostingServer->name ?? "#{$account->hosting_server_id}")
+            : 'flota';
+    }
+
+    /**
      * @return BelongsTo<Run, $this>
      */
     public function parent(): BelongsTo
