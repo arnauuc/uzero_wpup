@@ -203,6 +203,16 @@ return [
                 'wp-content/uploads/snapshots',
             ],
         ],
+        // Destination on the site's own server (UZEROWPUP-40): a directory of the
+        // tool's work directory (outside the docroot, 0700), shared by every site
+        // through one backup_targets row of type site_local, linked to each site
+        // when it is created (SiteLocalDestination).
+        'site_local' => [
+            'name' => 'local',
+            'root' => 'restore-points',
+            // Read size when copying a stream to the temporary file it uploads.
+            'copy_chunk_bytes' => 1_048_576,
+        ],
     ],
 
     'inventory' => [

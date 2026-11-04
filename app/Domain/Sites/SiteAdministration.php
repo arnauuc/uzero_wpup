@@ -6,6 +6,7 @@ namespace App\Domain\Sites;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
+use App\Domain\Backups\SiteLocalDestination;
 use App\Enums\AuditResult;
 use App\Enums\HostingPanel;
 use App\Enums\SiteDriverType;
@@ -47,7 +48,7 @@ final readonly class SiteAdministration
 
     private const SYSTEM_USER = '/^[a-z_][a-z0-9_.-]{0,31}$/';
 
-    public function __construct(private AuditLogger $audit) {}
+    public function __construct(private AuditLogger $audit, private SiteLocalDestination $siteLocal) {}
 
     /**
      * @return array<string, mixed> Flat summary of what is (or, in dry-run, would be) stored.
@@ -101,6 +102,8 @@ final readonly class SiteAdministration
             ]);
             $site = Site::query()->create($plan['site'] + ['name' => $name, 'hosting_account_id' => $account->id]);
             SiteProfile::query()->create($plan['profile'] + ['site_id' => $site->id]);
+            // Restore points live on the site's own server (ADR-0009, UZEROWPUP-40).
+            $this->siteLocal->attach($site);
 
             return $site;
         });
