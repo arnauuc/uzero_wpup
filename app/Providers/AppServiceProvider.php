@@ -20,9 +20,12 @@ use App\Domain\Inventory\HttpProbe;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteInventory;
+use App\Domain\Inventory\SitePrerequisites;
 use App\Domain\Inventory\SiteState;
 use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
+use App\Domain\Notifications\LogSiteBlockNotifier;
+use App\Domain\Notifications\SiteBlockNotifier;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
@@ -38,6 +41,7 @@ use App\Domain\Secrets\Kek\SystemdCredentialKekProvider;
 use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Secrets\SecretStore;
 use App\Domain\Secrets\SecretStoreException;
+use App\Domain\Sites\SiteBlocking;
 use App\Domain\Sites\SiteTestStep;
 use App\Enums\RunType;
 use App\Models\Site;
@@ -135,7 +139,16 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.state.cron_overdue_after_seconds'),
             self::configInt('wpup.inventory.state.maintenance_ttl_seconds'),
         ));
-        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class)));
+        $this->app->bind(SitePrerequisites::class, static fn (Application $app): SitePrerequisites => new SitePrerequisites(
+            $app->make(WpCliReader::class),
+            self::configString('wpup.min_site_php'),
+            self::configFloat('wpup.inventory.prerequisites.backup_space_factor'),
+            self::configInt('wpup.inventory.prerequisites.command_timeout_seconds'),
+            self::configInt('wpup.inventory.prerequisites.du_timeout_seconds'),
+        ));
+        // Until the notification channels exist (F5), blocks only reach the log.
+        $this->app->bind(SiteBlockNotifier::class, LogSiteBlockNotifier::class);
+        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
             $resolver->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([
@@ -165,6 +178,7 @@ class AppServiceProvider extends ServiceProvider
                     static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
                     $app->make(RunAuthorization::class),
                     self::configInt('wpup.inventory.step_timeout_seconds'),
+                    $app->make(SiteBlocking::class),
                 ),
             ]));
         });
@@ -276,6 +290,13 @@ class AppServiceProvider extends ServiceProvider
         return is_string($value) ? $value : throw new \UnexpectedValueException($key.' must be a string.');
     }
 
+    private static function configFloat(string $key): float
+    {
+        $value = config($key);
+
+        return is_int($value) || is_float($value) ? (float) $value : throw new \UnexpectedValueException($key.' must be a number.');
+    }
+
     private static function configInt(string $key): int
     {
         $value = config($key);
@@ -288,6 +309,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // ADR-0007: the minimum PHP of the fleet cannot be configured below 7.4.
+        SitePrerequisites::assertMinimumPhp(config('wpup.min_site_php'));
+
         // Second line of defence behind the `wpup` bash wrapper: when invoked through
         // it (WPUP_CLI=1), only Uzero wpup commands may run (ADR-0002).
         Event::listen(CommandStarting::class, function (CommandStarting $event): void {

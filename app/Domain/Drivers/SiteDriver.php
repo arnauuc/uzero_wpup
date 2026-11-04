@@ -149,6 +149,27 @@ interface SiteDriver
     public function freeDiskBytes(): int;
 
     /**
+     * Bytes used on disk by the WordPress root (code, uploads…), to estimate
+     * the size of a file backup (UZEROWPUP-34).
+     *
+     * @param  int|null  $timeoutSeconds  a big site may need more than the usual command timeout
+     *
+     * @throws DriverException including when the measure times out
+     */
+    public function diskUsageBytes(?int $timeoutSeconds = null): int;
+
+    /**
+     * The paths of the code the account must be able to write to update and
+     * restore it (WordPress root, wp-content, plugins, themes) that it can NOT
+     * write to. Empty means all is writable (UZEROWPUP-34).
+     *
+     * @return list<string>
+     *
+     * @throws DriverException
+     */
+    public function unwritablePaths(): array;
+
+    /**
      * Writes a temporary tool file into the WordPress root, where the web
      * serves it (the HTTP probe, UZEROWPUP-30). $name is a bare file name; an
      * existing file is never overwritten.

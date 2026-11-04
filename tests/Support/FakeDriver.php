@@ -113,6 +113,27 @@ final class FakeDriver implements SiteDriver
     /** Makes freeDiskBytes() throw a DriverException. */
     public bool $diskFails = false;
 
+    /** Bytes the WordPress root uses on disk (diskUsageBytes()). */
+    public int $filesBytes = 200_000_000;
+
+    /** Makes diskUsageBytes() throw a DriverException. */
+    public bool $diskUsageFails = false;
+
+    /** @var list<int|null> the timeout of every diskUsageBytes() call */
+    public array $duTimeouts = [];
+
+    /** Thrown by installedComponents() when set (WP-CLI broken, lost connection…). */
+    public ?\Throwable $installedFailure = null;
+
+    /** Makes unwritablePaths() throw a DriverException. */
+    public bool $unwritableFails = false;
+
+    /** @var list<string> paths unwritablePaths() reports */
+    public array $unwritable = [];
+
+    /** @var array<string, int> table => bytes, what `wp db size --all-tables-with-prefix` reports */
+    public array $dbTables = ['wp_options' => 300_000, 'wp_posts' => 20_000_000, 'wp_postmeta' => 30_000_000];
+
     /** @var list<list<string>> every WP-CLI call, for assertions */
     public array $wpCalls = [];
 
@@ -179,6 +200,10 @@ final class FakeDriver implements SiteDriver
 
     public function installedComponents(): InstalledComponents
     {
+        if ($this->installedFailure !== null) {
+            throw $this->installedFailure;
+        }
+
         return new InstalledComponents($this->coreVersion, $this->phpRuntime()->version, $this->dbServerVersion, array_values($this->components), $this->activeTheme, $this->parentTheme);
     }
 
@@ -198,6 +223,11 @@ final class FakeDriver implements SiteDriver
 
         return match (true) {
             $args === ['eval', SiteState::SNIPPET] => $this->ok($this->snippetOutput ?? $this->stateSnippet()),
+            $args === ['db', 'size', '--size_format=b', '--all-tables-with-prefix', '--format=json'] => $this->ok((string) json_encode(array_map(
+                static fn (string $name, int $bytes): array => ['Name' => $name, 'Size' => "{$bytes} B"],
+                array_keys($this->dbTables),
+                array_values($this->dbTables),
+            ))),
             $args === ['core', 'version'] => $this->ok($this->coreVersion."\n"),
             $args === ['maintenance-mode', 'is-active'] => $this->maintenance
                 ? $this->ok('')
@@ -311,6 +341,26 @@ final class FakeDriver implements SiteDriver
         }
 
         return $this->freeDisk;
+    }
+
+    public function diskUsageBytes(?int $timeoutSeconds = null): int
+    {
+        $this->duTimeouts[] = $timeoutSeconds;
+
+        if ($this->diskUsageFails) {
+            throw new DriverException('du ha fallat');
+        }
+
+        return $this->filesBytes;
+    }
+
+    public function unwritablePaths(): array
+    {
+        if ($this->unwritableFails) {
+            throw new DriverException('la comprovació de permisos ha fallat');
+        }
+
+        return $this->unwritable;
     }
 
     public function remove(string $remotePath): void
