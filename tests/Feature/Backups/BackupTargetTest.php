@@ -14,7 +14,6 @@ use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Site;
 use Illuminate\Database\UniqueConstraintViolationException;
 use League\Flysystem\Filesystem;
-use League\Flysystem\FilesystemOperator;
 use League\Flysystem\Local\LocalFilesystemAdapter;
 use League\Flysystem\UnableToCheckExistence;
 use Tests\Contracts\BackupTargetContract;
@@ -123,9 +122,15 @@ it('keeps stored objects private on a local disk', function (): void {
 
 it('masks secrets in adapter errors', function (): void {
     app(SecretRedactor::class)->register('s3cr3t-token-value');
-    $filesystem = Mockery::mock(FilesystemOperator::class);
-    $filesystem->shouldReceive('fileExists')->andThrow(new UnableToCheckExistence('https://bucket/x?sig=s3cr3t-token-value'));
-    $target = new FlysystemTarget($filesystem, app(SecretRedactor::class), 1024);
+    // An adapter whose errors carry a signed URL, as S3 or Dropbox may.
+    $adapter = new class(sys_get_temp_dir()) extends LocalFilesystemAdapter
+    {
+        public function fileExists(string $path): bool
+        {
+            throw new UnableToCheckExistence('https://bucket/x?sig=s3cr3t-token-value');
+        }
+    };
+    $target = new FlysystemTarget(new Filesystem($adapter), app(SecretRedactor::class), 1024);
 
     expect(fn () => $target->exists('x/y.gz'))->toThrow(BackupTargetException::class)
         ->and(fn () => $target->exists('x/y.gz'))->not->toThrow(BackupTargetException::class, 's3cr3t-token-value');
