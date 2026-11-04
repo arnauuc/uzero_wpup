@@ -56,6 +56,33 @@ final readonly class SiteLockManager
         return 1
         LUA;
 
+    private const ACQUIRE_ACCOUNT = <<<'LUA'
+        if redis.call('exists', KEYS[1]) == 1 then
+            return {'hosting_account', redis.call('get', KEYS[2]) or ''}
+        end
+        redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2])
+        redis.call('set', KEYS[2], ARGV[3], 'EX', ARGV[2])
+        redis.call('sadd', KEYS[3], ARGV[4])
+        return {'ok'}
+        LUA;
+
+    private const REFRESH_ACCOUNT = <<<'LUA'
+        if redis.call('get', KEYS[1]) ~= ARGV[1] then
+            return 0
+        end
+        redis.call('expire', KEYS[1], ARGV[2])
+        redis.call('expire', KEYS[2], ARGV[2])
+        return 1
+        LUA;
+
+    private const RELEASE_ACCOUNT = <<<'LUA'
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+            redis.call('del', KEYS[1], KEYS[2])
+            redis.call('srem', KEYS[3], ARGV[2])
+        end
+        return 1
+        LUA;
+
     public function __construct(
         private PhpRedisConnection $redis,
         private int $ttlSeconds,
@@ -84,6 +111,41 @@ final readonly class SiteLockManager
         }
 
         return new SiteLease($this, $site->id, $site->hosting_account_id, $owner);
+    }
+
+    /**
+     * Only the hosting account (key rotation). Fails if the account, or any of its
+     * sites (a site lock also holds its account), is busy.
+     *
+     * @throws LockedException
+     */
+    public function acquireAccount(int $hostingAccountId, string $actor, ?int $runId = null): AccountLease
+    {
+        $owner = (string) Str::uuid();
+        $holder = new LockHolder($actor, $runId, CarbonImmutable::now(), null, $hostingAccountId);
+        $key = self::key(LockLevel::HostingAccount, $hostingAccountId);
+
+        $result = $this->redis->eval(self::ACQUIRE_ACCOUNT, 3, $key, $key.':meta', self::INDEX, $owner, $this->ttlSeconds, $holder->toJson(), $key);
+
+        if (is_array($result) && ($result[0] ?? null) !== 'ok') {
+            throw new LockedException(LockLevel::HostingAccount, LockHolder::fromJson(is_string($result[1] ?? null) ? $result[1] : ''));
+        }
+
+        return new AccountLease($this, $hostingAccountId, $owner);
+    }
+
+    public function refreshAccount(AccountLease $lease): bool
+    {
+        $key = self::key(LockLevel::HostingAccount, $lease->hostingAccountId);
+
+        return $this->redis->eval(self::REFRESH_ACCOUNT, 2, $key, $key.':meta', $lease->owner, $this->ttlSeconds) === 1;
+    }
+
+    public function releaseAccount(AccountLease $lease): void
+    {
+        $key = self::key(LockLevel::HostingAccount, $lease->hostingAccountId);
+
+        $this->redis->eval(self::RELEASE_ACCOUNT, 3, $key, $key.':meta', self::INDEX, $lease->owner, $key);
     }
 
     public function refresh(SiteLease $lease): bool

@@ -7,22 +7,22 @@ namespace App\Domain\Credentials;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Secrets\EnvelopeSecretStore;
-use App\Domain\Secrets\Kek\KekProvider;
+use App\Domain\Secrets\Kek\PublicKeyRing;
 use App\Enums\AuditResult;
 use App\Models\StoredSecret;
 use Closure;
 
 /**
- * Moves every secret to the current KEK (ADR-0002, point 7). The new KEK is
- * created and sealed by root (docs/runbooks/rotacio-kek.md); both versions are
- * loaded while this runs. One row per transaction, so it is idempotent and an
+ * Moves every secret to the current KEK version (ADR-0011, point 3). The new key
+ * pair is created and sealed by root (docs/runbooks/rotacio-kek.md); both private
+ * keys are loaded into the workers while this runs, so it runs there. One row per transaction, so it is idempotent and an
  * interrupted run simply continues where it stopped.
  */
 final readonly class SecretsRekey
 {
     public function __construct(
         private EnvelopeSecretStore $store,
-        private KekProvider $keks,
+        private PublicKeyRing $keks,
         private AuditLogger $audit,
     ) {}
 

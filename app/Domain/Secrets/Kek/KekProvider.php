@@ -5,20 +5,19 @@ declare(strict_types=1);
 namespace App\Domain\Secrets\Kek;
 
 use App\Domain\Secrets\Secret;
+use App\Domain\Secrets\SecretStoreException;
 
 /**
- * Source of the key-encryption key (ADR-0002). Several versions can coexist
- * while `secrets:rekey` re-wraps the data keys (UZEROWPUP-123).
+ * Private half of the key-encryption key (ADR-0011). Only the services that
+ * systemd hands the sealed credential to (Horizon workers and the scheduler)
+ * have it; in the CLI and the web it is unavailable by design.
  */
 interface KekProvider
 {
     /**
-     * Version used to wrap new data keys.
+     * The raw 32-byte X25519 secret key of a version.
+     *
+     * @throws SecretStoreException when this process has no private key
      */
-    public function currentVersion(): int;
-
-    /**
-     * The raw 32-byte key for a version.
-     */
-    public function key(int $version): Secret;
+    public function privateKey(int $version): Secret;
 }

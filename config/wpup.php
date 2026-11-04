@@ -20,9 +20,40 @@ return [
      */
     'secrets' => [
         'kek_provider' => env('WPUP_KEK_PROVIDER', 'systemd'),
+        // Version used to seal new secrets (ADR-0011).
         'kek_version' => (int) env('WPUP_KEK_VERSION', 1),
+        // systemd credential holding the X25519 private key of each version; only
+        // the worker and scheduler units load it (LoadCredentialEncrypted=).
         'credential_prefix' => 'wpup-kek-v',
+        // Public keys (not secret), one per version: WPUP_SECRETS_PUBLIC_KEY_V<n>.
+        'public_keys' => (static function (): array {
+            $keys = [];
+            foreach (array_merge(getenv(), $_ENV) as $name => $value) {
+                if (is_string($name) && is_string($value) && preg_match('/^WPUP_SECRETS_PUBLIC_KEY_V([1-9][0-9]*)$/', $name, $m) === 1) {
+                    $keys[(int) $m[1]] = $value;
+                }
+            }
+            ksort($keys);
+
+            return $keys;
+        })(),
+        // Development and tests only: the X25519 private key (base64) of version 1.
         'dev_kek' => env('WPUP_DEV_KEK'),
+    ],
+
+    /*
+     * Operations that need a secret in clear run on the workers (ADR-0011): the
+     * CLI queues them and waits. Step timeouts, in seconds.
+     */
+    'credential_operations' => [
+        'site_test_timeout_seconds' => 300,
+        'key_rotation_timeout_seconds' => 300,
+        'secrets_rekey_timeout_seconds' => 3600,
+        // The CLI waits for these runs up to their step timeout plus this margin
+        // (queue and lock waits), and warns if they are still queued after
+        // queued_notice_seconds (no worker, or a busy lock).
+        'wait_margin_seconds' => 600,
+        'queued_notice_seconds' => 15,
     ],
 
     /*

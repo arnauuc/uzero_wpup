@@ -8,10 +8,11 @@ use App\Domain\Secrets\Secret;
 use App\Domain\Secrets\SecretStoreException;
 
 /**
- * Development and test provider: one KEK (version 1) from WPUP_DEV_KEK.
- * Never used in production (ADR-0002): construction fails there.
+ * Development and test provider: one X25519 private key (version 1) from
+ * WPUP_DEV_KEK, whose public key is derived from it. Every process has the
+ * private key here, unlike production. Construction fails when APP_ENV=production.
  */
-final readonly class EnvKekProvider implements KekProvider
+final readonly class EnvKekProvider implements KekProvider, PublicKeyRing
 {
     public function __construct(
         #[\SensitiveParameter] private ?string $encodedKey,
@@ -27,7 +28,18 @@ final readonly class EnvKekProvider implements KekProvider
         return 1;
     }
 
-    public function key(int $version): Secret
+    public function publicKey(int $version): string
+    {
+        $private = $this->privateKey($version);
+
+        try {
+            return KekDecoder::publicKeyOf($private);
+        } finally {
+            $private->wipe();
+        }
+    }
+
+    public function privateKey(int $version): Secret
     {
         if ($version !== 1) {
             throw SecretStoreException::kekUnavailable(sprintf('the env provider only has version 1, not %d.', $version));

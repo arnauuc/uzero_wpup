@@ -16,7 +16,8 @@ final readonly class LockHolder
         public string $actor,
         public ?int $runId,
         public CarbonImmutable $acquiredAt,
-        public int $siteId,
+        // Null for an account-only lock (key rotation, UZEROWPUP-138).
+        public ?int $siteId,
         public int $hostingAccountId,
     ) {}
 
@@ -38,7 +39,6 @@ final readonly class LockHolder
         if (! is_array($data)
             || ! is_string($data['actor'] ?? null)
             || ! is_string($data['acquired_at'] ?? null)
-            || ! is_int($data['site_id'] ?? null)
             || ! is_int($data['hosting_account_id'] ?? null)) {
             return null;
         }
@@ -47,7 +47,7 @@ final readonly class LockHolder
             $data['actor'],
             is_int($data['run_id'] ?? null) ? $data['run_id'] : null,
             CarbonImmutable::parse($data['acquired_at']),
-            $data['site_id'],
+            is_int($data['site_id'] ?? null) ? $data['site_id'] : null,
             $data['hosting_account_id'],
         );
     }

@@ -17,7 +17,6 @@ use Illuminate\Database\Eloquent\Model;
  * @property string $ciphertext
  * @property string $nonce
  * @property string $wrapped_dek
- * @property string $dek_nonce
  * @property int $kek_version
  * @property CarbonImmutable $created_at
  * @property CarbonImmutable $updated_at
@@ -32,7 +31,7 @@ class StoredSecret extends Model
     protected $guarded = [];
 
     /** @var list<string> */
-    protected $hidden = ['ciphertext', 'nonce', 'wrapped_dek', 'dek_nonce'];
+    protected $hidden = ['ciphertext', 'nonce', 'wrapped_dek'];
 
     /**
      * @return array<string, string>
