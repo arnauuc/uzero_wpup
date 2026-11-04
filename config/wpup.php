@@ -94,10 +94,12 @@ return [
     /*
      * Update plan (UZEROWPUP-36). A plan never probes the web: it trusts the latest
      * probe-verified PHP of the site only if it is at most this old and the CLI
-     * reports the same minor version.
+     * reports the same minor version. `report_version` is the `wpup plan --json`
+     * document version.
      */
     'planning' => [
         'step_timeout_seconds' => 60,
+        'report_version' => 1,
         'verified_php_max_age_seconds' => 604800,
     ],
 
