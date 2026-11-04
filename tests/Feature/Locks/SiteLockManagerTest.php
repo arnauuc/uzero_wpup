@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
+use App\Domain\Locks\AccountLease;
 use App\Domain\Locks\LockedException;
 use App\Domain\Locks\LockLevel;
 use App\Domain\Locks\SiteLease;
@@ -180,4 +181,37 @@ it('shows the lock status to operators', function (): void {
     app()->instance(OperatorResolver::class, new OperatorResolver('sudo', 'wpup', 'testing'));
 
     lockCommand('lock:status')->expectsOutputToContain('botiga')->assertSuccessful();
+});
+
+it('keeps a key rotation and an update of the same hosting account apart', function (): void {
+    $account = HostingAccount::factory()->create();
+    $site = Site::factory()->for($account)->create();
+
+    $update = locks()->acquire($site, 'anna', 7);
+    $e = lockedBy(fn () => locks()->acquireAccount($account->id, 'joan', 8));
+    expect($e->level)->toBe(LockLevel::HostingAccount)
+        ->and($e->holder?->runId)->toBe(7);
+    $update->release();
+
+    $rotation = locks()->acquireAccount($account->id, 'joan', 8);
+    $e = lockedBy(fn () => locks()->acquire($site, 'anna', 9));
+    expect($e->level)->toBe(LockLevel::HostingAccount)
+        ->and($e->holder?->siteId)->toBeNull()
+        ->and($e->holder?->runId)->toBe(8)
+        ->and($rotation->refresh())->toBeTrue();
+
+    $rotation->release();
+    expect($rotation->refresh())->toBeFalse()
+        ->and(locks()->status())->toBe([]);
+    locks()->acquire($site, 'anna', 9)->release();
+});
+
+it('does not let another owner release an account lock', function (): void {
+    $account = HostingAccount::factory()->create();
+    $held = locks()->acquireAccount($account->id, 'joan', 8);
+
+    (new AccountLease(locks(), $account->id, 'someone-else'))->release();
+
+    expect(lockedBy(fn () => locks()->acquireAccount($account->id, 'anna'))->holder?->actor)->toBe('joan')
+        ->and($held->refresh())->toBeTrue();
 });

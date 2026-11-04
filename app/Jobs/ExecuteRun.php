@@ -8,6 +8,7 @@ use App\Domain\Locks\LockedException;
 use App\Domain\Runs\Concurrency\ConcurrencyLimitReached;
 use App\Domain\Runs\Exceptions\RunAlreadyClaimed;
 use App\Domain\Runs\RunEngine;
+use App\Domain\Secrets\SecretRedactor;
 use App\Models\Run;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -30,7 +31,7 @@ final class ExecuteRun implements ShouldQueue
 
     public function __construct(public readonly int $runId) {}
 
-    public function handle(RunEngine $engine): void
+    public function handle(RunEngine $engine, SecretRedactor $redactor): void
     {
         $run = Run::query()->find($this->runId);
 
@@ -48,6 +49,10 @@ final class ExecuteRun implements ShouldQueue
         } catch (LockedException $e) {
             Log::info('Run waits for a busy lock.', ['run' => $this->runId, 'lock' => $e->getMessage()]);
             $this->release(self::seconds('wpup.runs.lock_retry_seconds'));
+        } finally {
+            // The worker lives on: forget the secrets this run revealed, so they
+            // do not pile up in its memory (the redactor is a process singleton).
+            $redactor->reset();
         }
     }
 

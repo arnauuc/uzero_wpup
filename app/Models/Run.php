@@ -22,6 +22,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property int|null $parent_run_id
  * @property int|null $user_id
  * @property string $actor
+ * @property int|null $hosting_account_id
  * @property AuditChannel $channel
  * @property RunType $type
  * @property UpdateStrategy|null $strategy
@@ -69,6 +70,31 @@ class Run extends Model
     public function site(): BelongsTo
     {
         return $this->belongsTo(Site::class);
+    }
+
+    /**
+     * @return BelongsTo<HostingAccount, $this>
+     */
+    public function hostingAccount(): BelongsTo
+    {
+        return $this->belongsTo(HostingAccount::class);
+    }
+
+    /**
+     * What the run targets, for listings: its site, its hosting account (key
+     * rotation) or the whole fleet.
+     */
+    public function targetLabel(): string
+    {
+        if ($this->site !== null) {
+            return $this->site->name;
+        }
+
+        $account = $this->hostingAccount;
+
+        return $account !== null
+            ? "compte {$account->system_user}@".($account->hostingServer->name ?? "#{$account->hosting_server_id}")
+            : 'flota';
     }
 
     /**

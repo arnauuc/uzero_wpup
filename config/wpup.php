@@ -42,6 +42,21 @@ return [
     ],
 
     /*
+     * Operations that need a secret in clear run on the workers (ADR-0011): the
+     * CLI queues them and waits. Step timeouts, in seconds.
+     */
+    'credential_operations' => [
+        'site_test_timeout_seconds' => 300,
+        'key_rotation_timeout_seconds' => 300,
+        'secrets_rekey_timeout_seconds' => 3600,
+        // The CLI waits for these runs up to their step timeout plus this margin
+        // (queue and lock waits), and warns if they are still queued after
+        // queued_notice_seconds (no worker, or a busy lock).
+        'wait_margin_seconds' => 600,
+        'queued_notice_seconds' => 15,
+    ],
+
+    /*
      * Operator identity (ADR-0002). The tool always runs as the service user and
      * operators call it through `sudo -u wpup wpup ...`.
      *
