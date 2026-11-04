@@ -19,15 +19,23 @@ use Symfony\Component\Process\Process;
  */
 final readonly class RsyncTransfer
 {
+    public const PARTIAL_DIR = '.wpup-rsync-partial';
+
     public function __construct(
         private SshTarget $target,
         private Secret $key,
         private int $timeoutSeconds,
     ) {}
 
+    /**
+     * Resumable: an interrupted transfer leaves its partial file in a hidden
+     * directory next to $localPath (never under the final name), and the next
+     * call continues from it. A final file already there (old or corrupt) is
+     * compared by checksum and replaced if it differs. The local copy is 0600.
+     */
     public function download(string $remotePath, string $localPath): void
     {
-        $this->rsync($this->remote($remotePath), $localPath);
+        $this->rsync($this->remote($remotePath), $localPath, ['--partial', '--partial-dir='.self::PARTIAL_DIR, '--checksum', '--chmod=F600']);
     }
 
     public function upload(string $localPath, string $remotePath): void
@@ -35,7 +43,10 @@ final readonly class RsyncTransfer
         $this->rsync($localPath, $this->remote($remotePath));
     }
 
-    private function rsync(string $from, string $to): void
+    /**
+     * @param  list<string>  $options
+     */
+    private function rsync(string $from, string $to, array $options = []): void
     {
         $dir = sys_get_temp_dir().'/wpup-ssh-'.bin2hex(random_bytes(8));
         if (! mkdir($dir, 0700)) {
@@ -62,7 +73,7 @@ final readonly class RsyncTransfer
                 '-o', 'ConnectTimeout=15',
             ]);
 
-            $rsync = new Process(['rsync', '--protect-args', '-e', $ssh, $from, $to], null, ['SSH_AUTH_SOCK' => $socket], null, $this->timeoutSeconds);
+            $rsync = new Process(['rsync', '--protect-args', ...$options, '-e', $ssh, $from, $to], null, ['SSH_AUTH_SOCK' => $socket], null, $this->timeoutSeconds);
             if ($rsync->run() !== 0) {
                 $reason = trim(mb_substr($rsync->getErrorOutput(), 0, 500));
 

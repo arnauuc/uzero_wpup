@@ -236,6 +236,29 @@ final class SshDriver implements SiteDriver
         return self::names($lines);
     }
 
+    public function archiveRoot(): string
+    {
+        return $this->physicalPath($this->target->wpPath, 'L\'arrel de WordPress');
+    }
+
+    public function workDirExclude(): ?string
+    {
+        $root = rtrim($this->archiveRoot(), '/').'/';
+        $work = $this->physicalPath($this->workDir(), 'El directori de treball');
+
+        return str_starts_with($work.'/', $root) && $work.'/' !== $root ? substr($work, strlen($root)) : null;
+    }
+
+    /**
+     * `cd … && pwd -P` on the site: the real directory, as tar and the web see it.
+     */
+    private function physicalPath(string $path, string $what): string
+    {
+        $out = trim($this->mustExec('cd '.escapeshellarg($path).' && pwd -P', $what)->stdout);
+
+        return str_starts_with($out, '/') ? $out : throw new RemoteCommandFailed("{$what} no té una ruta física vàlida: «{$out}».");
+    }
+
     public function archiveFiles(string $remotePath, array $excludes): RemoteFile
     {
         $path = $this->path($remotePath);
@@ -250,8 +273,9 @@ final class SshDriver implements SiteDriver
 
         // The archive carries its own exclude list, so restoreFiles() never deletes
         // what was left out (uploads…).
+        // umask 077: the archive is 0600, in the 0700 work directory.
         $this->mustExec(
-            'm=$(mktemp -d '.escapeshellarg($this->workDir().'/m-XXXXXX').') && '.$manifest
+            'umask 077; m=$(mktemp -d '.escapeshellarg($this->workDir().'/m-XXXXXX').') && '.$manifest
             ." && tar -czf {$tmp}{$options} -C ".escapeshellarg($this->target->wpPath).' . -C "$m" .wpup-excludes'
             ." && mv {$tmp} ".escapeshellarg($path)
             ."; rc=\$?; rm -rf \"\$m\" {$tmp}; exit \$rc",

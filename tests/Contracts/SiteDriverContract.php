@@ -109,6 +109,14 @@ final class SiteDriverContract
                 }
             });
 
+            it('reports the physical archive root and keeps its work directory out of it', function () use ($factory): void {
+                $driver = $factory();
+                $exclude = $driver->workDirExclude();
+
+                expect(str_starts_with($driver->archiveRoot(), '/') && ! str_ends_with($driver->archiveRoot(), '/'))->toBeTrue();
+                expect($exclude === null || ($exclude !== '' && ! str_starts_with($exclude, '/') && ! str_contains($exclude, '..')))->toBeTrue();
+            });
+
             it('refuses to read the tables of a missing dump', function () use ($factory): void {
                 expect(fn () => $factory()->dumpedTables(new RemoteFile(SiteDriverContract::remoteName('none.sql.gz'), 1, str_repeat('0', 64))))
                     ->toThrow(DriverException::class);
