@@ -7,10 +7,11 @@ namespace App\Domain\Inventory;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
+use App\Domain\Identity\Ability;
 use App\Domain\Runs\ReadOnlyStep;
+use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
-use App\Enums\AuditChannel;
 use App\Models\Site;
 use Closure;
 
@@ -23,12 +24,14 @@ final readonly class InventoryStep implements ReadOnlyStep
     public const string NAME = 'inventory';
 
     /**
-     * @param  Closure(Site, AuditActor): SiteDriver  $driverFor  resolves the driver of the run's site;
-     *                                                            credential reveals are audited as $actor
+     * @param  Closure(Site, AuditActor): SiteDriver  $driverFor  resolves the driver of the run's site
+     *                                                            (DriverFactory::forSite); credential
+     *                                                            reveals are audited as $actor
      */
     public function __construct(
         private SiteInventory $inventory,
         private Closure $driverFor,
+        private RunAuthorization $authorization,
         private int $timeoutSeconds,
     ) {}
 
@@ -49,12 +52,19 @@ final readonly class InventoryStep implements ReadOnlyStep
 
     public function run(StepContext $context): StepOutcome
     {
-        $site = $context->run->site()->firstOrFail();
+        // Connecting reveals the site's credential: the worker checks again that
+        // whoever launched the run may still do it (ADR-0011), and audits as them.
+        $actor = $this->authorization->actorFor($context->run, Ability::RunOperations);
+        if ($actor === null) {
+            return StepOutcome::failed(RunAuthorization::deniedMessage($context->run));
+        }
+
+        $site = $context->run->site;
+        if ($site === null) {
+            return StepOutcome::failed("L'execució no té cap lloc: no hi ha res per inventariar.");
+        }
 
         try {
-            // The worker acts on behalf of whoever launched the run, so any
-            // credential it reveals is audited against that operator.
-            $actor = new AuditActor($context->run->user_id, $context->run->actor, AuditChannel::System);
             $snapshot = $this->inventory->take($site, ($this->driverFor)($site, $actor), $context->run);
         } catch (DriverException $e) {
             return StepOutcome::failed("No s'ha pogut fer l'inventari: {$e->getMessage()}");
@@ -73,6 +83,6 @@ final readonly class InventoryStep implements ReadOnlyStep
 
     private function siteName(StepContext $context): string
     {
-        return $context->run->site()->first()->name ?? '(desconegut)';
+        return $context->run->site->name ?? '(desconegut)';
     }
 }

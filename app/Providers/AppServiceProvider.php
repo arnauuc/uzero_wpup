@@ -128,6 +128,7 @@ class AppServiceProvider extends ServiceProvider
                 new InventoryStep(
                     $app->make(SiteInventory::class),
                     static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+                    $app->make(RunAuthorization::class),
                     self::configInt('wpup.inventory.step_timeout_seconds'),
                 ),
             ]));

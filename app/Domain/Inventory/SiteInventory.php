@@ -37,9 +37,8 @@ final readonly class SiteInventory
     {
         $installed = $driver->installedComponents();
 
-        return SiteSnapshot::query()->create([
+        $values = [
             'site_id' => $site->id,
-            'run_id' => $run?->id,
             'core_version' => $installed->coreVersion,
             'php_version' => $installed->phpVersion,
             // Real PHP detection (Plesk handler / HTTP probe) arrives with UZEROWPUP-29.
@@ -50,9 +49,17 @@ final readonly class SiteInventory
             'dropins' => $this->simple($installed, ComponentType::Dropin),
             'mu_plugins' => $this->simple($installed, ComponentType::MuPlugin),
             'pending_updates' => [],
-            'environment' => [],
             'taken_at' => now(),
-        ]);
+        ];
+
+        // One snapshot per run: a retried step (e.g. after a worker crash)
+        // replaces it instead of adding another.
+        $snapshot = $run === null
+            ? SiteSnapshot::query()->create($values)
+            : SiteSnapshot::query()->updateOrCreate(['run_id' => $run->id], $values);
+
+        // Reload so the columns left to their database defaults are filled.
+        return $snapshot->refresh();
     }
 
     /**
