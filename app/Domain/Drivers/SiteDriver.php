@@ -11,6 +11,7 @@ use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\UpdatePackage;
+use App\Domain\Drivers\Data\WorkFile;
 use App\Domain\Drivers\Exceptions\DriverException;
 
 /**
@@ -226,4 +227,63 @@ interface SiteDriver
      * @throws DriverException
      */
     public function remove(string $remotePath): void;
+
+    /*
+     * Work area (UZEROWPUP-40): nested paths (WorkPath) inside the tool's work
+     * directory, which is outside the docroot and private (directories 0700,
+     * files 0600). They hold the restore points of SiteLocalTarget, so that a
+     * rollback never crosses the network. Plain names of the methods above are
+     * WorkPaths too: a dump made by dumpDatabase() can be moved into the store.
+     */
+
+    /**
+     * Size and modification time of a regular file (symlinks do not count), and
+     * its SHA-256 computed on the site when $withChecksum. Null if it does not
+     * exist. Needed for exists() and checksum() without downloading anything.
+     *
+     * @throws DriverException
+     */
+    public function statWorkFile(string $path, bool $withChecksum = false): ?WorkFile;
+
+    /**
+     * The regular files under $directory, recursively, with their WorkPath
+     * relative to the work area. A missing directory has none. Needed to list
+     * restore points (retention, UZEROWPUP-44).
+     *
+     * @return list<WorkFile>
+     *
+     * @throws DriverException
+     */
+    public function listWorkFiles(string $directory): array;
+
+    /**
+     * Moves a file to $to within the work area, creating the parent directories
+     * (0700) and leaving the file 0600. Never overwrites: fails if $to exists,
+     * atomically (a hard link, then the source is removed), so a stored object
+     * is never replaced and a half-written one is never published. This is how
+     * a file already on the site (a dump, an uploaded object) enters the store
+     * without being transferred again.
+     *
+     * @throws DriverException including when $to exists
+     */
+    public function moveWorkFile(string $from, string $to): WorkFile;
+
+    /**
+     * A readable stream with the file's bytes; the caller closes it. Memory is
+     * bounded: the bytes are not held whole in memory (the SSH driver copies the
+     * file to a private temporary file of the tool server first).
+     *
+     * @return resource
+     *
+     * @throws DriverException including when it does not exist
+     */
+    public function openWorkFile(string $path);
+
+    /**
+     * Removes a file of the work area, and the directories it leaves empty.
+     * Does nothing if it does not exist.
+     *
+     * @throws DriverException
+     */
+    public function removeWorkFile(string $path): void;
 }

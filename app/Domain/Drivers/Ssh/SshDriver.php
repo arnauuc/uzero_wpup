@@ -13,6 +13,7 @@ use App\Domain\Drivers\Data\ProbeCheck;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\UpdatePackage;
+use App\Domain\Drivers\Data\WorkFile;
 use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
@@ -20,9 +21,11 @@ use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\RemoteFileName;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\WebFileName;
+use App\Domain\Drivers\WorkPath;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
+use Illuminate\Support\Facades\File;
 
 /**
  * SiteDriver over SSH (UZEROWPUP-23): commands through phpseclib, files through
@@ -40,7 +43,9 @@ final class SshDriver implements SiteDriver
 
     private const SHELL_MARKER = 'wpup-shell-ok';
 
-    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64', 'du'];
+    private const MISSING = '__WPUP_MISSING__';
+
+    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64', 'du', 'find', 'ln'];
 
     private ?string $home = null;
 
@@ -431,6 +436,136 @@ final class SshDriver implements SiteDriver
     public function remove(string $remotePath): void
     {
         $this->mustExec('rm -f -- '.escapeshellarg($this->path($remotePath)), "L'esborrat de «{$remotePath}»");
+    }
+
+    public function statWorkFile(string $path, bool $withChecksum = false): ?WorkFile
+    {
+        $file = escapeshellarg($this->workPath($path));
+        $out = trim($this->mustExec(
+            "if [ -f {$file} ] && [ ! -L {$file} ]; then stat -c '%s %Y' -- {$file}".($withChecksum ? " && sha256sum -- {$file}" : '').'; else echo '.self::MISSING.'; fi',
+            "La lectura de «{$path}»",
+            $withChecksum ? $this->settings->transferTimeoutSeconds : null,
+        )->stdout);
+        if ($out === self::MISSING) {
+            return null;
+        }
+
+        $lines = explode("\n", $out);
+        [$size, $mtime] = array_pad(explode(' ', $lines[0], 2), 2, '');
+        $sha256 = $withChecksum ? substr($lines[1] ?? '', 0, 64) : null;
+        if (! ctype_digit($size) || ! ctype_digit($mtime) || ($sha256 !== null && preg_match('/^[0-9a-f]{64}$/', $sha256) !== 1)) {
+            throw new RemoteCommandFailed("No s'ha pogut llegir la mida i el checksum de «{$path}».");
+        }
+
+        return new WorkFile($path, (int) $size, (int) $mtime, $sha256);
+    }
+
+    public function listWorkFiles(string $directory): array
+    {
+        $dir = escapeshellarg($this->workPath($directory));
+        // GNU find: path relative to $dir, size and mtime, one file per line.
+        // Symlinks are neither followed (-P) nor listed (-type f).
+        $out = $this->mustExec(
+            "if [ -d {$dir} ] && [ ! -L {$dir} ]; then find -P {$dir} -type f -printf '%P\\t%s\\t%T@\\n'; fi",
+            "El llistat de «{$directory}»",
+        )->stdout;
+
+        $files = [];
+        foreach (explode("\n", $out) as $line) {
+            [$relative, $size, $mtime] = array_pad(explode("\t", $line), 3, '');
+            $path = $directory.'/'.$relative;
+            // Names the tool could not have written (another program's) are not reported.
+            if ($relative === '' || ! ctype_digit($size) || preg_match('/^\d+(\.\d+)?$/', $mtime) !== 1 || ! self::isWorkPath($path)) {
+                continue;
+            }
+            $files[] = new WorkFile($path, (int) $size, (int) $mtime);
+        }
+
+        return $files;
+    }
+
+    public function moveWorkFile(string $from, string $to): WorkFile
+    {
+        $source = escapeshellarg($this->workPath($from));
+        $target = escapeshellarg($this->workPath($to));
+        $parent = str_contains($to, '/') ? escapeshellarg($this->workPath(substr($to, 0, (int) strrpos($to, '/')))) : null;
+
+        // `ln -T` fails if the target exists (also a directory) and creates it
+        // atomically: never an overwrite, never a partial object under $to.
+        $out = trim($this->mustExec(
+            "umask 077; [ -f {$source} ] && [ ! -L {$source} ]"
+            .($parent === null ? '' : " && mkdir -p -- {$parent} && chmod 700 -- {$parent}")
+            ." && ln -T -- {$source} {$target} && rm -f -- {$source} && chmod 600 -- {$target} && stat -c '%s %Y' -- {$target}",
+            "El trasllat de «{$from}» a «{$to}»",
+        )->stdout);
+
+        [$size, $mtime] = array_pad(explode(' ', $out, 2), 2, '');
+        if (! ctype_digit($size) || ! ctype_digit($mtime)) {
+            throw new RemoteCommandFailed("No s'ha pogut llegir la mida de «{$to}».");
+        }
+
+        return new WorkFile($to, (int) $size, (int) $mtime);
+    }
+
+    /**
+     * Copies the file with rsync (resumable, checksummed transfer) to a private
+     * 0700 directory of the tool server, opens it and deletes it right away: the
+     * open handle keeps the bytes readable and nothing stays on disk afterwards.
+     */
+    public function openWorkFile(string $path)
+    {
+        $remote = $this->workPath($path);
+        if (! $this->exec('test -f '.escapeshellarg($remote).' && test ! -L '.escapeshellarg($remote))->successful()) {
+            throw new RemoteCommandFailed("El fitxer «{$path}» no existeix al lloc.");
+        }
+
+        $dir = sys_get_temp_dir().'/wpup-work-'.bin2hex(random_bytes(8));
+        if (! mkdir($dir, 0700)) {
+            throw new DriverException("No s'ha pogut crear el directori temporal privat per llegir «{$path}».");
+        }
+
+        try {
+            $this->transfer->download($remote, $dir.'/object');
+            $stream = fopen($dir.'/object', 'rb');
+
+            return $stream !== false ? $stream : throw new DriverException("No s'ha pogut obrir la còpia local de «{$path}».");
+        } finally {
+            File::deleteDirectory($dir);
+        }
+    }
+
+    public function removeWorkFile(string $path): void
+    {
+        $command = 'rm -f -- '.escapeshellarg($this->workPath($path));
+        // Then the directories it leaves empty, deepest first (rmdir never removes a non-empty one).
+        $prune = [];
+        for ($dir = dirname($path); $dir !== '.'; $dir = dirname($dir)) {
+            $prune[] = 'rmdir -- '.escapeshellarg($this->workPath($dir)).' 2>/dev/null';
+        }
+        if ($prune !== []) {
+            $command .= ' && { '.implode(' && ', $prune).'; true; }';
+        }
+
+        $this->mustExec($command, "L'esborrat de «{$path}»");
+    }
+
+    /**
+     * Resolves a WorkPath to its absolute path in the work directory.
+     */
+    private function workPath(string $path): string
+    {
+        return $this->workDir().'/'.WorkPath::valid($path);
+    }
+
+    private static function isWorkPath(string $path): bool
+    {
+        try {
+            WorkPath::valid($path);
+
+            return true;
+        } catch (DriverException) {
+            return false;
+        }
     }
 
     /**
