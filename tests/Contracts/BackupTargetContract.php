@@ -85,7 +85,7 @@ final class BackupTargetContract
                 expect(fn () => $target->put($key, BackupTargetContract::stream('x')))->toThrow(BackupTargetException::class, 'no vàlida')
                     ->and(fn () => $target->readStream($key))->toThrow(BackupTargetException::class, 'no vàlida')
                     ->and(fn () => $target->delete($key))->toThrow(BackupTargetException::class, 'no vàlida');
-            })->with(['../escape.gz', '/etc/passwd', 'a/../../b', 'a//b', '', '.hidden', "a\0b", 'a/b/']);
+            })->with(['../escape.gz', '/etc/passwd', 'a/../../b', 'a//b', '', '.hidden', "a\0b", 'a/b/', "a/b.gz\n"]);
 
             it('lists by prefix, ordered by key, without partial uploads', function () use ($factory): void {
                 $target = $factory();
@@ -95,9 +95,23 @@ final class BackupTargetContract
 
                 $keys = array_map(static fn ($o): string => $o->key, $target->list('site-2/'));
 
+                $target->put('site-20/r1/db.sql.gz', BackupTargetContract::stream('other site'));
+
                 expect($keys)->toBe(['site-2/r1/db.sql.gz', 'site-2/r1/files.tar.gz'])
-                    ->and(count($target->list()))->toBe(3)
-                    ->and($target->list('site-9/'))->toBe([]);
+                    ->and(count($target->list('site-2/')))->toBe(2)
+                    ->and(count($target->list()))->toBe(4)
+                    ->and($target->list('site-9/'))->toBe([])
+                    ->and(fn () => $target->list('site-2'))->toThrow(BackupTargetException::class)
+                    ->and(fn () => $target->list('site-2//'))->toThrow(BackupTargetException::class);
+            });
+
+            it('treats keys that look like temporary names as ordinary objects', function () use ($factory): void {
+                $target = $factory();
+                $target->put('x/y.gz.part', BackupTargetContract::stream('a real object'));
+                $target->put('x/y.gz', BackupTargetContract::stream('another'));
+
+                expect($target->checksum('x/y.gz.part'))->toBe(hash('sha256', 'a real object'))
+                    ->and(array_map(static fn ($o): string => $o->key, $target->list('x/')))->toBe(['x/y.gz', 'x/y.gz.part']);
             });
 
             it('deletes idempotently and fails clearly on missing objects', function () use ($factory): void {

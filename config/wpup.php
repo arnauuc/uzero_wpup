@@ -160,6 +160,12 @@ return [
      * Version inventory (UZEROWPUP-31). Reads core, plugins, themes, drop-ins,
      * must-use plugins, PHP and the database server in a single driver call.
      */
+    // Restore points and their destinations (ADR-0009).
+    'backups' => [
+        // Read size when hashing an object at its destination.
+        'hash_chunk_bytes' => 1_048_576,
+    ],
+
     'inventory' => [
         'step_timeout_seconds' => 600,
         // `wpup inventory --json` document version, bumped on incompatible changes.

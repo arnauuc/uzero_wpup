@@ -36,10 +36,14 @@ final class BackupTargetRegistry
     }
 
     /**
-     * @throws BackupTargetException when the type is not registered or the destination is inactive
+     * @throws BackupTargetException when the type is not registered, the destination is inactive or not one of the site's
      */
     public function for(BackupTargetRecord $record, Site $site, AuditActor $actor): BackupTarget
     {
+        // Only the destinations configured for the site (site_backup_targets).
+        if (! $site->backupTargets()->whereKey($record->id)->exists()) {
+            throw new BackupTargetException("La destinació de còpia «{$record->name}» no és del lloc {$site->name}.");
+        }
         if (! $record->active) {
             throw new BackupTargetException("La destinació de còpia «{$record->name}» està desactivada.");
         }

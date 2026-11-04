@@ -24,7 +24,7 @@ interface BackupTarget
     /**
      * Stores the stream under $key and returns what was stored.
      *
-     * @param  resource  $stream  readable, consumed from its current position
+     * @param  resource  $stream  readable; the whole stream is stored (seekable streams are rewound)
      *
      * @throws BackupTargetException when $key exists or the write fails
      */

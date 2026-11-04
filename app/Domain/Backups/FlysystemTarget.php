@@ -4,24 +4,43 @@ declare(strict_types=1);
 
 namespace App\Domain\Backups;
 
+use App\Domain\Secrets\SecretRedactor;
 use Carbon\CarbonImmutable;
+use League\Flysystem\Config;
+use League\Flysystem\FileAttributes;
 use League\Flysystem\FilesystemException;
 use League\Flysystem\FilesystemOperator;
-use League\Flysystem\StorageAttributes;
+use League\Flysystem\Visibility;
 
 /**
  * BackupTarget over any Flysystem filesystem (local disk of the tool server,
- * and the SFTP/S3 adapters of UZEROWPUP-41/42). Writes go to a temporary key
- * and are moved into place only when complete, so a failed upload never
- * leaves a truncated object under the final key.
+ * and the SFTP/S3 adapters of UZEROWPUP-41/42).
+ *
+ * - Writes go to a unique temporary object under TMP_DIR (a name BackupKey can
+ *   never produce) and are moved into place only when complete, so a failed
+ *   upload never leaves a truncated object under the final key, and two
+ *   writers never share a temporary file.
+ * - Objects and directories are private (0600 / 0700 on a local disk).
+ * - Flysystem rewinds seekable streams: the whole stream is stored.
+ * - Concurrent put() of the same key is excluded upstream (one run per site,
+ *   UZEROWPUP-19); the existence check right before publishing narrows the
+ *   window further but is not atomic on every adapter.
  */
 final readonly class FlysystemTarget implements BackupTarget
 {
-    private const string PARTIAL_SUFFIX = '.part';
+    /** Starts with ".", which BackupKey forbids: never clashes with a real key. */
+    private const string TMP_DIR = '.wpup-tmp';
 
-    private const int HASH_CHUNK_BYTES = 1_048_576;
+    private const array PRIVATE_FILES = [
+        Config::OPTION_VISIBILITY => Visibility::PRIVATE,
+        Config::OPTION_DIRECTORY_VISIBILITY => Visibility::PRIVATE,
+    ];
 
-    public function __construct(private FilesystemOperator $filesystem) {}
+    public function __construct(
+        private FilesystemOperator $filesystem,
+        private SecretRedactor $redactor,
+        private int $hashChunkBytes,
+    ) {}
 
     public function put(string $key, $stream): StoredObject
     {
@@ -30,14 +49,14 @@ final readonly class FlysystemTarget implements BackupTarget
             throw BackupTargetException::notAStream();
         }
 
-        $partial = $key.self::PARTIAL_SUFFIX;
+        $partial = self::TMP_DIR.'/'.bin2hex(random_bytes(16));
 
         try {
             if ($this->filesystem->fileExists($key)) {
                 throw BackupTargetException::alreadyExists($key);
             }
 
-            $this->filesystem->writeStream($partial, $stream);
+            $this->filesystem->writeStream($partial, $stream, self::PRIVATE_FILES);
 
             // Re-check right before publishing: another writer may have won.
             if ($this->filesystem->fileExists($key)) {
@@ -46,13 +65,13 @@ final readonly class FlysystemTarget implements BackupTarget
                 throw BackupTargetException::alreadyExists($key);
             }
 
-            $this->filesystem->move($partial, $key);
+            $this->filesystem->move($partial, $key, self::PRIVATE_FILES);
 
             return new StoredObject($key, $this->filesystem->fileSize($key), $this->modified($key));
         } catch (FilesystemException $e) {
             $this->discard($partial);
 
-            throw BackupTargetException::failed("L'escriptura", $key, $e->getMessage());
+            throw BackupTargetException::failed("L'escriptura", $key, $this->reason($e));
         }
     }
 
@@ -67,7 +86,7 @@ final readonly class FlysystemTarget implements BackupTarget
 
             return $this->filesystem->readStream($key);
         } catch (FilesystemException $e) {
-            throw BackupTargetException::failed('La lectura', $key, $e->getMessage());
+            throw BackupTargetException::failed('La lectura', $key, $this->reason($e));
         }
     }
 
@@ -78,7 +97,7 @@ final readonly class FlysystemTarget implements BackupTarget
         try {
             return $this->filesystem->fileExists($key);
         } catch (FilesystemException $e) {
-            throw BackupTargetException::failed('La comprovació', $key, $e->getMessage());
+            throw BackupTargetException::failed('La comprovació', $key, $this->reason($e));
         }
     }
 
@@ -89,7 +108,7 @@ final readonly class FlysystemTarget implements BackupTarget
 
         try {
             while (! feof($stream)) {
-                $chunk = fread($stream, self::HASH_CHUNK_BYTES);
+                $chunk = fread($stream, max(1, $this->hashChunkBytes));
                 if ($chunk === false) {
                     throw BackupTargetException::failed('El càlcul del checksum', $key, 'lectura interrompuda');
                 }
@@ -111,7 +130,7 @@ final readonly class FlysystemTarget implements BackupTarget
                 $this->filesystem->delete($key);
             }
         } catch (FilesystemException $e) {
-            throw BackupTargetException::failed("L'esborrat", $key, $e->getMessage());
+            throw BackupTargetException::failed("L'esborrat", $key, $this->reason($e));
         }
     }
 
@@ -123,14 +142,18 @@ final readonly class FlysystemTarget implements BackupTarget
         try {
             $objects = [];
             foreach ($this->filesystem->listContents($directory, true) as $item) {
-                /** @var StorageAttributes $item */
                 $path = $item->path();
-                if ($item->isFile() && str_starts_with($path, $prefix) && ! str_ends_with($path, self::PARTIAL_SUFFIX)) {
-                    $objects[] = new StoredObject($path, $this->filesystem->fileSize($path), $this->modified($path));
+                if ($item instanceof FileAttributes && str_starts_with($path, $prefix) && ! str_starts_with($path, self::TMP_DIR.'/')) {
+                    $modified = $item->lastModified();
+                    $objects[] = new StoredObject(
+                        $path,
+                        $item->fileSize() ?? $this->filesystem->fileSize($path),
+                        $modified === null ? null : CarbonImmutable::createFromTimestamp($modified),
+                    );
                 }
             }
         } catch (FilesystemException $e) {
-            throw BackupTargetException::failed('El llistat', $prefix === '' ? '/' : $prefix, $e->getMessage());
+            throw BackupTargetException::failed('El llistat', $prefix === '' ? '/' : $prefix, $this->reason($e));
         }
 
         usort($objects, static fn (StoredObject $a, StoredObject $b): int => strcmp($a->key, $b->key));
@@ -148,12 +171,20 @@ final readonly class FlysystemTarget implements BackupTarget
         }
     }
 
+    /**
+     * Adapter messages may carry hosts, users or signed URLs: masked first.
+     */
+    private function reason(FilesystemException $e): string
+    {
+        return $this->redactor->redact($e->getMessage());
+    }
+
     private function discard(string $partial): void
     {
         try {
             $this->filesystem->delete($partial);
         } catch (FilesystemException) {
-            // Best effort: list() already hides partial objects.
+            // Best effort: list() never shows the temporary directory.
         }
     }
 }
