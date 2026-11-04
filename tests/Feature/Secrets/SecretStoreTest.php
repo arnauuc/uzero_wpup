@@ -7,6 +7,8 @@ use App\Domain\Audit\AuditLogger;
 use App\Domain\Secrets\EnvelopeSecretStore;
 use App\Domain\Secrets\Kek\ConfigPublicKeyRing;
 use App\Domain\Secrets\Kek\EnvKekProvider;
+use App\Domain\Secrets\Kek\KekConfirmation;
+use App\Domain\Secrets\Kek\KekProvider;
 use App\Domain\Secrets\Kek\SystemdCredentialKekProvider;
 use App\Domain\Secrets\Secret;
 use App\Domain\Secrets\SecretRedactor;
@@ -77,7 +79,7 @@ it('replaces a secret value', function (): void {
 it('fails with a different KEK and audits the failure', function (): void {
     $id = store()->put('x', new Secret(SSH_KEY), actor());
     $other = new EnvKekProvider(base64_encode(random_bytes(32)), 'testing');
-    $otherKek = new EnvelopeSecretStore($other, $other, app(AuditLogger::class), app(SecretRedactor::class));
+    $otherKek = new EnvelopeSecretStore($other, $other, app(AuditLogger::class), app(SecretRedactor::class), new KekConfirmation($other, $other));
 
     expect(fn () => $otherKek->reveal($id, actor(), 'test'))
         ->toThrow(SecretStoreException::class, 'could not be decrypted')
@@ -138,7 +140,9 @@ it('explains that only the workers have the private key', function (): void {
  */
 describe('without the private key', function (): void {
     beforeEach(function (): void {
-        (new StaticKekProvider([1 => PRIVATE_V1], 1, withPrivateKeys: false))->bind();
+        $keys = new StaticKekProvider([1 => PRIVATE_V1], 1, withPrivateKeys: false);
+        $keys->bind();
+        $keys->confirm();
     });
 
     it('stores and replaces secrets with the public key alone', function (): void {
@@ -183,14 +187,66 @@ it('fails when a row is relabelled with another KEK version', function (): void 
     store()->reveal($id, actor(), 'test');
 })->throws(SecretStoreException::class, 'could not be decrypted');
 
-it('refuses a private key that does not match the configured public key', function (): void {
-    $private = new EnvKekProvider(PRIVATE_V1, 'testing');
+/**
+ * A store whose public key ring holds a key nobody has the private half of
+ * (a wrong WPUP_SECRETS_PUBLIC_KEY_V1 pasted into .env).
+ */
+function storeWithWrongPublicKey(KekProvider $private): EnvelopeSecretStore
+{
     $wrongPublic = new ConfigPublicKeyRing([1 => base64_encode(sodium_crypto_box_publickey(sodium_crypto_box_keypair()))], 1);
-    $store = new EnvelopeSecretStore($wrongPublic, $private, app(AuditLogger::class), app(SecretRedactor::class));
-    $id = $store->put('x', new Secret('value'), actor());
 
-    $store->reveal($id, actor(), 'test');
+    return new EnvelopeSecretStore($wrongPublic, $private, app(AuditLogger::class), app(SecretRedactor::class), new KekConfirmation($wrongPublic, $private));
+}
+
+it('refuses to seal with a public key that does not match the private key', function (): void {
+    storeWithWrongPublicKey(new EnvKekProvider(PRIVATE_V1, 'testing'))->put('x', new Secret('value'), actor());
 })->throws(SecretStoreException::class, 'does not match');
+
+it('refuses a private key that does not match the configured public key on reveal', function (): void {
+    $id = store()->put('x', new Secret('value'), actor());
+
+    storeWithWrongPublicKey(new EnvKekProvider(PRIVATE_V1, 'testing'))->reveal($id, actor(), 'test');
+})->throws(SecretStoreException::class, 'does not match');
+
+/*
+ * The CLI and the web cannot check the key pair themselves: they seal only with
+ * a public key that the scheduler has confirmed against its private half.
+ */
+describe('public key confirmation', function (): void {
+    it('refuses to seal until the scheduler has confirmed the public key', function (): void {
+        (new StaticKekProvider([1 => PRIVATE_V1], 1, withPrivateKeys: false))->bind();
+
+        expect(fn () => store()->put('x', new Secret('value'), actor()))->toThrow(SecretStoreException::class, 'has not been confirmed')
+            ->and(StoredSecret::query()->count())->toBe(0);
+    });
+
+    it('withdraws the confirmation when the scheduler finds a mismatched key pair', function (): void {
+        $keys = new StaticKekProvider([1 => PRIVATE_V1], 1, withPrivateKeys: false);
+        $keys->bind();
+        $keys->confirm();
+        $wrongPublic = new ConfigPublicKeyRing([1 => base64_encode(sodium_crypto_box_publickey(sodium_crypto_box_keypair()))], 1);
+
+        expect((new KekConfirmation($wrongPublic, new EnvKekProvider(PRIVATE_V1, 'testing')))->confirm())->toBeFalse()
+            ->and(DB::table('kek_confirmations')->count())->toBe(0)
+            ->and(fn () => store()->put('x', new Secret('value'), actor()))->toThrow(SecretStoreException::class, 'has not been confirmed');
+    });
+
+    it('refuses a public key other than the one confirmed', function (): void {
+        (new StaticKekProvider([1 => PRIVATE_V1], 1, withPrivateKeys: false))->confirm();
+        $wrongPublic = new ConfigPublicKeyRing([1 => base64_encode(sodium_crypto_box_publickey(sodium_crypto_box_keypair()))], 1);
+        $publicOnly = new StaticKekProvider([1 => PRIVATE_V1], 1, withPrivateKeys: false);
+        $store = new EnvelopeSecretStore($wrongPublic, $publicOnly, app(AuditLogger::class), app(SecretRedactor::class), new KekConfirmation($wrongPublic, $publicOnly));
+
+        $store->put('x', new Secret('value'), actor());
+    })->throws(SecretStoreException::class, 'has not been confirmed');
+
+    it('needs a new confirmation for a new KEK version', function (): void {
+        (new StaticKekProvider([1 => PRIVATE_V1], 1, withPrivateKeys: false))->confirm();
+        (new StaticKekProvider([1 => PRIVATE_V1, 2 => PRIVATE_V2], 2, withPrivateKeys: false))->bind();
+
+        store()->put('x', new Secret('value'), actor());
+    })->throws(SecretStoreException::class, 'WPUP_SECRETS_PUBLIC_KEY_V2 has not been confirmed');
+});
 
 it('explains a missing public key version', function (): void {
     (new ConfigPublicKeyRing([], 4))->publicKey(4);
