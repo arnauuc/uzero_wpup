@@ -7,6 +7,8 @@ namespace App\Console\Concerns;
 use App\Domain\Runs\Exceptions\RunWaitTimedOut;
 use App\Domain\Runs\RunFollower;
 use App\Models\Run;
+use App\Models\RunStep;
+use Closure;
 
 /**
  * For commands whose work needs the KEK private key and so runs on the workers
@@ -16,9 +18,10 @@ trait WaitsForWorkers
 {
     /**
      * @param  list<Run>  $runs
+     * @param  (Closure(Run, RunStep): void)|null  $onStep  called on every step status or summary change
      * @return list<Run>|null the final runs, or null when the wait timed out (already reported)
      */
-    protected function waitForWorkers(array $runs, int $stepTimeoutSeconds): ?array
+    protected function waitForWorkers(array $runs, int $stepTimeoutSeconds, ?Closure $onStep = null): ?array
     {
         $config = config('wpup.credential_operations');
         $margin = is_array($config) && is_int($config['wait_margin_seconds'] ?? null) ? $config['wait_margin_seconds'] : 600;
@@ -27,6 +30,7 @@ trait WaitsForWorkers
         try {
             return app(RunFollower::class)->wait(
                 array_map(static fn (Run $run): int => $run->id, $runs),
+                $onStep,
                 timeoutSeconds: $stepTimeoutSeconds + $margin,
                 onStillQueued: function (array $queued): void {
                     $ids = implode(', ', array_map(static fn (Run $run): string => "#{$run->id}", $queued));

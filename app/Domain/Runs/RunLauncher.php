@@ -11,6 +11,7 @@ use App\Enums\RunStatus;
 use App\Enums\RunType;
 use App\Enums\UpdateStrategy;
 use App\Jobs\ExecuteRun;
+use App\Models\HostingAccount;
 use App\Models\Run;
 use App\Models\Site;
 
@@ -23,6 +24,19 @@ final readonly class RunLauncher
     public function __construct(private AuditLogger $audit) {}
 
     /**
+     * One run that targets a hosting account instead of a site (key rotation).
+     *
+     * @param  array<string, mixed>  $flags
+     */
+    public function launchForAccount(RunType $type, HostingAccount $account, AuditActor $actor, array $flags = []): Run
+    {
+        $run = $this->queue($type, null, $account, $actor, $flags, null);
+        ExecuteRun::dispatch($run->id);
+
+        return $run;
+    }
+
+    /**
      * @param  list<Site|null>  $sites  null = fleet-level run
      * @param  array<string, mixed>  $flags
      * @return list<Run>
@@ -31,22 +45,7 @@ final readonly class RunLauncher
     {
         $runs = [];
         foreach ($sites as $site) {
-            $run = Run::query()->create([
-                'site_id' => $site?->id,
-                'user_id' => $actor->userId,
-                'actor' => $actor->name,
-                'channel' => $actor->channel,
-                'type' => $type,
-                'strategy' => $strategy,
-                'status' => RunStatus::Queued,
-                'flags' => $flags,
-            ]);
-            $this->audit->record($actor, 'run.queued', AuditResult::Success, 'run', $run->id, [
-                'type' => $type->value,
-                'site' => $site?->name,
-                'flags' => $flags,
-            ]);
-            $runs[] = $run;
+            $runs[] = $this->queue($type, $site, null, $actor, $flags, $strategy);
         }
 
         // Dispatched after every row exists, so a sync queue sees the whole batch.
@@ -55,5 +54,32 @@ final readonly class RunLauncher
         }
 
         return $runs;
+    }
+
+    /**
+     * Creates one queued run and audits it; the caller dispatches it.
+     *
+     * @param  array<string, mixed>  $flags
+     */
+    private function queue(RunType $type, ?Site $site, ?HostingAccount $account, AuditActor $actor, array $flags, ?UpdateStrategy $strategy): Run
+    {
+        $run = Run::query()->create([
+            'site_id' => $site?->id,
+            'hosting_account_id' => $account?->id,
+            'user_id' => $actor->userId,
+            'actor' => $actor->name,
+            'channel' => $actor->channel,
+            'type' => $type,
+            'strategy' => $strategy,
+            'status' => RunStatus::Queued,
+            'flags' => $flags,
+        ]);
+        $context = ['type' => $type->value, 'site' => $site?->name, 'flags' => $flags];
+        if ($account !== null) {
+            $context = ['type' => $type->value, 'hosting_account' => $account->id, 'flags' => $flags];
+        }
+        $this->audit->record($actor, 'run.queued', AuditResult::Success, 'run', $run->id, $context);
+
+        return $run;
     }
 }

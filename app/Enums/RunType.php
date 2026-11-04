@@ -20,6 +20,8 @@ enum RunType: string
      * no private key, so they queue these for the workers and wait.
      */
     case SiteTest = 'site_test';
+    case KeyRotation = 'key_rotation';
+    case SecretsRekey = 'secrets_rekey';
 
     /**
      * Whether the run takes the concurrency slots (global, per server, staging;
@@ -30,8 +32,17 @@ enum RunType: string
     public function usesConcurrencyLimits(): bool
     {
         return match ($this) {
-            self::SiteTest => false,
+            self::SiteTest, self::KeyRotation, self::SecretsRekey => false,
             default => true,
         };
+    }
+
+    /**
+     * Whether the run takes the lock of its hosting account (runs.hosting_account_id)
+     * without a site: rotating a key must not overlap an update on that account.
+     */
+    public function locksHostingAccount(): bool
+    {
+        return $this === self::KeyRotation;
     }
 }

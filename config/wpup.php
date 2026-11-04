@@ -47,6 +47,8 @@ return [
      */
     'credential_operations' => [
         'site_test_timeout_seconds' => 300,
+        'key_rotation_timeout_seconds' => 300,
+        'secrets_rekey_timeout_seconds' => 3600,
         // The CLI waits for these runs up to their step timeout plus this margin
         // (queue and lock waits), and warns if they are still queued after
         // queued_notice_seconds (no worker, or a busy lock).

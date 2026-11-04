@@ -14,7 +14,8 @@ use Illuminate\Support\Sleep;
 
 /**
  * Polls queued runs until they finish (--wait), reporting every step change
- * on the way (--follow). Stopping it (Ctrl-C) leaves the runs going.
+ * on the way (--follow), including progress that a running step writes to its
+ * summary. Stopping it (Ctrl-C) leaves the runs going.
  */
 final class RunFollower
 {
@@ -34,7 +35,7 @@ final class RunFollower
      */
     public function wait(array $runIds, ?Closure $onStep = null, ?int $timeoutSeconds = null, ?Closure $onStillQueued = null, int $queuedNoticeSeconds = 15): array
     {
-        /** @var array<int, string> $seen step id => last reported status */
+        /** @var array<int, string> $seen step id => last reported status and summary */
         $seen = [];
         $started = Carbon::now();
         $noticed = $onStillQueued === null;
@@ -45,8 +46,9 @@ final class RunFollower
             if ($onStep !== null) {
                 foreach ($runs as $run) {
                     foreach ($run->steps as $step) {
-                        if (($seen[$step->id] ?? null) !== $step->status->value) {
-                            $seen[$step->id] = $step->status->value;
+                        $state = $step->status->value."\0".($step->summary ?? '');
+                        if (($seen[$step->id] ?? null) !== $state) {
+                            $seen[$step->id] = $state;
                             $onStep($run, $step);
                         }
                     }

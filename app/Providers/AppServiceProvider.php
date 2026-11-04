@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace App\Providers;
 
 use App\Domain\Audit\AuditLogger;
+use App\Domain\Credentials\KeyRotationStep;
+use App\Domain\Credentials\SecretsRekey;
+use App\Domain\Credentials\SecretsRekeyStep;
 use App\Domain\Credentials\SshKeyManager;
 use App\Domain\Drivers\DriverFactory;
 use App\Domain\Drivers\Ssh\SshSettings;
@@ -100,6 +103,20 @@ class AppServiceProvider extends ServiceProvider
                     $app->make(DriverFactory::class),
                     $app->make(RunAuthorization::class),
                     self::configInt('wpup.credential_operations.site_test_timeout_seconds'),
+                ),
+            ]));
+            $resolver->register(RunType::KeyRotation, static fn (): Pipeline => new Pipeline([
+                new KeyRotationStep(
+                    $app->make(SshKeyManager::class),
+                    $app->make(RunAuthorization::class),
+                    self::configInt('wpup.credential_operations.key_rotation_timeout_seconds'),
+                ),
+            ]));
+            $resolver->register(RunType::SecretsRekey, static fn (): Pipeline => new Pipeline([
+                new SecretsRekeyStep(
+                    $app->make(SecretsRekey::class),
+                    $app->make(RunAuthorization::class),
+                    self::configInt('wpup.credential_operations.secrets_rekey_timeout_seconds'),
                 ),
             ]));
         });

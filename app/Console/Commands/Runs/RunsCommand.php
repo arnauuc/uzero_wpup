@@ -46,6 +46,7 @@ final class RunsCommand extends WpupCommand
             $this->emitJson(['runs' => $runs->map(static fn (Run $run): array => [
                 'id' => $run->id,
                 'site' => $run->site?->name,
+                'hosting_account_id' => $run->hosting_account_id,
                 'type' => $run->type->value,
                 'status' => $run->status->value,
                 'actor' => $run->actor,
@@ -58,7 +59,7 @@ final class RunsCommand extends WpupCommand
 
         $this->table(['#', 'Lloc', 'Tipus', 'Estat', 'Qui', 'Encuada'], $runs->map(static fn (Run $run): array => [
             $run->id,
-            $run->site->name ?? 'flota',
+            $run->targetLabel(),
             $run->type->value,
             $run->status->value,
             $run->actor,

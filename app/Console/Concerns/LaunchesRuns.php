@@ -65,7 +65,7 @@ trait LaunchesRuns
 
     private static function siteLabel(Run $run): string
     {
-        return $run->site->name ?? 'flota';
+        return $run->targetLabel();
     }
 
     /**

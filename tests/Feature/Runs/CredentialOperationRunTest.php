@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Domain\Audit\AuditActor;
+use App\Domain\Locks\LockedException;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Exceptions\RunWaitTimedOut;
@@ -18,12 +19,14 @@ use App\Domain\Secrets\SecretStore;
 use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
 use App\Enums\RunStatus;
+use App\Enums\RunStepStatus;
 use App\Enums\RunType;
 use App\Enums\UserRole;
 use App\Jobs\ExecuteRun;
 use App\Models\AuditLogEntry;
 use App\Models\HostingAccount;
 use App\Models\Run;
+use App\Models\RunStep;
 use App\Models\Site;
 use App\Models\User;
 use Illuminate\Redis\Connections\PhpRedisConnection;
@@ -102,6 +105,42 @@ it('puts only the run id on the queue, never the credential', function (): void 
     expect(json_encode($run->fresh()?->flags, JSON_THROW_ON_ERROR))->toBe('{"dry_run":false}');
 });
 
+it('waits for the hosting account lock before rotating a key', function (): void {
+    $account = HostingAccount::factory()->create();
+    $site = Site::factory()->for($account)->create();
+    app(PipelineResolver::class)->register(RunType::KeyRotation, static fn (): Pipeline => new Pipeline([
+        new ScriptedStep('key_rotation', static fn (): StepOutcome => StepOutcome::succeeded('ok')),
+    ]));
+    $update = app(SiteLockManager::class)->acquire($site, 'nightly update', 41);
+    $rotation = Run::factory()->create(['site_id' => null, 'hosting_account_id' => $account->id, 'type' => RunType::KeyRotation]);
+
+    try {
+        expect(fn () => app(RunEngine::class)->execute($rotation))->toThrow(LockedException::class)
+            ->and($rotation->fresh()?->status)->toBe(RunStatus::Queued);
+    } finally {
+        $update->release();
+    }
+
+    expect(app(RunEngine::class)->execute($rotation)->status)->toBe(RunStatus::Succeeded);
+});
+
+it('refuses on the worker a key rotation by an admin who was demoted', function (): void {
+    $user = User::factory()->create(['unix_username' => 'admin9', 'role' => UserRole::Operator]);
+    $account = HostingAccount::factory()->create();
+    $run = Run::factory()->create([
+        'site_id' => null,
+        'hosting_account_id' => $account->id,
+        'type' => RunType::KeyRotation,
+        'user_id' => $user->id,
+        'actor' => 'admin9',
+        'channel' => AuditChannel::Cli,
+    ]);
+
+    expect(app(RunEngine::class)->execute($run)->status)->toBe(RunStatus::Failed)
+        ->and(AuditLogEntry::query()->where('action', 'run.denied')->where('object_id', (string) $run->id)->exists())->toBeTrue()
+        ->and(AuditLogEntry::query()->where('action', 'like', 'ssh_key.%')->exists())->toBeFalse();
+});
+
 it('forgets the revealed secrets when the worker finishes a run', function (): void {
     app(PipelineResolver::class)->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([
         new ScriptedStep('site_test', static fn (): StepOutcome => StepOutcome::succeeded('ok')),
@@ -149,4 +188,32 @@ it('warns and gives up in site:test when no worker runs', function (): void {
         ->expectsOutputToContain('Encara en cua')
         ->expectsOutputToContain("Deixo d'esperar")
         ->assertFailed();
+});
+
+it('reports the progress a running step writes to its summary', function (): void {
+    $run = Run::factory()->create(['type' => RunType::SecretsRekey, 'site_id' => null, 'status' => RunStatus::Running]);
+    $step = RunStep::factory()->for($run)->create(['name' => 'secrets_rekey', 'status' => RunStepStatus::Running, 'summary' => '50/100']);
+    $polls = 0;
+    Sleep::fake();
+    Sleep::whenFakingSleep(static function () use (&$polls, $run, $step): void {
+        $polls++;
+        $polls === 1
+            ? $step->update(['summary' => '100/100'])
+            : $run->update(['status' => RunStatus::Succeeded]);
+    });
+    $seen = [];
+
+    app(RunFollower::class)->wait([$run->id], function (Run $run, RunStep $step) use (&$seen): void {
+        $seen[] = $step->summary;
+    });
+
+    expect($seen)->toBe(['50/100', '100/100']);
+});
+
+it('labels a key rotation run with its hosting account, not as fleet-wide', function (): void {
+    $account = HostingAccount::factory()->create(['system_user' => 'botiga']);
+    $run = Run::factory()->create(['site_id' => null, 'hosting_account_id' => $account->id, 'type' => RunType::KeyRotation]);
+
+    expect($run->fresh()?->targetLabel())->toBe("compte botiga@{$account->hostingServer()->firstOrFail()->name}")
+        ->and(Run::factory()->create(['site_id' => null])->targetLabel())->toBe('flota');
 });
