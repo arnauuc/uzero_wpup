@@ -40,9 +40,14 @@ use App\Models\SiteSnapshot;
  *   (woocommerce is null when WooCommerce is not installed and active; null anywhere else = could not be read,
  *   see warnings; maintenance is true for a fresh .maintenance file, like wp_is_maintenance_mode())
  *
+ * - environment.prerequisites (UZEROWPUP-34, see SitePrerequisites): list<array{name: 'php_minimum'|'php_verified'|
+ *   'backup_space'|'wp_cli'|'writable', passed: bool, reason: ?string, value: int|string|null}>. The snapshot
+ *   only records them; SiteBlocking (called by InventoryStep, so a dry run can leave the site alone) blocks the
+ *   site with their reasons. The block lives on the sites row (blocked_reason, blocked_at, blocked_by).
+ *
  * PHP: the version WP-CLI runs with (UZEROWPUP-29) is cross-checked with the
  * HTTP probe (UZEROWPUP-30). The web wins; if the minor versions differ, the
- * site must not be updated and blocked_reason says why (UZEROWPUP-34 acts on it).
+ * site must not be updated and blocked_reason says why (the php_verified prerequisite acts on it).
  */
 final readonly class SiteInventory
 {
@@ -50,8 +55,14 @@ final readonly class SiteInventory
      * @param  HttpProbe|null  $probe  null only in tests that do not exercise it
      * @param  PendingUpdates|null  $pending  null only in tests that do not exercise it (pending_updates stays empty)
      * @param  SiteState|null  $state  null only in tests that do not exercise it (environment.state is left out)
+     * @param  SitePrerequisites|null  $prerequisites  null only in tests that do not exercise it (environment.prerequisites is left out)
      */
-    public function __construct(private ?HttpProbe $probe = null, private ?PendingUpdates $pending = null, private ?SiteState $state = null) {}
+    public function __construct(
+        private ?HttpProbe $probe = null,
+        private ?PendingUpdates $pending = null,
+        private ?SiteState $state = null,
+        private ?SitePrerequisites $prerequisites = null,
+    ) {}
 
     public const string THEME_ACTIVE = 'active';
 
@@ -74,6 +85,8 @@ final readonly class SiteInventory
 
         $state = $this->state?->read($driver, $installed, now()->getTimestamp());
 
+        $prerequisites = $this->prerequisites?->check($driver, $phpVersion, $phpEnvironment, $state->diskFreeBytes ?? null);
+
         $values = [
             'site_id' => $site->id,
             'core_version' => $installed->coreVersion,
@@ -91,6 +104,7 @@ final readonly class SiteInventory
                 'php' => $phpEnvironment,
                 'updates' => ['warnings' => $pending->warnings ?? []],
                 ...($state === null ? [] : ['state' => $state->toArray()]),
+                ...($prerequisites === null ? [] : ['prerequisites' => array_map(static fn (PrerequisiteCheck $c): array => $c->toArray(), $prerequisites)]),
             ],
             'taken_at' => now(),
         ];

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\SiteBlockSource;
 use App\Enums\UpdateStrategy;
 use Carbon\CarbonImmutable;
 use Database\Factories\SiteFactory;
@@ -28,6 +29,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property bool $active
  * @property string|null $blocked_reason
  * @property CarbonImmutable|null $blocked_at
+ * @property SiteBlockSource|null $blocked_by
  */
 class Site extends Model
 {
@@ -50,6 +52,7 @@ class Site extends Model
             'use_maintenance_mode' => 'boolean',
             'active' => 'boolean',
             'blocked_at' => 'immutable_datetime',
+            'blocked_by' => SiteBlockSource::class,
         ];
     }
 

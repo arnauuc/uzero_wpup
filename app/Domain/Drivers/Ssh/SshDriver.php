@@ -37,7 +37,7 @@ final class SshDriver implements SiteDriver
 {
     private const SHELL_MARKER = 'wpup-shell-ok';
 
-    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64'];
+    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64', 'du'];
 
     private ?string $home = null;
 
@@ -115,14 +115,30 @@ final class SshDriver implements SiteDriver
      */
     private function writableCheck(): ProbeCheck
     {
-        $root = rtrim($this->target->wpPath, '/');
-        $paths = [$root, $root.'/wp-content', $root.'/wp-content/plugins', $root.'/wp-content/themes'];
-        $script = 'for p in '.implode(' ', array_map(escapeshellarg(...), $paths)).'; do [ -w "$p" ] || printf "%s " "$p"; done';
-        $readOnly = trim($this->exec($script, 30)->stdout);
+        $readOnly = implode(' ', $this->unwritablePaths());
 
         return $readOnly === ''
             ? new ProbeCheck('permisos', CheckResult::Ok, "{$this->target->user} pot escriure el codi del lloc")
             : new ProbeCheck('permisos', CheckResult::Error, "{$this->target->user} no pot escriure a: {$readOnly}");
+    }
+
+    public function unwritablePaths(): array
+    {
+        $root = rtrim($this->target->wpPath, '/');
+        $paths = [$root, $root.'/wp-content', $root.'/wp-content/plugins', $root.'/wp-content/themes'];
+        $script = 'for p in '.implode(' ', array_map(escapeshellarg(...), $paths)).'; do [ -w "$p" ] || printf "%s\\n" "$p"; done';
+        $result = $this->exec($script, 30);
+
+        return array_values(array_filter(array_map('trim', explode("\n", $result->stdout)), static fn (string $p): bool => $p !== ''));
+    }
+
+    public function diskUsageBytes(): int
+    {
+        // GNU du: exit 1 for an unreadable subdirectory still prints the total of the rest.
+        $result = $this->exec('du -sb -- '.escapeshellarg(rtrim($this->target->wpPath, '/')));
+        $bytes = explode("\t", trim($result->stdout))[0];
+
+        return ctype_digit($bytes) ? (int) $bytes : throw self::failure("La lectura de l'espai que ocupa el lloc", $result);
     }
 
     public function installedComponents(): InstalledComponents

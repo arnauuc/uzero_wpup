@@ -12,12 +12,16 @@ use App\Domain\Runs\ReadOnlyStep;
 use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
+use App\Domain\Sites\BlockOutcome;
+use App\Domain\Sites\SiteBlocking;
 use App\Models\Site;
 use Closure;
 
 /**
  * First step of every run: reads the site and stores a fresh snapshot. It is
- * read-only, so it also runs under --dry-run.
+ * read-only for the site, so it also runs under --dry-run. It is also where the
+ * site is blocked or released from its prerequisites (UZEROWPUP-34): that is
+ * state of the tool, not of the site, and a dry run only reports it.
  */
 final readonly class InventoryStep implements ReadOnlyStep
 {
@@ -33,6 +37,7 @@ final readonly class InventoryStep implements ReadOnlyStep
         private Closure $driverFor,
         private RunAuthorization $authorization,
         private int $timeoutSeconds,
+        private ?SiteBlocking $blocking = null,
     ) {}
 
     public function name(): string
@@ -81,8 +86,31 @@ final readonly class InventoryStep implements ReadOnlyStep
         );
 
         $summary .= $this->stateSummary($snapshot->environment['state'] ?? null);
+        $summary .= $this->blockSummary($site, $snapshot->environment['prerequisites'] ?? null, $actor, $context->dryRun);
 
         return StepOutcome::succeeded($summary, '', ['snapshot_id' => $snapshot->id]);
+    }
+
+    /**
+     * Blocks or releases the site from the stored prerequisites and says so; empty when
+     * there is nothing to say (UZEROWPUP-34).
+     */
+    private function blockSummary(Site $site, mixed $stored, AuditActor $actor, bool $dryRun): string
+    {
+        if ($this->blocking === null || ! is_array($stored)) {
+            return '';
+        }
+
+        $checks = array_values(array_filter(array_map(PrerequisiteCheck::fromArray(...), $stored)));
+        $result = $this->blocking->apply($site, $checks, $actor, $dryRun);
+
+        return match ($result->outcome) {
+            BlockOutcome::Blocked => "; bloquejat: {$result->reason}",
+            BlockOutcome::WouldBlock => "; es bloquejaria: {$result->reason}",
+            BlockOutcome::Unblocked => '; desbloquejat',
+            BlockOutcome::WouldUnblock => '; es desbloquejaria',
+            BlockOutcome::Unchanged => $result->reason === null ? '' : "; bloquejat: {$result->reason}",
+        };
     }
 
     /**

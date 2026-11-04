@@ -57,6 +57,12 @@ return [
     ],
 
     /*
+     * Oldest PHP a site may run and still be managed (ADR-0007). It may be raised
+     * but never lowered below 7.4: the agent and the tool refuse to start.
+     */
+    'min_site_php' => '7.4',
+
+    /*
      * Operator identity (ADR-0002). The tool always runs as the service user and
      * operators call it through `sudo -u wpup wpup ...`.
      *
@@ -175,6 +181,12 @@ return [
             'cron_overdue_after_seconds' => 600,
             // A .maintenance file older than this is ignored by WordPress.
             'maintenance_ttl_seconds' => 600,
+        ],
+        // Prerequisites (UZEROWPUP-34): the backup needs (database + files) x
+        // factor free bytes; WP-CLI timeout for the database size.
+        'prerequisites' => [
+            'backup_space_factor' => 1.5,
+            'command_timeout_seconds' => 120,
         ],
     ],
 

@@ -193,6 +193,23 @@ final class SiteDriverContract
                 expect($factory()->freeDiskBytes())->toBeGreaterThan(0);
             });
 
+            it('reports the disk the site uses and that its code is writable', function () use ($factory): void {
+                $driver = $factory();
+
+                expect($driver->diskUsageBytes())->toBeGreaterThan(0)
+                    ->and($driver->unwritablePaths())->toBe([]);
+            });
+
+            it('estimates the database size from the site tables', function () use ($factory): void {
+                $result = $factory()->wp(['db', 'size', '--size_format=b', '--all-tables-with-prefix', '--format=json']);
+                $rows = json_decode(trim($result->stdout), true);
+                $first = is_array($rows) && is_array($rows[0] ?? null) ? $rows[0] : [];
+
+                expect($result->successful())->toBeTrue()
+                    ->and($first)->toHaveKeys(['Name', 'Size'])
+                    ->and((int) (is_string($first['Size'] ?? null) ? $first['Size'] : 0))->toBeGreaterThan(0);
+            });
+
             it('fails to download a removed file', function () use ($factory): void {
                 $driver = $factory();
                 $dump = $driver->dumpDatabase(SiteDriverContract::remoteName('db.sql.gz'));
