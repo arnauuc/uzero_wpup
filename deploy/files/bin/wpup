@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# /usr/local/bin/wpup: the command operators type (ADR-0002, UZEROWPUP-28).
+# It only asks sudo to run the root-owned helper, which starts the real CLI as
+# the service user with the KEK credential (see wpup-cli). Nothing else here:
+# the list of allowed commands lives in /opt/uzero-wpup/wpup and the app.
+set -euo pipefail
+exec sudo --non-interactive /usr/local/libexec/wpup-cli "$@"

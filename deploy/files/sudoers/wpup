@@ -1,0 +1,17 @@
+# /etc/sudoers.d/wpup (ADR-0002, UZEROWPUP-28). Installed by deploy/steps/53-cli.sh
+# after `visudo -cf`. Operators and admins may run exactly ONE thing as root:
+# the helper that starts the wpup CLI as the service user with the KEK.
+#
+# - No password: operators log in with SSH keys and have no password.
+# - env_reset and no env_keep: the helper starts with a clean environment; the
+#   operator cannot inject variables (SUDO_USER is set by sudo itself).
+# - !setenv: `sudo VAR=x ...` and `-E` are refused.
+# - Arguments are free (`*`) because the CLI takes them; the allow-list of
+#   commands is enforced by /opt/uzero-wpup/wpup and again by the application.
+
+Defaults!WPUP_CLI env_reset, !setenv, secure_path="/usr/sbin:/usr/bin:/sbin:/bin"
+
+Cmnd_Alias WPUP_CLI = /usr/local/libexec/wpup-cli *
+
+%@OPERATORS_GROUP@ ALL=(root) NOPASSWD: WPUP_CLI
+%@ADMINS_GROUP@ ALL=(root) NOPASSWD: WPUP_CLI

@@ -20,10 +20,9 @@ La KEK la crea i la segella **root**; l'eina (usuari `wpup`) no pot fer-ho, i no
    shred -u /root/wpup-kek-v2.txt
    ```
 
-3. **Carregar totes dues versions.** A la unitat de systemd de l'eina (workers i CLI):
-   - afegeix `LoadCredentialEncrypted=wpup-kek-v2` sense treure la `v1`;
-   - posa `WPUP_KEK_VERSION=2`;
-   - fes `systemctl daemon-reload` i reinicia els workers.
+3. **Carregar totes dues versions.** Les unitats de Horizon i del scheduler i la CLI carreguen totes les versions que hi ha a `/etc/credstore.encrypted` (drop-in generat per `deploy/bin/wpup-kek-units`, i `wpup-cli` per a la CLI):
+   - posa `WPUP_KEK_VERSION=2` al `.env` de l'eina;
+   - com a root, des de la còpia de root del repositori: `./deploy/provision.sh --only 55` (actualitza el drop-in i reinicia els workers).
 
    Des d'ara, els secrets nous es xifren amb la v2 i els antics encara es poden llegir amb la v1.
 
@@ -37,8 +36,7 @@ La KEK la crea i la segella **root**; l'eina (usuari `wpup`) no pot fer-ho, i no
    És idempotent: si s'interromp, es torna a executar i continua. Queda a l'auditoria (`secrets.rekey`).
 
 5. **Retirar la KEK antiga.** Quan `secrets:rekey` digui que no en queda cap de pendent:
-   - treu `LoadCredentialEncrypted=wpup-kek-v1` de la unitat;
    - esborra `/etc/credstore.encrypted/wpup-kek-v1`;
-   - reinicia els workers.
+   - executa `./deploy/provision.sh --only 55` (el drop-in ja no la llista) i reinicia els workers.
 
-   El custodi marca l'entrada antiga del KeePassXC com a retirada. No l'esborris fins que la còpia de la BD de l'eina feta abans de la rotació hagi caducat: per restaurar-la cal la KEK antiga.
+   El custodi marca l'entrada antiga del KeePassXC com a retirada. No l'esborris fins que la còpia de la BD de l'eina feta abans de la rotació hagi caducat: per restaurar-la cal la KEK antiga (vegeu [recuperació](recuperacio.md)).
