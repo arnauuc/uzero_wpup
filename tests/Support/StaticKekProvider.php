@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Support;
 
 use App\Domain\Secrets\EnvelopeSecretStore;
+use App\Domain\Secrets\Kek\KekConfirmation;
 use App\Domain\Secrets\Kek\KekDecoder;
 use App\Domain\Secrets\Kek\KekProvider;
 use App\Domain\Secrets\Kek\PublicKeyRing;
@@ -33,6 +34,16 @@ final readonly class StaticKekProvider implements KekProvider, PublicKeyRing
         app()->forgetInstance(SecretStore::class);
         app()->instance(KekProvider::class, $this);
         app()->instance(PublicKeyRing::class, $this);
+    }
+
+    /**
+     * Records the current public key as confirmed, as the scheduler does in
+     * production (it holds the private keys), so a public-only process can seal.
+     */
+    public function confirm(): void
+    {
+        $withKeys = new self($this->keys, $this->current);
+        (new KekConfirmation($withKeys, $withKeys))->confirm();
     }
 
     public function currentVersion(): int

@@ -21,6 +21,11 @@ final class SecretStoreException extends RuntimeException
         return new self('The key-encryption key is invalid: '.$reason);
     }
 
+    public static function kekNotConfirmed(int $version): self
+    {
+        return new self(sprintf('WPUP_SECRETS_PUBLIC_KEY_V%d has not been confirmed against its private key by the scheduler; refusing to seal secrets that nobody could open. Check that the scheduler runs with the KEK credential v%d loaded (docs/runbooks/rotacio-kek.md).', $version, $version));
+    }
+
     public static function devProviderInProduction(): self
     {
         return new self('The "env" KEK provider is for development and tests only; it is refused when APP_ENV=production.');

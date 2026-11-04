@@ -8,6 +8,7 @@ use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunEngine;
 use App\Domain\Runs\StepOutcome;
+use App\Domain\Secrets\SecretRedactor;
 use App\Enums\RunStatus;
 use App\Enums\RunType;
 use App\Jobs\ExecuteRun;
@@ -119,7 +120,7 @@ it('puts a waiting job back in the queue without failing it', function (): void 
     $run = Run::factory()->create();
 
     $job = (new ExecuteRun($run->id))->withFakeQueueInteractions();
-    $job->handle(app(RunEngine::class));
+    $job->handle(app(RunEngine::class), app(SecretRedactor::class));
 
     $job->assertReleased(30);
     expect($run->fresh()?->status)->toBe(RunStatus::Queued);

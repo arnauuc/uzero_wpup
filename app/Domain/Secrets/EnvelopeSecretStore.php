@@ -6,6 +6,7 @@ namespace App\Domain\Secrets;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
+use App\Domain\Secrets\Kek\KekConfirmation;
 use App\Domain\Secrets\Kek\KekDecoder;
 use App\Domain\Secrets\Kek\KekProvider;
 use App\Domain\Secrets\Kek\PublicKeyRing;
@@ -25,8 +26,9 @@ use SodiumException;
  *   checked against the row on opening, so a payload copied to another row, or
  *   relabelled with another version, does not open.
  *
- * Storing needs only the public key, so the CLI and the web can do it. Reading
- * needs the private key, which only the worker services have.
+ * Storing needs only the public key, so the CLI and the web can do it, once the
+ * scheduler has confirmed that key against its private half (KekConfirmation).
+ * Reading needs the private key, which only the worker services have.
  */
 final readonly class EnvelopeSecretStore implements SecretStore
 {
@@ -39,6 +41,7 @@ final readonly class EnvelopeSecretStore implements SecretStore
         private KekProvider $privateKeys,
         private AuditLogger $audit,
         private SecretRedactor $redactor,
+        private KekConfirmation $confirmation,
     ) {}
 
     public function put(string $purpose, Secret $value, AuditActor $actor): string
@@ -147,10 +150,13 @@ final readonly class EnvelopeSecretStore implements SecretStore
      */
     private function sealDek(#[\SensitiveParameter] string $dek, string $id, int $version): string
     {
+        $public = $this->publicKeys->publicKey($version);
+        // Never seal to a public key whose private half nobody holds.
+        $this->confirmation->assertSealable($version, $public);
         $payload = $dek.pack('N', $version).$id;
 
         try {
-            return base64_encode(sodium_crypto_box_seal($payload, $this->publicKeys->publicKey($version)));
+            return base64_encode(sodium_crypto_box_seal($payload, $public));
         } finally {
             sodium_memzero($payload);
         }
