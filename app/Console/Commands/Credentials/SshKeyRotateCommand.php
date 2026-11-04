@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace App\Console\Commands\Credentials;
 
-use App\Domain\Credentials\CredentialException;
-use App\Domain\Credentials\SshKeyManager;
+use App\Domain\Credentials\KeyRotationStep;
+use App\Domain\Runs\RunFollower;
+use App\Domain\Runs\RunLauncher;
+use App\Enums\RunStatus;
+use App\Enums\RunType;
 
 final class SshKeyRotateCommand extends CredentialCommand
 {
@@ -34,17 +37,23 @@ final class SshKeyRotateCommand extends CredentialCommand
             return self::SUCCESS;
         }
 
-        try {
-            $notes = app(SshKeyManager::class)->rotate($account, $this->actor());
-        } catch (CredentialException $e) {
-            $this->error($e->getMessage());
+        // Revealing the keys needs the private KEK, which only the workers have (ADR-0011).
+        $run = app(RunLauncher::class)->launchForAccount(RunType::KeyRotation, $account, $this->actor());
+        $final = app(RunFollower::class)->wait([$run->id])[0];
+        $step = $final->steps()->where('name', KeyRotationStep::NAME)->first();
+
+        if ($final->status !== RunStatus::Succeeded) {
+            $reason = $final->result_summary['reason'] ?? null;
+            $this->error($step->summary ?? (is_string($reason) ? $reason : "L'execució #{$final->id} ha acabat com a {$final->status->value}."));
 
             return self::FAILURE;
         }
 
         $this->info('Clau rotada: la nova funciona i l\'antiga s\'ha retirat.');
+        $notes = $step?->result['notes'] ?? [];
+        $notes = is_array($notes) ? $notes : [];
         foreach ($notes as $note) {
-            $this->warn($note);
+            $this->warn(is_string($note) ? $note : '');
         }
 
         return self::SUCCESS;

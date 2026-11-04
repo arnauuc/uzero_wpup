@@ -83,6 +83,9 @@ final readonly class RunEngine
                     $leases->site = $this->locks->acquire($run->site, $run->actor, $run->id);
                 }
             }
+            if ($run->type->locksHostingAccount() && $run->hosting_account_id !== null) {
+                $leases->account = $this->locks->acquireAccount($run->hosting_account_id, $run->actor, $run->id);
+            }
 
             try {
                 $pipeline = $this->pipelines->resolve($run);

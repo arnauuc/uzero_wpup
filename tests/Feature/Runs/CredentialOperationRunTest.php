@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Domain\Audit\AuditActor;
+use App\Domain\Locks\LockedException;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Pipeline;
@@ -16,6 +17,7 @@ use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
 use App\Enums\RunStatus;
 use App\Enums\RunType;
+use App\Enums\UserRole;
 use App\Jobs\ExecuteRun;
 use App\Models\AuditLogEntry;
 use App\Models\HostingAccount;
@@ -95,4 +97,40 @@ it('puts only the run id on the queue, never the credential', function (): void 
             && ! str_contains($payload, 'OPENSSH');
     });
     expect(json_encode($run->fresh()?->flags, JSON_THROW_ON_ERROR))->toBe('{"dry_run":false}');
+});
+
+it('waits for the hosting account lock before rotating a key', function (): void {
+    $account = HostingAccount::factory()->create();
+    $site = Site::factory()->for($account)->create();
+    app(PipelineResolver::class)->register(RunType::KeyRotation, static fn (): Pipeline => new Pipeline([
+        new ScriptedStep('key_rotation', static fn (): StepOutcome => StepOutcome::succeeded('ok')),
+    ]));
+    $update = app(SiteLockManager::class)->acquire($site, 'nightly update', 41);
+    $rotation = Run::factory()->create(['site_id' => null, 'hosting_account_id' => $account->id, 'type' => RunType::KeyRotation]);
+
+    try {
+        expect(fn () => app(RunEngine::class)->execute($rotation))->toThrow(LockedException::class)
+            ->and($rotation->fresh()?->status)->toBe(RunStatus::Queued);
+    } finally {
+        $update->release();
+    }
+
+    expect(app(RunEngine::class)->execute($rotation)->status)->toBe(RunStatus::Succeeded);
+});
+
+it('refuses on the worker a key rotation by an admin who was demoted', function (): void {
+    $user = User::factory()->create(['unix_username' => 'admin9', 'role' => UserRole::Operator]);
+    $account = HostingAccount::factory()->create();
+    $run = Run::factory()->create([
+        'site_id' => null,
+        'hosting_account_id' => $account->id,
+        'type' => RunType::KeyRotation,
+        'user_id' => $user->id,
+        'actor' => 'admin9',
+        'channel' => AuditChannel::Cli,
+    ]);
+
+    expect(app(RunEngine::class)->execute($run)->status)->toBe(RunStatus::Failed)
+        ->and(AuditLogEntry::query()->where('action', 'run.denied')->where('object_id', (string) $run->id)->exists())->toBeTrue()
+        ->and(AuditLogEntry::query()->where('action', 'like', 'ssh_key.%')->exists())->toBeFalse();
 });

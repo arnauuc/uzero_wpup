@@ -47,6 +47,8 @@ return [
      */
     'credential_operations' => [
         'site_test_timeout_seconds' => 300,
+        'key_rotation_timeout_seconds' => 300,
+        'secrets_rekey_timeout_seconds' => 3600,
     ],
 
     /*

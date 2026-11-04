@@ -11,6 +11,7 @@ use App\Enums\RunStatus;
 use App\Enums\RunType;
 use App\Enums\UpdateStrategy;
 use App\Jobs\ExecuteRun;
+use App\Models\HostingAccount;
 use App\Models\Run;
 use App\Models\Site;
 
@@ -21,6 +22,33 @@ use App\Models\Site;
 final readonly class RunLauncher
 {
     public function __construct(private AuditLogger $audit) {}
+
+    /**
+     * One run that targets a hosting account instead of a site (key rotation).
+     *
+     * @param  array<string, mixed>  $flags
+     */
+    public function launchForAccount(RunType $type, HostingAccount $account, AuditActor $actor, array $flags = []): Run
+    {
+        $run = Run::query()->create([
+            'hosting_account_id' => $account->id,
+            'user_id' => $actor->userId,
+            'actor' => $actor->name,
+            'channel' => $actor->channel,
+            'type' => $type,
+            'status' => RunStatus::Queued,
+            'flags' => $flags,
+        ]);
+        $this->audit->record($actor, 'run.queued', AuditResult::Success, 'run', $run->id, [
+            'type' => $type->value,
+            'hosting_account' => $account->id,
+            'flags' => $flags,
+        ]);
+
+        ExecuteRun::dispatch($run->id);
+
+        return $run;
+    }
 
     /**
      * @param  list<Site|null>  $sites  null = fleet-level run
