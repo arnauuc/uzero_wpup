@@ -53,6 +53,20 @@ class SiteSnapshot extends Model
     }
 
     /**
+     * The site's latest snapshot whose PHP the HTTP probe confirmed, by taken_at;
+     * only one newer than $maxAgeSeconds when given.
+     */
+    public static function latestWebVerifiedPhp(Site $site, ?int $maxAgeSeconds = null): ?self
+    {
+        return self::query()
+            ->where('site_id', $site->id)
+            ->where('php_source', PhpVersionSource::HttpProbe)
+            ->when($maxAgeSeconds !== null, static fn ($query) => $query->where('taken_at', '>=', now()->subSeconds($maxAgeSeconds ?? 0)))
+            ->latest('taken_at')
+            ->first();
+    }
+
+    /**
      * @return BelongsTo<Site, $this>
      */
     public function site(): BelongsTo

@@ -40,6 +40,8 @@ final readonly class InventoryStep implements ReadOnlyStep
         private RunAuthorization $authorization,
         private int $timeoutSeconds,
         private ?SiteBlocking $blocking = null,
+        /** Never writes to the site nor changes its block, with or without --dry-run (plan runs, UZEROWPUP-36). */
+        private bool $readOnlySite = false,
     ) {}
 
     public function name(): string
@@ -55,7 +57,7 @@ final readonly class InventoryStep implements ReadOnlyStep
     public function describe(StepContext $context): string
     {
         return "Llegirà les versions del nucli, els connectors, els temes, els drop-ins, els mu-plugins, PHP i la base de dades del lloc {$this->siteName($context)}"
-            .($context->dryRun ? '.' : ", i confirmarà el PHP del web amb un probe temporal que s'esborra en acabar.");
+            .($this->leavesSiteAlone($context) ? '.' : ", i confirmarà el PHP del web amb un probe temporal que s'esborra en acabar.");
     }
 
     public function run(StepContext $context): StepOutcome
@@ -80,13 +82,13 @@ final readonly class InventoryStep implements ReadOnlyStep
 
         try {
             // A dry run changes nothing on the site, not even a temporary probe.
-            $result = $this->inventory->takeWithPrerequisites($site, $driver, $context->run, probeWeb: ! $context->dryRun);
+            $result = $this->inventory->takeWithPrerequisites($site, $driver, $context->run, probeWeb: ! $this->leavesSiteAlone($context));
         } catch (ConnectionFailed $e) {
             // Transient: the site is not blocked for a network failure.
             return StepOutcome::failed("No s'ha pogut fer l'inventari: {$e->getMessage()}");
         } catch (DriverException $e) {
             // WP-CLI does not work on the site: it cannot be updated either.
-            if ($this->blocking !== null && ! $context->dryRun) {
+            if ($this->blocking !== null && ! $this->leavesSiteAlone($context)) {
                 $this->blocking->blockForWpCli($site, $actor);
             }
 
@@ -103,7 +105,8 @@ final readonly class InventoryStep implements ReadOnlyStep
         );
 
         $summary .= $this->stateSummary($snapshot->environment['state'] ?? null);
-        $block = $this->applyBlock($site, $result->prerequisites, $actor, $context->dryRun);
+        // A read-only inventory neither blocks nor releases the site: the plan reads its current block.
+        $block = $this->readOnlySite ? null : $this->applyBlock($site, $result->prerequisites, $actor, $context->dryRun);
         $summary .= $this->blockSummary($block, $context->dryRun);
 
         // The block outcome is stored so reports show what the inventory decided (a dry run included).
@@ -111,6 +114,14 @@ final readonly class InventoryStep implements ReadOnlyStep
             'snapshot_id' => $snapshot->id,
             ...($block === null ? [] : ['block' => ['outcome' => $block->outcome->value, 'reason' => $block->reason]]),
         ]);
+    }
+
+    /**
+     * A dry run, and a read-only inventory, change nothing on the site, not even a temporary probe.
+     */
+    private function leavesSiteAlone(StepContext $context): bool
+    {
+        return $context->dryRun || $this->readOnlySite;
     }
 
     /**

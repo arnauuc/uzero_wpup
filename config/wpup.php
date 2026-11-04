@@ -92,6 +92,16 @@ return [
     ],
 
     /*
+     * Update plan (UZEROWPUP-36). A plan never probes the web: it trusts the latest
+     * probe-verified PHP of the site only if it is at most this old and the CLI
+     * reports the same minor version.
+     */
+    'planning' => [
+        'step_timeout_seconds' => 60,
+        'verified_php_max_age_seconds' => 604800,
+    ],
+
+    /*
      * Site catalogue (UZEROWPUP-25). `default_window` applies to sites without
      * their own maintenance window (ADR-0006); the other lists are the values a
      * profile may use.
