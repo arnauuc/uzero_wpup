@@ -22,7 +22,8 @@ trait LaunchesRuns
     /**
      * @param  list<Site|null>  $sites
      * @param  array<string, mixed>  $flags
-     * @param  (Closure(list<Run>): void)|null  $present  prints the final runs instead of the default run table / JSON
+     * @param  (Closure(list<Run>): ?int)|null  $present  prints the final runs instead of the default run table / JSON;
+     *                                                    it may return an exit code (e.g. 1 for a run without a usable result), used when the runs themselves gave 0
      */
     protected function launchRuns(RunType $type, array $sites, array $flags = [], ?UpdateStrategy $strategy = null, ?Closure $present = null): int
     {
@@ -51,8 +52,9 @@ trait LaunchesRuns
             } : null,
         );
 
+        $presentedCode = null;
         if ($present !== null) {
-            $present($final);
+            $presentedCode = $present($final);
         } elseif ($this->wantsJson()) {
             $this->emitJson(['runs' => array_map(self::runJson(...), $final)]);
         } else {
@@ -60,11 +62,13 @@ trait LaunchesRuns
                 "#{$run->id}",
                 self::siteLabel($run),
                 $run->status->value,
-                is_string($run->result_summary['reason'] ?? null) ? $run->result_summary['reason'] : '',
+                $run->failureReason() ?? '',
             ], $final));
         }
 
-        return RunFollower::exitCode($final);
+        $code = RunFollower::exitCode($final);
+
+        return $code !== 0 ? $code : ($presentedCode ?? 0);
     }
 
     private static function siteLabel(Run $run): string

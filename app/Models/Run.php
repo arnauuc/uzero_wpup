@@ -81,6 +81,19 @@ class Run extends Model
     }
 
     /**
+     * Why the run did not succeed: the reason it recorded, or a generic text; null if it succeeded.
+     */
+    public function failureReason(): ?string
+    {
+        if ($this->status === RunStatus::Succeeded) {
+            return null;
+        }
+        $reason = $this->result_summary['reason'] ?? null;
+
+        return is_string($reason) ? $reason : "L'execució ha acabat com a {$this->status->value}.";
+    }
+
+    /**
      * What the run targets, for listings: its site, its hosting account (key
      * rotation) or the whole fleet.
      */
