@@ -140,6 +140,22 @@ interface SiteDriver
     public function freeDiskBytes(): int;
 
     /**
+     * Writes a temporary tool file into the WordPress root, where the web
+     * serves it (the HTTP probe, UZEROWPUP-30). $name is a bare file name; an
+     * existing file is never overwritten.
+     *
+     * @throws DriverException
+     */
+    public function putWebFile(string $name, string $contents): void;
+
+    /**
+     * Removes a file written by putWebFile(). Does nothing if it is gone.
+     *
+     * @throws DriverException
+     */
+    public function removeWebFile(string $name): void;
+
+    /**
      * Removes a file the tool created (backups, uploaded packages).
      *
      * @throws DriverException

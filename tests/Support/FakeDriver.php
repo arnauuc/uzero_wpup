@@ -13,9 +13,11 @@ use App\Domain\Drivers\Data\ProbeCheck;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\UpdatePackage;
+use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
+use App\Domain\Drivers\WebFileName;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
@@ -40,6 +42,15 @@ final class FakeDriver implements SiteDriver
     public array $phpLog = [];
 
     public bool $maintenance = false;
+
+    /** @var array<string, string> files in the WordPress root (putWebFile) */
+    public array $webFiles = [];
+
+    /** @var array<string, string> every file ever written with putWebFile, also removed ones */
+    public array $webFilesWritten = [];
+
+    /** Simulates an upload that fails after a partial file was written. */
+    public bool $failWebUpload = false;
 
     /** Null: the configured PHP, with $phpVersion. */
     public ?PhpRuntime $phpRuntime = null;
@@ -75,6 +86,26 @@ final class FakeDriver implements SiteDriver
             new ProbeCheck('wp-cli', CheckResult::Ok, 'fake'),
             new ProbeCheck('php', CheckResult::Ok, $this->phpRuntime()->version),
         ]);
+    }
+
+    public function putWebFile(string $name, string $contents): void
+    {
+        WebFileName::valid($name);
+        if (isset($this->webFiles[$name])) {
+            throw new DriverException("{$name} ja existeix");
+        }
+        $this->webFiles[$name] = $contents;
+        $this->webFilesWritten[$name] = $contents;
+
+        if ($this->failWebUpload) {
+            throw new DriverException('connexió perduda a mitja escriptura');
+        }
+    }
+
+    public function removeWebFile(string $name): void
+    {
+        WebFileName::valid($name);
+        unset($this->webFiles[$name]);
     }
 
     public function phpRuntime(): PhpRuntime

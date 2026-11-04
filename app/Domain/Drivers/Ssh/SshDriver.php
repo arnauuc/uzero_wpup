@@ -18,6 +18,7 @@ use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
+use App\Domain\Drivers\WebFileName;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
@@ -36,7 +37,7 @@ final class SshDriver implements SiteDriver
 {
     private const SHELL_MARKER = 'wpup-shell-ok';
 
-    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head'];
+    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64'];
 
     private ?string $home = null;
 
@@ -491,6 +492,25 @@ final class SshDriver implements SiteDriver
         return [ctype_digit($size) ? (int) $size : 0, $inode];
     }
 
+    public function putWebFile(string $name, string $contents): void
+    {
+        // noclobber: never replace a file of the site.
+        $this->mustExec(
+            'set -C; umask 022; printf %s '.escapeshellarg(base64_encode($contents)).' | base64 -d > '.escapeshellarg($this->webPath($name)),
+            "L'escriptura de {$name} al lloc",
+        );
+    }
+
+    public function removeWebFile(string $name): void
+    {
+        $this->mustExec('rm -f -- '.escapeshellarg($this->webPath($name)), "L'esborrat de {$name} del lloc");
+    }
+
+    private function webPath(string $name): string
+    {
+        return rtrim($this->target->wpPath, '/').'/'.WebFileName::valid($name);
+    }
+
     public function phpRuntime(): PhpRuntime
     {
         // A failed detection is remembered too: every WP-CLI call needs the
@@ -544,7 +564,7 @@ final class SshDriver implements SiteDriver
             }
         }
 
-        $warnings[] = 'Es fa servir el PHP per defecte del compte (`php`), que pot no ser el que serveix el web.';
+        $warnings[] = PhpRuntime::UNVERIFIED_WARNING;
 
         try {
             return new PhpRuntime($this->phpVersionOf('php'), 'php', PhpVersionSource::Cli, $warnings);
@@ -607,7 +627,7 @@ final class SshDriver implements SiteDriver
         $lines = array_values(array_filter(array_map(trim(...), explode("\n", $result->stdout))));
         $version = (string) end($lines);
 
-        return preg_match('/^\d+\.\d+\.\d+/', $version) === 1
+        return PhpRuntime::isVersion($version)
             ? $version
             : throw new RemoteCommandFailed("La lectura de la versió de PHP ({$binary}) no ha tornat cap versió.", $result);
     }

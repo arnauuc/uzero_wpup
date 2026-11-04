@@ -16,6 +16,7 @@ use App\Domain\Drivers\Ssh\SshSettings;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
+use App\Domain\Inventory\HttpProbe;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\SiteInventory;
 use App\Domain\Locks\SiteLockManager;
@@ -40,6 +41,7 @@ use App\Models\Site;
 use App\Support\Logging\RedactSecretsTap;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Redis\Connections\PhpRedisConnection;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Redis;
@@ -101,6 +103,16 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.concurrency.lease_seconds'),
         ));
         $this->app->singleton(PipelineResolver::class);
+        $this->app->bind(HttpProbe::class, static fn (Application $app): HttpProbe => new HttpProbe(
+            $app->make(HttpFactory::class),
+            $app->make(SecretRedactor::class),
+            self::configInt('wpup.inventory.http_probe.timeout_seconds'),
+            self::configInt('wpup.inventory.http_probe.ttl_seconds'),
+            config('wpup.inventory.http_probe.verify_tls') !== false,
+            self::configInt('wpup.inventory.http_probe.max_response_bytes'),
+            self::configInt('wpup.inventory.http_probe.max_extensions'),
+        ));
+        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
             $resolver->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([

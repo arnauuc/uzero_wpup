@@ -14,6 +14,12 @@ use App\Enums\PhpVersionSource;
  */
 final readonly class PhpRuntime
 {
+    /** What a PHP_VERSION looks like ("8.3.14", "7.4.33-1+deb11u1"). */
+    public const string VERSION_PATTERN = '/^\d+\.\d+\.\d+[A-Za-z0-9.+~-]{0,40}$/';
+
+    /** The warning of an unverified CLI PHP; the HTTP probe can lift it. */
+    public const string UNVERIFIED_WARNING = 'Es fa servir el PHP per defecte del compte (`php`), que pot no ser el que serveix el web.';
+
     /**
      * @param  list<string>  $warnings  operator-readable, in Catalan
      */
@@ -29,6 +35,16 @@ final readonly class PhpRuntime
      */
     public function minor(): string
     {
-        return implode('.', array_slice(explode('.', $this->version), 0, 2));
+        return self::minorOf($this->version);
+    }
+
+    public static function minorOf(string $version): string
+    {
+        return implode('.', array_slice(explode('.', $version), 0, 2));
+    }
+
+    public static function isVersion(string $value): bool
+    {
+        return preg_match(self::VERSION_PATTERN, $value) === 1;
     }
 }
