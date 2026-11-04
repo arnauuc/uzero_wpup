@@ -18,6 +18,9 @@ final readonly class SshTarget
         public ?string $phpBinary,
         // Domain name on a Plesk server, to find its PHP handler (UZEROWPUP-29).
         public ?string $pleskDomain = null,
+        // "X.Y" the web was last seen serving (HTTP probe): the binary to prefer
+        // when the domain has pools under several PHP versions.
+        public ?string $webPhpMinor = null,
     ) {}
 
     public function label(): string

@@ -108,6 +108,7 @@ services:
       SITE_UID: "10083"
       SITE_DOMAIN: wp83.fixtures.test
       PLESK_PHP_LAYOUT: "1"
+      PLESK_STALE_POOL_VERSION: "7.4"
       HTTP_PORT: "8083"
       SITE_URL: http://127.0.0.1:8083
       DB_NAME: wp83
