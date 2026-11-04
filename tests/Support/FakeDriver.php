@@ -28,7 +28,7 @@ use App\Enums\PhpVersionSource;
  * Docker fixture sites in integration tests). It passes SiteDriverContract, so
  * code tested against it behaves the same with the real drivers.
  */
-final class FakeDriver implements SiteDriver
+class FakeDriver implements SiteDriver
 {
     /** @var array<string, string> remote path => content */
     public array $files = [];
@@ -133,6 +133,12 @@ final class FakeDriver implements SiteDriver
 
     /** @var array<string, int> table => bytes, what `wp db size --all-tables-with-prefix` reports */
     public array $dbTables = ['wp_options' => 300_000, 'wp_posts' => 20_000_000, 'wp_postmeta' => 30_000_000];
+
+    /** @var list<string> tables dumpDatabase() leaves out of the dump (a broken mysqldump) */
+    public array $dumpOmits = [];
+
+    /** Makes databaseTables() throw a DriverException. */
+    public bool $tablesFail = false;
 
     /** @var list<string> names of the driver methods that change the site, in call order (UZEROWPUP-36) */
     public array $writeCalls = [];
@@ -259,7 +265,27 @@ final class FakeDriver implements SiteDriver
     {
         $this->writeCalls[] = 'dumpDatabase';
 
-        return $this->store($remotePath, (string) json_encode(['options' => $this->options]));
+        return $this->store($remotePath, (string) json_encode([
+            'options' => $this->options,
+            'tables' => array_values(array_diff(array_keys($this->dbTables), $this->dumpOmits)),
+        ]));
+    }
+
+    public function databaseTables(): array
+    {
+        if ($this->tablesFail) {
+            throw new DriverException('wp db tables ha fallat');
+        }
+
+        return array_map(strval(...), array_keys($this->dbTables));
+    }
+
+    public function dumpedTables(RemoteFile $dump): array
+    {
+        $data = json_decode($this->files[$dump->path] ?? throw new RemoteCommandFailed("El fitxer «{$dump->path}» no existeix."), true);
+        $tables = is_array($data) && is_array($data['tables'] ?? null) ? $data['tables'] : [];
+
+        return array_values(array_filter($tables, is_string(...)));
     }
 
     public function archiveFiles(string $remotePath, array $excludes): RemoteFile

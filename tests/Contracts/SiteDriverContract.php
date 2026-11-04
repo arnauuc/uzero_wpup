@@ -95,6 +95,25 @@ final class SiteDriverContract
                 }
             });
 
+            it('lists the site tables and finds all of them in its dump', function () use ($factory): void {
+                $driver = $factory();
+                $dump = $driver->dumpDatabase(SiteDriverContract::remoteName('db.sql.gz'));
+
+                try {
+                    $tables = $driver->databaseTables();
+
+                    expect($tables)->not->toBeEmpty()
+                        ->and(array_diff($tables, $driver->dumpedTables($dump)))->toBe([]);
+                } finally {
+                    $driver->remove($dump->path);
+                }
+            });
+
+            it('refuses to read the tables of a missing dump', function () use ($factory): void {
+                expect(fn () => $factory()->dumpedTables(new RemoteFile(SiteDriverContract::remoteName('none.sql.gz'), 1, str_repeat('0', 64))))
+                    ->toThrow(DriverException::class);
+            });
+
             it('refuses a download whose checksum does not match', function () use ($factory): void {
                 $driver = $factory();
                 $dump = $driver->dumpDatabase(SiteDriverContract::remoteName('db.sql.gz'));

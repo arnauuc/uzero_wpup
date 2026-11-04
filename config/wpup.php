@@ -164,6 +164,13 @@ return [
     'backups' => [
         // Read size when hashing an object at its destination.
         'hash_chunk_bytes' => 1_048_576,
+        // Same rule as the SSH driver for a remote file name (a plain name inside
+        // the account's work directory).
+        'remote_name_pattern' => '/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/',
+        // Database dump (UZEROWPUP-38). sprintf(): run label, random suffix.
+        'database' => [
+            'file_name' => 'db-%s-%s.sql.gz',
+        ],
     ],
 
     'inventory' => [

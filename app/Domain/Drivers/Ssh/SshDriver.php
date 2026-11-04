@@ -187,9 +187,11 @@ final class SshDriver implements SiteDriver
         [$sql, $gz] = [escapeshellarg($path.'.part.sql'), escapeshellarg($path.'.part.gz')];
         $this->ensureWpCli();
 
-        // Only the tables with the site's prefix: a database may be shared.
+        // Only the tables with the site's prefix: a database may be shared. The
+        // password never reaches this command line: WP-CLI hands it to mysqldump
+        // through the MYSQL_PWD environment variable. umask 077: the dump is 0600.
         $this->mustExec(
-            't=$('.$this->wpCommand(['db', 'tables', '--all-tables-with-prefix', '--format=csv']).')'
+            'umask 077; t=$('.$this->wpCommand(['db', 'tables', '--all-tables-with-prefix', '--format=csv']).')'
             .' && '.$this->wpCommand(['db', 'export', $path.'.part.sql', '--single-transaction', '--quick']).' --tables="$t" >/dev/null'
             ." && gzip -c {$sql} > {$gz} && mv {$gz} ".escapeshellarg($path)
             ."; rc=\$?; rm -f {$sql} {$gz}; exit \$rc",
@@ -198,6 +200,26 @@ final class SshDriver implements SiteDriver
         );
 
         return $this->fileInfo($remotePath);
+    }
+
+    public function databaseTables(): array
+    {
+        $out = $this->wpOk(['db', 'tables', '--all-tables-with-prefix', '--format=csv'], 'La llista de taules de la base de dades')->stdout;
+
+        return self::names(preg_split('/[,\r\n]+/', $out) ?: []);
+    }
+
+    public function dumpedTables(RemoteFile $dump): array
+    {
+        $path = escapeshellarg($this->path($dump->path));
+        // Integrity first: a truncated or corrupt gzip must not read as "few tables".
+        $out = $this->mustExec(
+            "gzip -t {$path} && gunzip -c {$path} | sed -n 's/^CREATE TABLE \\(IF NOT EXISTS \\)\\{0,1\\}`\\([^`]*\\)`.*/\\2/p'",
+            'La lectura de les taules del volcat',
+            $this->settings->transferTimeoutSeconds,
+        )->stdout;
+
+        return self::names(explode("\n", $out));
     }
 
     public function archiveFiles(string $remotePath, array $excludes): RemoteFile
@@ -723,6 +745,15 @@ final class SshDriver implements SiteDriver
         $reason = mb_substr((string) end($lines), 0, 300);
 
         return new RemoteCommandFailed("{$what} ha fallat (codi {$result->exitCode}): {$reason}", $result);
+    }
+
+    /**
+     * @param  list<string>  $lines
+     * @return list<string>
+     */
+    private static function names(array $lines): array
+    {
+        return array_values(array_unique(array_filter(array_map(trim(...), $lines), static fn (string $n): bool => $n !== '')));
     }
 
     /**
