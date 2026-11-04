@@ -6,6 +6,7 @@ namespace App\Providers;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
+use App\Domain\Backups\BackupTargetRegistry;
 use App\Domain\Credentials\KeyRotationStep;
 use App\Domain\Credentials\SecretsRekey;
 use App\Domain\Credentials\SecretsRekeyStep;
@@ -113,6 +114,8 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.concurrency.lease_seconds'),
         ));
         $this->app->singleton(PipelineResolver::class);
+        // Backup destinations register their factory here (UZEROWPUP-37).
+        $this->app->singleton(BackupTargetRegistry::class);
         $this->app->bind(HttpProbe::class, static fn (Application $app): HttpProbe => new HttpProbe(
             $app->make(HttpFactory::class),
             $app->make(SecretRedactor::class),

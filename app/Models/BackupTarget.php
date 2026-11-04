@@ -8,6 +8,7 @@ use App\Enums\BackupTargetType;
 use Database\Factories\BackupTargetFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
@@ -38,6 +39,14 @@ class BackupTarget extends Model
             'retention' => 'array',
             'active' => 'boolean',
         ];
+    }
+
+    /**
+     * @return BelongsToMany<Site, $this>
+     */
+    public function sites(): BelongsToMany
+    {
+        return $this->belongsToMany(Site::class, 'site_backup_targets')->withTimestamps();
     }
 
     /**
