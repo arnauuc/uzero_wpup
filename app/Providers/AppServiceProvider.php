@@ -6,13 +6,16 @@ namespace App\Providers;
 
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Credentials\SshKeyManager;
+use App\Domain\Drivers\DriverFactory;
 use App\Domain\Drivers\Ssh\SshSettings;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
+use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
+use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\RunClaim;
 use App\Domain\Runs\RunEngineSettings;
 use App\Domain\Secrets\EnvelopeSecretStore;
@@ -24,6 +27,8 @@ use App\Domain\Secrets\Kek\SystemdCredentialKekProvider;
 use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Secrets\SecretStore;
 use App\Domain\Secrets\SecretStoreException;
+use App\Domain\Sites\SiteTestStep;
+use App\Enums\RunType;
 use App\Support\Logging\RedactSecretsTap;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Foundation\Application;
@@ -88,6 +93,16 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.concurrency.lease_seconds'),
         ));
         $this->app->singleton(PipelineResolver::class);
+        // Credential operations queued by the CLI for the workers (ADR-0011).
+        $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
+            $resolver->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([
+                new SiteTestStep(
+                    $app->make(DriverFactory::class),
+                    $app->make(RunAuthorization::class),
+                    self::configInt('wpup.credential_operations.site_test_timeout_seconds'),
+                ),
+            ]));
+        });
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(
             runTimeoutSeconds: self::configInt('wpup.runs.timeout_seconds'),
             heartbeatSeconds: self::configInt('wpup.runs.heartbeat_seconds'),

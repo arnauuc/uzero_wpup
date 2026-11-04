@@ -9,12 +9,17 @@ use App\Console\Concerns\SelectsSites;
 use App\Console\WpupCommand;
 use App\Domain\Drivers\Data\ProbeCheck;
 use App\Domain\Drivers\Data\ProbeResult;
-use App\Domain\Drivers\DriverFactory;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Ssh\HostKeyPinning;
 use App\Domain\Identity\Ability;
+use App\Domain\Runs\RunFollower;
+use App\Domain\Runs\RunLauncher;
+use App\Domain\Sites\SiteTestStep;
 use App\Enums\CheckResult;
+use App\Enums\RunStatus;
+use App\Enums\RunType;
 use App\Enums\SiteDriverType;
+use App\Models\Run;
 use App\Models\Site;
 
 /**
@@ -48,10 +53,9 @@ final class SiteTestCommand extends WpupCommand implements ChangesState
 
         $report = [];
         $failed = false;
-        foreach ($sites as $site) {
-            $result = $this->test($site);
+        foreach ($this->test(array_values($sites->all())) as $name => [$site, $result]) {
             $failed = $failed || $result->worst() === CheckResult::Error;
-            $report[$site->name] = $result;
+            $report[$name] = $result;
 
             if (! $this->wantsJson()) {
                 $this->line('');
@@ -72,22 +76,54 @@ final class SiteTestCommand extends WpupCommand implements ChangesState
         return $failed ? self::FAILURE : self::SUCCESS;
     }
 
-    private function test(Site $site): ProbeResult
+    /**
+     * Host keys are confirmed here, before queueing (it needs no credential).
+     * The probe itself needs the site's key, which only the workers can reveal
+     * (ADR-0011): the sites are queued as site_test runs and this waits for them.
+     *
+     * @param  list<Site>  $sites
+     * @return array<string, array{Site, ProbeResult}> in the order given
+     */
+    private function test(array $sites): array
     {
-        $account = $site->hostingAccount()->firstOrFail();
+        $results = [];
+        $queue = [];
+        foreach ($sites as $site) {
+            $account = $site->hostingAccount()->firstOrFail();
+            $pinned = $account->driver === SiteDriverType::Ssh && $account->hostingServer()->firstOrFail()->pinned_host_key === null
+                ? $this->pinHostKey($site)
+                : null;
 
-        if ($account->driver === SiteDriverType::Ssh && $account->hostingServer()->firstOrFail()->pinned_host_key === null) {
-            $pinned = $this->pinHostKey($site);
-            if ($pinned !== null) {
-                return new ProbeResult([$pinned]);
+            $results[$site->name] = [$site, $pinned === null ? null : new ProbeResult([$pinned])];
+            if ($pinned === null) {
+                $queue[] = $site;
             }
         }
 
-        try {
-            return app(DriverFactory::class)->forSite($site, $this->actor())->probe();
-        } catch (DriverException $e) {
-            return new ProbeResult([new ProbeCheck('connexió', CheckResult::Error, $e->getMessage())]);
+        if ($queue !== []) {
+            $runs = app(RunLauncher::class)->launch(RunType::SiteTest, $queue, $this->actor(), ['dry_run' => $this->isDryRun()]);
+            $final = app(RunFollower::class)->wait(array_map(static fn (Run $run): int => $run->id, $runs));
+
+            foreach ($final as $run) {
+                $site = $run->site()->firstOrFail();
+                $results[$site->name] = [$site, self::resultOf($run)];
+            }
         }
+
+        return array_map(static fn (array $entry): array => [$entry[0], $entry[1] ?? new ProbeResult([])], $results);
+    }
+
+    private static function resultOf(Run $run): ProbeResult
+    {
+        if ($run->status === RunStatus::Succeeded) {
+            $data = $run->steps()->where('name', SiteTestStep::NAME)->first()?->result;
+
+            return SiteTestStep::resultFrom(is_array($data) ? $data : null);
+        }
+
+        $reason = is_string($run->result_summary['reason'] ?? null) ? $run->result_summary['reason'] : "L'execució #{$run->id} ha acabat com a {$run->status->value}.";
+
+        return new ProbeResult([new ProbeCheck('execució', CheckResult::Error, $reason)]);
     }
 
     /**

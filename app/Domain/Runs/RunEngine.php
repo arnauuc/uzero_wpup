@@ -76,9 +76,12 @@ final readonly class RunEngine
                 return $run;
             }
 
-            $leases->slots = $this->gate->acquire($run, $token);
-            if ($run->site !== null) {
-                $leases->site = $this->locks->acquire($run->site, $run->actor, $run->id);
+            // Credential operations (site:test…) skip the slots and the site lock: see RunType.
+            if ($run->type->usesConcurrencyLimits()) {
+                $leases->slots = $this->gate->acquire($run, $token);
+                if ($run->site !== null) {
+                    $leases->site = $this->locks->acquire($run->site, $run->actor, $run->id);
+                }
             }
 
             try {
