@@ -11,6 +11,7 @@ use Database\Factories\SiteFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
@@ -86,6 +87,16 @@ class Site extends Model
     public function runs(): HasMany
     {
         return $this->hasMany(Run::class);
+    }
+
+    /**
+     * Destinations this site's restore points are stored in (UZEROWPUP-37).
+     *
+     * @return BelongsToMany<BackupTarget, $this>
+     */
+    public function backupTargets(): BelongsToMany
+    {
+        return $this->belongsToMany(BackupTarget::class, 'site_backup_targets')->withTimestamps();
     }
 
     /**
