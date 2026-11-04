@@ -26,7 +26,11 @@ use App\Models\SiteSnapshot;
  * - mu_plugins: list<array{slug: string, version: string, title: ?string}>
  * - environment.php: array{binary: string, cli_version: string, cli_source: string,
  *   warnings: list<string>, sapi: ?string, extensions: list<string>, blocked_reason: ?string}
- * pending_updates stays empty until UZEROWPUP-32.
+ * - pending_updates: list<array{type: 'core'|'plugin'|'theme'|'woocommerce', slug: string, current_version: string,
+ *   new_version: string, package_url: ?string (no query string), package_has_query: bool, requires_php: ?string,
+ *   requires_wp: ?string, requires_wc: ?string, source: 'wordpress.org'|'transient', licensed: bool}>
+ *   (UZEROWPUP-32, see PendingUpdates; licensed=false is a premium package without download URL)
+ * - environment.updates: array{warnings: list<string>}
  *
  * PHP: the version WP-CLI runs with (UZEROWPUP-29) is cross-checked with the
  * HTTP probe (UZEROWPUP-30). The web wins; if the minor versions differ, the
@@ -36,8 +40,9 @@ final readonly class SiteInventory
 {
     /**
      * @param  HttpProbe|null  $probe  null only in tests that do not exercise it
+     * @param  PendingUpdates|null  $pending  null only in tests that do not exercise it (pending_updates stays empty)
      */
-    public function __construct(private ?HttpProbe $probe = null) {}
+    public function __construct(private ?HttpProbe $probe = null, private ?PendingUpdates $pending = null) {}
 
     public const string THEME_ACTIVE = 'active';
 
@@ -56,6 +61,8 @@ final readonly class SiteInventory
         $probe = $probeWeb ? $this->probe?->run($site, $driver) : null;
         [$phpVersion, $phpSource, $phpEnvironment] = $this->php($php, $probe, $probeWeb);
 
+        $pending = $this->pending?->read($driver, $installed, now()->getTimestamp());
+
         $values = [
             'site_id' => $site->id,
             'core_version' => $installed->coreVersion,
@@ -68,8 +75,8 @@ final readonly class SiteInventory
             'themes' => $this->themes($installed),
             'dropins' => $this->simple($installed, ComponentType::Dropin),
             'mu_plugins' => $this->simple($installed, ComponentType::MuPlugin),
-            'pending_updates' => [],
-            'environment' => ['php' => $phpEnvironment],
+            'pending_updates' => array_map(static fn (PendingUpdate $u): array => $u->toArray(), $pending->updates ?? []),
+            'environment' => ['php' => $phpEnvironment, 'updates' => ['warnings' => $pending->warnings ?? []]],
             'taken_at' => now(),
         ];
 

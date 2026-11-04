@@ -18,6 +18,7 @@ use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
 use App\Domain\Inventory\HttpProbe;
 use App\Domain\Inventory\InventoryStep;
+use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteInventory;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
@@ -112,7 +113,16 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.http_probe.max_response_bytes'),
             self::configInt('wpup.inventory.http_probe.max_extensions'),
         ));
-        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class)));
+        $this->app->bind(PendingUpdates::class, static fn (Application $app): PendingUpdates => new PendingUpdates(
+            $app->make(HttpFactory::class),
+            self::configString('wpup.inventory.wordpress_org.plugins_info_url'),
+            self::configString('wpup.inventory.wordpress_org.themes_info_url'),
+            self::configInt('wpup.inventory.wordpress_org.timeout_seconds'),
+            self::configInt('wpup.inventory.wordpress_org.command_timeout_seconds'),
+            self::configInt('wpup.inventory.wordpress_org.max_lookups'),
+            self::configInt('wpup.inventory.wordpress_org.stale_after_seconds'),
+        ));
+        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
             $resolver->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([
