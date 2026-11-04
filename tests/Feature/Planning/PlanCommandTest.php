@@ -35,6 +35,9 @@ beforeEach(function (): void {
             if ($run->site?->name === 'blog') {
                 return StepOutcome::failed('connexió caiguda');
             }
+            if ($run->site?->name === 'trencat') {
+                return StepOutcome::succeeded('ok', '', ['php' => ['version' => '8.2.20', 'source' => 'inventat', 'verified' => true], 'changes' => []]);
+            }
             $plan = new UpdatePlan('8.2.20', PhpVersionSource::Cli, false, null, [
                 new PlannedChange(ComponentType::Core, 'wordpress', '6.8.1', '6.8.2', PlanAction::Update),
                 new PlannedChange(ComponentType::Plugin, 'akismet', '5.3', '6.0', PlanAction::Skip, SkipReason::MajorRequiresStaging, 'Canvi major'),
@@ -100,4 +103,52 @@ it('refuses a report version that is not an integer', function (): void {
     config(['wpup.planning.report_version' => '1']);
 
     expect(fn () => app(PlanReport::class)->document([]))->toThrow(UnexpectedValueException::class);
+});
+
+it('shows a stored plan that is not valid as a failed row and still shows the other sites', function (): void {
+    Site::factory()->create(['name' => 'trencat', 'url' => 'https://trencat.test']);
+
+    $exit = Artisan::call('plan', ['sites' => ['botiga-a', 'trencat'], '--wait' => true]);
+    $output = Artisan::output();
+
+    expect($exit)->toBe(1)
+        ->and($output)->toContain('El pla desat no és vàlid.')
+        ->and($output)->toContain('plugin:akismet');
+});
+
+it('does not count a succeeded run without a usable plan as a success', function (): void {
+    app(PipelineResolver::class)->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
+        new ScriptedReadOnlyStep('inventory', static fn (): StepOutcome => StepOutcome::succeeded('ok')),
+    ]));
+
+    $exit = Artisan::call('plan', ['sites' => ['botiga-a'], '--wait' => true]);
+
+    expect($exit)->toBe(1)->and(Artisan::output())->toContain("L'execució no ha deixat cap pla.");
+});
+
+it('reports blocked from the site row, not from the plan, and null without a site', function (): void {
+    Site::query()->where('name', 'blog')->update(['blocked_reason' => 'PHP antic']);
+    Artisan::call('plan', ['sites' => ['botiga-a', 'blog'], '--wait' => true, '--json' => true]);
+    /** @var array{sites: list<array{site: string, blocked: bool|null}>} $json */
+    $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect(array_column($json['sites'], 'blocked', 'site'))->toBe(['blog' => true, 'botiga-a' => false]);
+
+    $run = Run::factory()->create(['type' => RunType::Plan, 'site_id' => null]);
+    $rows = app(PlanReport::class)->rows([$run]);
+    expect($rows[0]->blocked)->toBeNull();
+});
+
+it('does not plan inactive sites named explicitly and says so', function (): void {
+    $exit = Artisan::call('plan', ['sites' => ['antic', 'botiga-a']]);
+
+    expect($exit)->toBe(0)
+        ->and(Artisan::output())->toContain('antic: inactiu, no es planifica.')->toContain('(plan, botiga-a)')
+        ->and(Run::query()->count())->toBe(1);
+});
+
+it('fails when every named site is inactive', function (): void {
+    $exit = Artisan::call('plan', ['sites' => ['antic']]);
+
+    expect($exit)->toBe(1)->and(Artisan::output())->toContain('antic: inactiu, no es planifica.')->and(Run::query()->count())->toBe(0);
 });

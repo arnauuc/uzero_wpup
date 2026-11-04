@@ -4,13 +4,12 @@ declare(strict_types=1);
 
 namespace App\Domain\Inventory;
 
+use App\Domain\Runs\ReportVersion;
 use App\Domain\Sites\BlockOutcome;
-use App\Enums\RunStatus;
 use App\Models\Run;
 use App\Models\RunStep;
 use App\Models\SiteSnapshot;
 use RuntimeException;
-use UnexpectedValueException;
 
 /**
  * Turns finished inventory runs into rows for the terminal, JSON and CSV
@@ -53,10 +52,8 @@ final class InventoryReport
      */
     public function document(array $rows): array
     {
-        $version = config('wpup.inventory.report_version');
-
         return [
-            'version' => is_int($version) ? $version : throw new UnexpectedValueException('wpup.inventory.report_version must be an integer.'),
+            'version' => ReportVersion::read('wpup.inventory.report_version'),
             'sites' => array_map(static fn (InventoryRow $row): array => $row->toArray(), $rows),
         ];
     }
@@ -97,9 +94,7 @@ final class InventoryReport
     {
         $site = $run->site;
         $siteBlock = $site?->blocked_reason;
-        $failure = $run->status === RunStatus::Succeeded ? null : (is_string($run->result_summary['reason'] ?? null)
-            ? $run->result_summary['reason']
-            : "L'execució ha acabat com a {$run->status->value}.");
+        $failure = $run->failureReason();
 
         // What the inventory decided about the block. A dry run changes nothing, so
         // it reports what the real one would do; otherwise the site's state is the truth.

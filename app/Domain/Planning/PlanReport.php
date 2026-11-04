@@ -4,14 +4,18 @@ declare(strict_types=1);
 
 namespace App\Domain\Planning;
 
-use App\Enums\RunStatus;
+use App\Domain\Runs\ReportVersion;
+use App\Enums\RunStepStatus;
 use App\Models\Run;
 use App\Models\RunStep;
+use Illuminate\Database\Eloquent\Collection;
 use UnexpectedValueException;
 
 /**
  * Turns finished plan runs into rows for the terminal and JSON (UZEROWPUP-36).
- * The plan is the one the run stored in its `plan` step.
+ * The plan is the one the run stored in its `plan` step. It reads the runs it is
+ * given (the ones RunFollower returned, with their steps); only the sites are
+ * loaded here, in one query.
  */
 final class PlanReport
 {
@@ -21,17 +25,9 @@ final class PlanReport
      */
     public function rows(array $runs): array
     {
-        $ids = array_map(static fn (Run $run): int => $run->id, $runs);
-        $loaded = Run::query()->whereKey($ids)->with('site')->get()->keyBy('id');
-        $steps = RunStep::query()->whereIn('run_id', $ids)->where('name', PlanStep::NAME)->get()->keyBy('run_id');
+        (new Collection($runs))->loadMissing('site');
 
-        $rows = [];
-        foreach ($runs as $run) {
-            $fresh = $loaded->get($run->id) ?? $run;
-            $rows[] = $this->row($fresh, $steps->get($run->id));
-        }
-
-        return $rows;
+        return array_map($this->row(...), $runs);
     }
 
     /**
@@ -40,29 +36,28 @@ final class PlanReport
      */
     public function document(array $rows): array
     {
-        $version = config('wpup.planning.report_version');
-
         return [
-            'version' => is_int($version) ? $version : throw new UnexpectedValueException('wpup.planning.report_version must be an integer.'),
+            'version' => ReportVersion::read('wpup.planning.report_version'),
             'sites' => array_map(static fn (PlanRow $row): array => $row->toArray(), $rows),
         ];
     }
 
-    private function row(Run $run, ?RunStep $step): PlanRow
+    private function row(Run $run): PlanRow
     {
-        $name = $run->site->name ?? '(sense lloc)';
-        $url = $run->site->url ?? '';
-        $failure = $run->status === RunStatus::Succeeded ? null : (is_string($run->result_summary['reason'] ?? null)
-            ? $run->result_summary['reason']
-            : "L'execució ha acabat com a {$run->status->value}.");
+        $failure = $run->failureReason();
+        $step = $run->steps->firstWhere('name', PlanStep::NAME);
 
         $plan = null;
-        if ($step !== null && $step->status->value === 'succeeded' && is_array($step->result)) {
-            $plan = UpdatePlan::fromArray($step->result);
+        if ($step instanceof RunStep && $step->status === RunStepStatus::Succeeded && is_array($step->result)) {
+            try {
+                $plan = UpdatePlan::fromArray($step->result);
+            } catch (UnexpectedValueException) {
+                $failure ??= 'El pla desat no és vàlid.';
+            }
         } else {
             $failure ??= "L'execució no ha deixat cap pla.";
         }
 
-        return new PlanRow($name, $url, $run->id, $run->status, $failure, $plan);
+        return new PlanRow($run->targetLabel(), $run->site->url ?? '', $run->id, $run->status, $failure, $plan, $run->site === null ? null : $run->site->blocked_reason !== null);
     }
 }

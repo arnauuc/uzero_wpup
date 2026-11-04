@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\PhpRuntime;
+use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\SiteInventory;
@@ -21,11 +22,14 @@ use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Enums\RunStatus;
 use App\Enums\RunType;
+use App\Enums\UserRole;
 use App\Models\AuditLogEntry;
 use App\Models\Run;
 use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\SiteSnapshot;
+use App\Models\User;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
 use Tests\Support\FakeDriver;
@@ -202,4 +206,51 @@ it('fails the plan step when the inventory left no snapshot', function (): void 
     $outcome = new PlanStep(app(UpdatePlanner::class), 60, 604800)->run(new StepContext($run, false, []));
 
     expect($outcome->status->value)->toBe('failed');
+});
+
+function realPlanPipeline(FakeDriver|Throwable $driver): void
+{
+    User::factory()->create(['unix_username' => 'oper1', 'role' => UserRole::Operator]);
+    actingAsOperator('oper1');
+    app(PipelineResolver::class)->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
+        new InventoryStep(app(SiteInventory::class), static function (Site $s, AuditActor $a) use ($driver): SiteDriver {
+            if ($driver instanceof Throwable) {
+                throw $driver;
+            }
+
+            return $driver;
+        }, app(RunAuthorization::class), 60, app(SiteBlocking::class), readOnlySite: true),
+        new PlanStep(app(UpdatePlanner::class), 60, 604800),
+    ]));
+}
+
+it('runs wpup plan --wait --json end to end with the real pipeline', function (): void {
+    $site = Site::factory()->create(['name' => 'botiga-e2e']);
+    SiteProfile::factory()->create(['site_id' => $site->id, 'frozen_components' => ['hello']]);
+    $driver = plannedDriver();
+    realPlanPipeline($driver);
+
+    $exit = Artisan::call('plan', ['sites' => ['botiga-e2e'], '--wait' => true, '--json' => true]);
+    /** @var array{version: int, sites: list<array{site: string, status: string, blocked: bool, plan: array{updates: int, skips: int, changes: list<array{slug: string, action: string}>}}>} $json */
+    $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($exit)->toBe(0)
+        ->and($json['version'])->toBe(1)
+        ->and($json['sites'][0])->toMatchArray(['site' => 'botiga-e2e', 'status' => 'succeeded', 'blocked' => false])
+        ->and($json['sites'][0]['plan'])->toMatchArray(['updates' => 2, 'skips' => 2])
+        ->and(array_column($json['sites'][0]['plan']['changes'], 'action', 'slug'))->toBe(['wordpress' => 'update', 'classic-editor' => 'update', 'hello' => 'skip', 'premium' => 'skip'])
+        ->and($driver->writeCalls)->toBe([]);
+});
+
+it('reports a failed plan run with the site block taken from the site', function (): void {
+    Site::factory()->create(['name' => 'caigut', 'blocked_reason' => 'Bloqueig anterior', 'blocked_at' => now()]);
+    realPlanPipeline(new ConnectionFailed('WP-CLI no respon'));
+
+    $exit = Artisan::call('plan', ['sites' => ['caigut'], '--wait' => true, '--json' => true]);
+    /** @var array{sites: list<array{status: string, blocked: bool|null, failure: ?string, plan: mixed}>} $json */
+    $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($exit)->toBe(1)
+        ->and($json['sites'][0])->toMatchArray(['status' => 'failed', 'blocked' => true, 'plan' => null])
+        ->and($json['sites'][0]['failure'])->toContain('WP-CLI no respon');
 });

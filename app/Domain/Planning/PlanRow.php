@@ -18,7 +18,17 @@ final readonly class PlanRow
         public RunStatus $runStatus,
         public ?string $failure,
         public ?UpdatePlan $plan,
+        /** Whether the site is blocked now (sites.blocked_reason), null if the run has no site. */
+        public ?bool $blocked = null,
     ) {}
+
+    /**
+     * Whether the row has a plan the operator can act on.
+     */
+    public function hasPlan(): bool
+    {
+        return $this->plan !== null;
+    }
 
     /**
      * @return array<string, mixed>
@@ -31,7 +41,7 @@ final readonly class PlanRow
             'run_id' => $this->runId,
             'status' => $this->runStatus->value,
             'failure' => $this->failure,
-            'blocked' => $this->plan?->blockedReason !== null,
+            'blocked' => $this->blocked,
             ...($this->plan === null ? ['plan' => null] : ['plan' => [
                 ...$this->plan->toArray(),
                 'updates' => $this->plan->updateCount(),

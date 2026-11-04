@@ -5,19 +5,22 @@ declare(strict_types=1);
 namespace App\Console\Commands\Planning;
 
 use App\Console\Concerns\LaunchesRuns;
+use App\Console\Concerns\PrintsRunHeader;
 use App\Console\Concerns\SelectsSites;
 use App\Console\WpupCommand;
 use App\Domain\Identity\Ability;
 use App\Domain\Planning\PlanReport;
 use App\Domain\Planning\PlanRow;
-use App\Enums\RunStatus;
 use App\Enums\RunType;
 use App\Models\Run;
+use App\Models\Site;
 
 /**
  * Plan of the updates of one or more sites as queued runs (UZEROWPUP-36). It
- * changes nothing on the site nor in the tool (no probe, no block change), so
- * it is not a ChangesState command and has no --dry-run.
+ * changes neither the content of the site nor its block state (no probe, no block
+ * change), so it is not a ChangesState command and has no --dry-run. It does
+ * write to the tool (run, steps, snapshot, audit rows), and the driver may install
+ * the tool's WP-CLI in its working directory on the site's account.
  */
 final class PlanCommand extends WpupCommand
 {
@@ -29,6 +32,7 @@ final class PlanCommand extends WpupCommand
     protected $description = "Mostra què s'actualitzaria i què s'ometria, i per què, sense tocar els llocs";
 
     use LaunchesRuns;
+    use PrintsRunHeader;
     use SelectsSites;
 
     protected function ability(): Ability
@@ -43,7 +47,16 @@ final class PlanCommand extends WpupCommand
             return self::FAILURE;
         }
 
-        $present = function (array $runs): void {
+        // Only a site named explicitly can be inactive (--tag and --all select active ones).
+        $active = $sites->filter(static fn (Site $site): bool => $site->active)->values();
+        foreach ($sites->reject(static fn (Site $site): bool => $site->active) as $inactive) {
+            $this->error("{$inactive->name}: inactiu, no es planifica.");
+        }
+        if ($active->isEmpty()) {
+            return self::FAILURE;
+        }
+
+        $present = function (array $runs): int {
             /** @var list<Run> $runs */
             $report = app(PlanReport::class);
             $rows = $report->rows($runs);
@@ -53,21 +66,17 @@ final class PlanCommand extends WpupCommand
             } else {
                 array_map($this->printRow(...), $rows);
             }
+
+            // A run that left no usable plan is not a success, even if the run itself succeeded.
+            return array_filter($rows, static fn (PlanRow $row): bool => ! $row->hasPlan()) === [] ? 0 : self::FAILURE;
         };
 
-        return $this->launchRuns(RunType::Plan, array_values($sites->all()), [], null, $present);
+        return $this->launchRuns(RunType::Plan, array_values($active->all()), [], null, $present);
     }
 
     private function printRow(PlanRow $row): void
     {
-        $this->line('');
-        $this->line("<options=bold>{$row->site}</> ({$row->url}) — execució #{$row->runId}");
-
-        if ($row->runStatus === RunStatus::Skipped) {
-            $this->line("omès: {$row->failure}");
-        } elseif ($row->runStatus !== RunStatus::Succeeded) {
-            $this->error("El pla no ha acabat bé ({$row->runStatus->value}): {$row->failure}");
-        }
+        $this->printRunHeader($row->site, $row->url, $row->runId, $row->runStatus, $row->failure, 'El pla');
 
         $plan = $row->plan;
         if ($plan === null) {

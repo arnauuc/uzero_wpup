@@ -6,12 +6,12 @@ namespace App\Console\Commands\Inventory;
 
 use App\Console\ChangesState;
 use App\Console\Concerns\LaunchesRuns;
+use App\Console\Concerns\PrintsRunHeader;
 use App\Console\Concerns\SelectsSites;
 use App\Console\WpupCommand;
 use App\Domain\Identity\Ability;
 use App\Domain\Inventory\InventoryReport;
 use App\Domain\Inventory\InventoryRow;
-use App\Enums\RunStatus;
 use App\Enums\RunType;
 use App\Models\Run;
 
@@ -32,6 +32,7 @@ final class InventoryCommand extends WpupCommand implements ChangesState
     protected $description = 'Inventari de versions, PHP real i actualitzacions pendents dels llocs';
 
     use LaunchesRuns;
+    use PrintsRunHeader;
     use SelectsSites;
 
     protected function ability(): Ability
@@ -61,7 +62,7 @@ final class InventoryCommand extends WpupCommand implements ChangesState
             return self::FAILURE;
         }
 
-        $present = function (array $runs) use ($csv): void {
+        $present = function (array $runs) use ($csv): ?int {
             /** @var list<Run> $runs */
             $report = app(InventoryReport::class);
             $rows = $report->rows($runs);
@@ -73,6 +74,8 @@ final class InventoryCommand extends WpupCommand implements ChangesState
             } else {
                 array_map($this->printRow(...), $rows);
             }
+
+            return null;
         };
 
         return $this->launchRuns(RunType::Inventory, array_values($sites->all()), ['dry_run' => $this->isDryRun()], null, $present);
@@ -80,14 +83,7 @@ final class InventoryCommand extends WpupCommand implements ChangesState
 
     private function printRow(InventoryRow $row): void
     {
-        $this->line('');
-        $this->line("<options=bold>{$row->site}</> ({$row->url}) — execució #{$row->runId}");
-
-        if ($row->runStatus === RunStatus::Skipped) {
-            $this->line("omès: {$row->failure}");
-        } elseif ($row->runStatus !== RunStatus::Succeeded) {
-            $this->error("L'inventari no ha acabat bé ({$row->runStatus->value}): {$row->failure}");
-        }
+        $this->printRunHeader($row->site, $row->url, $row->runId, $row->runStatus, $row->failure, "L'inventari");
 
         if (! $row->hasSnapshot()) {
             return;
