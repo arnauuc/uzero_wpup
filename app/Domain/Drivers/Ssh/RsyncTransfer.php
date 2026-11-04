@@ -25,9 +25,14 @@ final readonly class RsyncTransfer
         private int $timeoutSeconds,
     ) {}
 
+    /**
+     * Resumable: a shorter file already at $localPath (an interrupted transfer)
+     * is continued, after rsync checks that what is there matches the source
+     * (--append-verify); otherwise it is sent again. The local copy is 0600.
+     */
     public function download(string $remotePath, string $localPath): void
     {
-        $this->rsync($this->remote($remotePath), $localPath);
+        $this->rsync($this->remote($remotePath), $localPath, ['--append-verify', '--chmod=F600']);
     }
 
     public function upload(string $localPath, string $remotePath): void
@@ -35,7 +40,10 @@ final readonly class RsyncTransfer
         $this->rsync($localPath, $this->remote($remotePath));
     }
 
-    private function rsync(string $from, string $to): void
+    /**
+     * @param  list<string>  $options
+     */
+    private function rsync(string $from, string $to, array $options = []): void
     {
         $dir = sys_get_temp_dir().'/wpup-ssh-'.bin2hex(random_bytes(8));
         if (! mkdir($dir, 0700)) {
@@ -62,7 +70,7 @@ final readonly class RsyncTransfer
                 '-o', 'ConnectTimeout=15',
             ]);
 
-            $rsync = new Process(['rsync', '--protect-args', '-e', $ssh, $from, $to], null, ['SSH_AUTH_SOCK' => $socket], null, $this->timeoutSeconds);
+            $rsync = new Process(['rsync', '--protect-args', ...$options, '-e', $ssh, $from, $to], null, ['SSH_AUTH_SOCK' => $socket], null, $this->timeoutSeconds);
             if ($rsync->run() !== 0) {
                 $reason = trim(mb_substr($rsync->getErrorOutput(), 0, 500));
 

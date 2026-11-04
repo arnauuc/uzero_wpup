@@ -168,6 +168,38 @@ return [
         'database' => [
             'file_name' => 'db-%s-%s.sql.gz',
         ],
+        // Code archive (UZEROWPUP-39, ADR-0009): core, plugins, themes, mu-plugins,
+        // drop-ins and wp-config.php. Paths relative to the WordPress root; tar and
+        // rsync patterns ("*") are allowed.
+        'files' => [
+            'file_name' => 'files-%s-%s.tar.gz',
+            'uploads_path' => 'wp-content/uploads',
+            // Always left out: caches (rebuilt by the site) and the archives of
+            // other backup plugins (large, and not code). Drop-ins such as
+            // object-cache.php are NOT here: they are code.
+            'exclude' => [
+                'wp-content/cache',
+                'wp-content/updraft',
+                'wp-content/ai1wm-backups',
+                'wp-content/backups-dup-lite',
+                'wp-content/backups-dup-pro',
+                'wp-content/backup-db',
+                'wp-content/backupbuddy_backups',
+                'wp-content/wpvividbackups',
+                'wp-content/wflogs',
+                'wp-content/debug.log',
+            ],
+            // Only matter when the profile includes uploads: other backup plugins
+            // keep their archives there.
+            'exclude_in_uploads' => [
+                'wp-content/uploads/backwpup-*',
+                'wp-content/uploads/wp-clone',
+                'wp-content/uploads/wpvividbackups',
+                'wp-content/uploads/backup-*',
+                'wp-content/uploads/duplicator*',
+                'wp-content/uploads/snapshots',
+            ],
+        ],
     ],
 
     'inventory' => [

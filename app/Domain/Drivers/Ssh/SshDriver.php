@@ -242,6 +242,9 @@ final class SshDriver implements SiteDriver
         $tmp = escapeshellarg($path.'.part');
         $manifest = ': > "$m/.wpup-excludes"';
         $options = '';
+        // The tool's own work directory (backups, WP-CLI) never goes into the archive.
+        $root = rtrim($this->target->wpPath, '/').'/';
+        $excludes = array_values(array_unique([...$excludes, ...(str_starts_with($this->workDir().'/', $root) ? [substr($this->workDir(), strlen($root))] : [])]));
         foreach ($excludes as $exclude) {
             $exclude = self::relativePath($exclude);
             $manifest .= ' && printf "%s\n" '.escapeshellarg($exclude).' >> "$m/.wpup-excludes"';
@@ -250,8 +253,9 @@ final class SshDriver implements SiteDriver
 
         // The archive carries its own exclude list, so restoreFiles() never deletes
         // what was left out (uploads…).
+        // umask 077: the archive is 0600, in the 0700 work directory.
         $this->mustExec(
-            'm=$(mktemp -d '.escapeshellarg($this->workDir().'/m-XXXXXX').') && '.$manifest
+            'umask 077; m=$(mktemp -d '.escapeshellarg($this->workDir().'/m-XXXXXX').') && '.$manifest
             ." && tar -czf {$tmp}{$options} -C ".escapeshellarg($this->target->wpPath).' . -C "$m" .wpup-excludes'
             ." && mv {$tmp} ".escapeshellarg($path)
             ."; rc=\$?; rm -rf \"\$m\" {$tmp}; exit \$rc",

@@ -134,6 +134,9 @@ class FakeDriver implements SiteDriver
     /** @var array<string, int> table => bytes, what `wp db size --all-tables-with-prefix` reports */
     public array $dbTables = ['wp_options' => 300_000, 'wp_posts' => 20_000_000, 'wp_postmeta' => 30_000_000];
 
+    /** Where the fake site keeps wp-config.php (`wp config path`). */
+    public string $configPath = '/var/www/html/wp-config.php';
+
     /** @var list<string> tables dumpDatabase() leaves out of the dump (a broken mysqldump) */
     public array $dumpOmits = [];
 
@@ -239,6 +242,8 @@ class FakeDriver implements SiteDriver
                 array_keys($this->dbTables),
                 array_values($this->dbTables),
             ))),
+            $args === ['config', 'path'] => $this->ok($this->configPath."\n"),
+            $args === ['eval', 'echo rtrim(ABSPATH, "/");'] => $this->ok('/var/www/html'),
             $args === ['core', 'version'] => $this->ok($this->coreVersion."\n"),
             $args === ['maintenance-mode', 'is-active'] => $this->maintenance
                 ? $this->ok('')
