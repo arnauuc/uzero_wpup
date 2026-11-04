@@ -120,7 +120,7 @@ it('uses the PHP of the domain handler on Plesk', function (): void {
     expect($runtime->source)->toBe(PhpVersionSource::PleskHandler)
         ->and($runtime->binary)->toBe('/opt/plesk/php/8.3/bin/php')
         ->and($runtime->minor())->toBe('8.3')
-        ->and(implode(' ', $runtime->warnings))->toContain('es fa servir el més recent');
+        ->and($runtime->warnings)->toBe([]);
 });
 
 it('prefers the domain handler over a different configured binary, with a warning', function (): void {

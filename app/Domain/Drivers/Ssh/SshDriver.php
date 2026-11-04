@@ -624,15 +624,12 @@ final class SshDriver implements SiteDriver
             return null;
         }
 
-        // Plesk leaves the old pool behind when a domain changes PHP version:
-        // the newest one is the last change. The HTTP probe confirms it.
+        // Plesk leaves the old pool behind when a domain changes PHP version
+        // (common, so no warning): the newest one is the last change. The HTTP
+        // probe confirms it, and WP-CLI switches if the web says otherwise.
         arsort($binaries);
-        $newest = (string) array_key_first($binaries);
-        if (count($binaries) > 1) {
-            $warnings[] = "El domini {$domain} té pools de PHP-FPM a diverses versions (".implode(', ', array_keys($binaries))."): es fa servir el més recent, {$newest}.";
-        }
 
-        return $newest;
+        return (string) array_key_first($binaries);
     }
 
     public function adoptWebPhp(string $minor): ?PhpRuntime
