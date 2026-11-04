@@ -16,8 +16,10 @@ use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunClaim;
 use App\Domain\Runs\RunEngineSettings;
 use App\Domain\Secrets\EnvelopeSecretStore;
+use App\Domain\Secrets\Kek\ConfigPublicKeyRing;
 use App\Domain\Secrets\Kek\EnvKekProvider;
 use App\Domain\Secrets\Kek\KekProvider;
+use App\Domain\Secrets\Kek\PublicKeyRing;
 use App\Domain\Secrets\Kek\SystemdCredentialKekProvider;
 use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Secrets\SecretStore;
@@ -37,20 +39,24 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        // ADR-0011: the public half seals, the private half (workers only) opens.
+        $this->app->singleton(EnvKekProvider::class, static fn (Application $app): EnvKekProvider => new EnvKekProvider(
+            self::stringOrNull(config('wpup.secrets.dev_kek')),
+            $app->environment(),
+        ));
+        $this->app->singleton(PublicKeyRing::class, static function (Application $app): PublicKeyRing {
+            return match (self::kekProvider()) {
+                'systemd' => new ConfigPublicKeyRing(self::publicKeys(), self::configInt('wpup.secrets.kek_version')),
+                'env' => $app->make(EnvKekProvider::class),
+            };
+        });
         $this->app->singleton(KekProvider::class, static function (Application $app): KekProvider {
-            $provider = config('wpup.secrets.kek_provider');
-
-            return match ($provider) {
+            return match (self::kekProvider()) {
                 'systemd' => new SystemdCredentialKekProvider(
                     self::stringOrNull(getenv('CREDENTIALS_DIRECTORY')),
                     self::configString('wpup.secrets.credential_prefix'),
-                    self::configInt('wpup.secrets.kek_version'),
                 ),
-                'env' => new EnvKekProvider(
-                    self::stringOrNull(config('wpup.secrets.dev_kek')),
-                    $app->environment(),
-                ),
-                default => throw SecretStoreException::unknownProvider(is_string($provider) ? $provider : get_debug_type($provider)),
+                'env' => $app->make(EnvKekProvider::class),
             };
         });
 
@@ -146,6 +152,36 @@ class AppServiceProvider extends ServiceProvider
         return $connection instanceof PhpRedisConnection
             ? $connection
             : throw new \UnexpectedValueException('Locks need the phpredis client (REDIS_CLIENT=phpredis).');
+    }
+
+    /**
+     * @return 'systemd'|'env'
+     */
+    private static function kekProvider(): string
+    {
+        $provider = config('wpup.secrets.kek_provider');
+
+        return match ($provider) {
+            'systemd', 'env' => $provider,
+            default => throw SecretStoreException::unknownProvider(is_string($provider) ? $provider : get_debug_type($provider)),
+        };
+    }
+
+    /**
+     * @return array<int, string> version => base64 public key
+     */
+    private static function publicKeys(): array
+    {
+        $keys = [];
+        $configured = config('wpup.secrets.public_keys');
+
+        foreach (is_array($configured) ? $configured : [] as $version => $key) {
+            if (is_int($version) && is_string($key)) {
+                $keys[$version] = $key;
+            }
+        }
+
+        return $keys;
     }
 
     private static function stringOrNull(mixed $value): ?string

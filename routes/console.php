@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Domain\Secrets\Kek\KekConfirmation;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -12,3 +13,10 @@ Artisan::command('inspire', function () {
 
 // Run engine watchdog (UZEROWPUP-21).
 Schedule::command('engine:recover')->everyMinute()->withoutOverlapping();
+
+// The scheduler holds the KEK private key: it confirms the public key the CLI
+// and the web seal with (ADR-0011, KekConfirmation).
+Schedule::call(static fn (): bool => app(KekConfirmation::class)->confirm())
+    ->name('kek-confirmation')
+    ->everyMinute()
+    ->withoutOverlapping();
