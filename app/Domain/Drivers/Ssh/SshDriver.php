@@ -17,6 +17,7 @@ use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
+use App\Domain\Drivers\RemoteFileName;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\WebFileName;
 use App\Enums\CheckResult;
@@ -35,6 +36,8 @@ use App\Enums\PhpVersionSource;
  */
 final class SshDriver implements SiteDriver
 {
+    private const GZIP_FAILED = '__WPUP_GZIP_FAIL__';
+
     private const SHELL_MARKER = 'wpup-shell-ok';
 
     private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64', 'du'];
@@ -204,22 +207,33 @@ final class SshDriver implements SiteDriver
 
     public function databaseTables(): array
     {
-        $out = $this->wpOk(['db', 'tables', '--all-tables-with-prefix', '--format=csv'], 'La llista de taules de la base de dades')->stdout;
+        // Base tables only (not views) with the site's prefix, as the dump lists
+        // them. JSON on its own line: PHP notices may come before it.
+        $code = 'global $wpdb; echo json_encode($wpdb->get_col($wpdb->prepare('
+            .'"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = %s AND TABLE_NAME LIKE %s ORDER BY TABLE_NAME",'
+            .' "BASE TABLE", $wpdb->esc_like($wpdb->base_prefix)."%")));';
 
-        return self::names(preg_split('/[,\r\n]+/', $out) ?: []);
+        return self::names(WpCliOutput::stringList($this->wpOk(['eval', $code], 'La llista de taules de la base de dades')->stdout));
     }
 
     public function dumpedTables(RemoteFile $dump): array
     {
         $path = escapeshellarg($this->path($dump->path));
-        // Integrity first: a truncated or corrupt gzip must not read as "few tables".
+        // One pass. The dump prints "CREATE TABLE `t`", or "/*!50001 CREATE TABLE
+        // `t`" for a view's placeholder. A gzip that fails midway leaves a marker.
+        $sed = 's/^\\(\/\*![0-9]\\{5\\} \\)\\{0,1\\}CREATE TABLE \\(IF NOT EXISTS \\)\\{0,1\\}`\\([^`]*\\)`.*/\\3/p';
         $out = $this->mustExec(
-            "gzip -t {$path} && gunzip -c {$path} | sed -n 's/^CREATE TABLE \\(IF NOT EXISTS \\)\\{0,1\\}`\\([^`]*\\)`.*/\\2/p'",
+            "{ gunzip -c {$path} || { echo; echo ".self::GZIP_FAILED.'; }; } | sed -n -e '.escapeshellarg($sed).' -e '.escapeshellarg('/^'.self::GZIP_FAILED.'$/p'),
             'La lectura de les taules del volcat',
             $this->settings->transferTimeoutSeconds,
         )->stdout;
 
-        return self::names(explode("\n", $out));
+        $lines = explode("\n", $out);
+        if (in_array(self::GZIP_FAILED, array_map(trim(...), $lines), true)) {
+            throw new RemoteCommandFailed("El volcat «{$dump->path}» no és un gzip vàlid o està truncat.");
+        }
+
+        return self::names($lines);
     }
 
     public function archiveFiles(string $remotePath, array $excludes): RemoteFile
@@ -400,11 +414,7 @@ final class SshDriver implements SiteDriver
      */
     private function path(string $name): string
     {
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/', $name) !== 1 || str_contains($name, '..')) {
-            throw new DriverException("Nom de fitxer remot no vàlid: «{$name}».");
-        }
-
-        return $this->workDir().'/'.$name;
+        return $this->workDir().'/'.RemoteFileName::valid($name);
     }
 
     private function workDir(): string

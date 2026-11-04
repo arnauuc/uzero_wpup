@@ -5,6 +5,8 @@ declare(strict_types=1);
 use App\Domain\Backups\BackupFailed;
 use App\Domain\Backups\DatabaseBackup;
 use App\Domain\Drivers\Exceptions\DriverException;
+use App\Domain\Secrets\SecretRedactor;
+use Illuminate\Support\Facades\Log;
 use Tests\Support\FakeDriver;
 
 /*
@@ -35,6 +37,7 @@ it('removes the dump and names the missing tables when the dump lacks some', fun
     expect($failure)->toBeString()
         ->and($failure)->toContain('wp_posts', 'wp_postmeta')
         ->and($failure)->not->toContain('wp_options')
+        ->and($failure)->toContain('S\'ha esborrat el volcat')
         ->and($driver->files)->toBe([]);
 });
 
@@ -61,15 +64,20 @@ it('refuses a label that would make an invalid remote file name', function (stri
         ->and($driver->writeCalls)->toBe([]);
 })->with(['../x', 'a b', 'a;rm', '']);
 
-it('keeps the original error when the rejected dump cannot be removed either', function (): void {
+it('keeps the original error, says the dump stays, and redacts the log when the rejected dump cannot be removed', function (): void {
+    app(SecretRedactor::class)->register('s3cr3t-db-password');
     $driver = new class extends FakeDriver
     {
         public function remove(string $remotePath): void
         {
-            throw new DriverException('no es pot esborrar');
+            throw new DriverException('no es pot esborrar amb s3cr3t-db-password');
         }
     };
     $driver->dumpOmits = ['wp_posts'];
+    Log::shouldReceive('warning')->once()->withArgs(
+        static fn (string $message, array $context): bool => ! str_contains((string) json_encode($context), 's3cr3t-db-password'),
+    );
 
-    expect(fn () => app(DatabaseBackup::class)->run($driver, '42'))->toThrow(BackupFailed::class, 'wp_posts');
+    expect(fn () => app(DatabaseBackup::class)->run($driver, '42'))
+        ->toThrow(BackupFailed::class, 'No s\'ha pogut esborrar el volcat');
 });

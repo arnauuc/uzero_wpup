@@ -15,16 +15,17 @@ final class BackupFailed extends RuntimeException
     /**
      * @param  list<string>  $missing
      */
-    public static function missingTables(array $missing): self
+    public static function missingTables(array $missing, bool $dumpRemoved): self
     {
         $shown = array_slice($missing, 0, 20);
         $more = count($missing) - count($shown);
 
         return new self(sprintf(
-            'El volcat de la base de dades no conté totes les taules: falten %d (%s%s). S\'ha esborrat el volcat.',
+            'El volcat de la base de dades no conté totes les taules: falten %d (%s%s). %s',
             count($missing),
             implode(', ', $shown),
             $more > 0 ? " i {$more} més" : '',
+            $dumpRemoved ? 'S\'ha esborrat el volcat.' : 'No s\'ha pogut esborrar el volcat: queda al directori de treball del lloc.',
         ));
     }
 

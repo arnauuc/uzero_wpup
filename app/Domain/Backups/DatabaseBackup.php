@@ -6,6 +6,7 @@ namespace App\Domain\Backups;
 
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
+use App\Domain\Secrets\SecretRedactor;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -17,6 +18,8 @@ use Throwable;
  */
 final class DatabaseBackup
 {
+    public function __construct(private readonly SecretRedactor $redactor) {}
+
     /**
      * @param  string  $label  identifies the run in the file name (run id or timestamp)
      *
@@ -25,7 +28,7 @@ final class DatabaseBackup
      */
     public function run(SiteDriver $driver, string $label): DatabaseBackupResult
     {
-        $name = $this->fileName($label);
+        $name = BackupFileName::make(config()->string('wpup.backups.database.file_name'), $label);
 
         $expected = $driver->databaseTables();
         if ($expected === []) {
@@ -36,39 +39,34 @@ final class DatabaseBackup
 
         try {
             $missing = array_values(array_diff($expected, $driver->dumpedTables($file)));
-            if ($missing !== []) {
-                throw BackupFailed::missingTables($missing);
-            }
         } catch (Throwable $e) {
             $this->discard($driver, $file->path);
 
             throw $e;
         }
 
+        if ($missing !== []) {
+            throw BackupFailed::missingTables($missing, $this->discard($driver, $file->path));
+        }
+
         return new DatabaseBackupResult($file, $expected);
     }
 
-    private function fileName(string $label): string
-    {
-        $name = sprintf(config()->string('wpup.backups.database.file_name'), $label, bin2hex(random_bytes(4)));
-
-        return trim($label) !== ''
-            && preg_match(config()->string('wpup.backups.remote_name_pattern'), $name) === 1
-            && ! str_contains($name, '..')
-            ? $name
-            : throw BackupFailed::invalidFileName($name);
-    }
-
     /**
-     * Best effort: the original failure is what the operator must see.
+     * Best effort: the original failure is what the operator must see. Returns
+     * whether the dump was removed.
      */
-    private function discard(SiteDriver $driver, string $path): void
+    private function discard(SiteDriver $driver, string $path): bool
     {
         try {
             $driver->remove($path);
+
+            return true;
         } catch (DriverException $e) {
             // The dump stays in the work directory (0600); the cleanup job removes it.
-            Log::warning('Could not remove a rejected database dump.', ['path' => $path, 'reason' => $e->getMessage()]);
+            Log::warning('Could not remove a rejected database dump.', ['path' => $path, 'reason' => $this->redactor->redact($e->getMessage())]);
+
+            return false;
         }
     }
 }
