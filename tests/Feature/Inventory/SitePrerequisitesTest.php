@@ -419,6 +419,7 @@ it('blocks the site from the inventory step and puts the reason in the summary',
     $outcome = $step->run(new StepContext($run, false));
 
     expect($outcome->summary)->toContain('; bloquejat: PHP < 7.4: no suportat')
+        ->and($outcome->data['block'])->toBe(['outcome' => 'blocked', 'reason' => 'PHP < 7.4: no suportat'])
         ->and($run->site?->refresh()->blocked_reason)->toBe('PHP < 7.4: no suportat')
         ->and($notifier->calls)->toHaveCount(1);
 
@@ -444,6 +445,7 @@ it('only reports "es bloquejaria" in a dry run inventory step, without judging t
 
     expect($outcome->summary)->toContain('; es bloquejaria: el compte no pot escriure a: /var/www/html')
         ->and($outcome->summary)->not->toContain('PHP < 7.4')
+        ->and($outcome->data['block'])->toBe(['outcome' => 'would_block', 'reason' => 'el compte no pot escriure a: /var/www/html'])
         ->and($outcome->summary)->toContain('en dry-run no es verifica el PHP del web')
         ->and($run->site?->refresh()->blocked_reason)->toBeNull()
         ->and($notifier->calls)->toBe([]);

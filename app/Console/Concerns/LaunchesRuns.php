@@ -11,6 +11,7 @@ use App\Enums\UpdateStrategy;
 use App\Models\Run;
 use App\Models\RunStep;
 use App\Models\Site;
+use Closure;
 
 /**
  * For commands that queue runs; their signature includes WpupCommand::QUEUED
@@ -21,8 +22,9 @@ trait LaunchesRuns
     /**
      * @param  list<Site|null>  $sites
      * @param  array<string, mixed>  $flags
+     * @param  (Closure(list<Run>): void)|null  $present  prints the final runs instead of the default run table / JSON
      */
-    protected function launchRuns(RunType $type, array $sites, array $flags = [], ?UpdateStrategy $strategy = null): int
+    protected function launchRuns(RunType $type, array $sites, array $flags = [], ?UpdateStrategy $strategy = null, ?Closure $present = null): int
     {
         $runs = app(RunLauncher::class)->launch($type, $sites, $this->actor(), $flags, $strategy);
         $follow = $this->option('follow') === true;
@@ -49,7 +51,9 @@ trait LaunchesRuns
             } : null,
         );
 
-        if ($this->wantsJson()) {
+        if ($present !== null) {
+            $present($final);
+        } elseif ($this->wantsJson()) {
             $this->emitJson(['runs' => array_map(self::runJson(...), $final)]);
         } else {
             $this->table(['Execució', 'Lloc', 'Estat', 'Motiu'], array_map(static fn (Run $run): array => [

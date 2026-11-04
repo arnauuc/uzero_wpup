@@ -14,6 +14,7 @@ use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
 use App\Domain\Sites\BlockOutcome;
+use App\Domain\Sites\BlockResult;
 use App\Domain\Sites\SiteBlocking;
 use App\Models\Site;
 use Closure;
@@ -102,25 +103,38 @@ final readonly class InventoryStep implements ReadOnlyStep
         );
 
         $summary .= $this->stateSummary($snapshot->environment['state'] ?? null);
-        $summary .= $this->blockSummary($site, $result->prerequisites, $actor, $context->dryRun);
+        $block = $this->applyBlock($site, $result->prerequisites, $actor, $context->dryRun);
+        $summary .= $this->blockSummary($block, $context->dryRun);
 
-        return StepOutcome::succeeded($summary, '', ['snapshot_id' => $snapshot->id]);
+        // The block outcome is stored so reports show what the inventory decided (a dry run included).
+        return StepOutcome::succeeded($summary, '', [
+            'snapshot_id' => $snapshot->id,
+            ...($block === null ? [] : ['block' => ['outcome' => $block->outcome->value, 'reason' => $block->reason]]),
+        ]);
     }
 
     /**
-     * Blocks or releases the site from the stored prerequisites and says so; empty when
-     * there is nothing to say (UZEROWPUP-34).
-     */
-    /**
+     * Blocks or releases the site from the stored prerequisites (UZEROWPUP-34).
+     *
      * @param  list<PrerequisiteCheck>|null  $checks  null when the inventory evaluated no prerequisites
      */
-    private function blockSummary(Site $site, ?array $checks, AuditActor $actor, bool $dryRun): string
+    private function applyBlock(Site $site, ?array $checks, AuditActor $actor, bool $dryRun): ?BlockResult
     {
         if ($this->blocking === null || $checks === null) {
-            return '';
+            return null;
         }
 
-        $result = $this->blocking->apply($site, $checks, $actor, $dryRun);
+        return $this->blocking->apply($site, $checks, $actor, $dryRun);
+    }
+
+    /**
+     * Says what happened to the block; empty when there is nothing to say.
+     */
+    private function blockSummary(?BlockResult $result, bool $dryRun): string
+    {
+        if ($result === null) {
+            return '';
+        }
 
         $summary = match ($result->outcome) {
             BlockOutcome::Blocked => "; bloquejat: {$result->reason}",
