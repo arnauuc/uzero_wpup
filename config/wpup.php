@@ -150,6 +150,8 @@ return [
      */
     'inventory' => [
         'step_timeout_seconds' => 600,
+        // `wpup inventory --json` document version, bumped on incompatible changes.
+        'report_version' => 1,
         // Temporary HTTP probe that reports the web's PHP (UZEROWPUP-30): request
         // timeout, and how long the file answers if it could not be deleted.
         'http_probe' => [
