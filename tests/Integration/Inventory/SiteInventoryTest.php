@@ -6,6 +6,7 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\Ssh\SshDriverFactory;
 use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteInventory;
+use App\Domain\Inventory\SiteState;
 use Illuminate\Support\Facades\Http;
 use Tests\Support\Fixtures;
 
@@ -104,5 +105,72 @@ foreach (['wp74', 'wp83'] as $fixture) {
             expect($update)->toBeArray()->toHaveKeys(['type', 'slug', 'current_version', 'new_version', 'wporg_slug', 'package_host', 'requires_php', 'requires_wp', 'requires_wc', 'source', 'licensed']);
         }
         expect($snapshot->environment['updates'] ?? null)->toHaveKey('warnings');
+    });
+}
+
+/*
+ * Pre-update state (UZEROWPUP-33) against the real sites. The theme template
+ * override is created for the test and removed afterwards.
+ */
+foreach (['wp74', 'wp83'] as $fixture) {
+    if (! Fixtures::up($fixture)) {
+        it("reads the pre-update state of {$fixture}")->skip('Llocs de prova aturats: make fixtures-up');
+
+        continue;
+    }
+
+    it("reads the pre-update state of {$fixture} and lists overridden theme templates", function () use ($fixture): void {
+        $site = Fixtures::site($fixture);
+        $driver = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'));
+        $theme = trim($driver->wp(['eval', 'echo get_stylesheet_directory();'])->stdout);
+        $dir = "{$theme}/woocommerce/cart";
+        $file = "{$dir}/cart.php";
+
+        try {
+            Fixtures::run($fixture, 'mkdir -p '.escapeshellarg($dir).' && printf %s '.escapeshellarg("<?php\n/** @version 1.0.0 */\n").' > '.escapeshellarg($file));
+
+            $state = app(SiteState::class)->read($driver, $driver->installedComponents(), time());
+        } finally {
+            Fixtures::run($fixture, 'rm -f '.escapeshellarg($file).' && rmdir '.escapeshellarg($dir).' '.escapeshellarg("{$theme}/woocommerce").' 2>/dev/null; true');
+        }
+
+        $override = null;
+        foreach ($state->woocommerce->overriddenTemplates ?? [] as $template) {
+            if ($template->file === basename($theme).'/woocommerce/cart/cart.php') {
+                $override = $template;
+            }
+        }
+
+        expect($state->warnings)->toBe([])
+            ->and($state->woocommerce?->version)->not->toBeNull()
+            ->and($state->woocommerce?->dbVersion)->not->toBeNull()
+            ->and($state->woocommerce?->dbUpdateNeeded)->toBeBool()
+            // The one-line header is cleaned up like WooCommerce does ("1.0.0 */" -> "1.0.0").
+            ->and($override?->themeVersion)->toBe('1.0.0')
+            ->and($override?->outdated)->toBeTrue()
+            ->and($override?->coreVersion)->not->toBeNull()
+            ->and($state->cron)->not->toBeNull()
+            ->and($state->maintenance)->toBeFalse()
+            ->and($state->diskFreeBytes)->toBeGreaterThan(0);
+    });
+
+    it("sees a fresh and a stale .maintenance file of {$fixture}", function () use ($fixture): void {
+        $site = Fixtures::site($fixture);
+        $driver = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'));
+        $file = trim($driver->wp(['eval', 'echo ABSPATH;'])->stdout).'.maintenance';
+        $read = static fn (): ?bool => app(SiteState::class)->read($driver, $driver->installedComponents(), time())->maintenance;
+
+        try {
+            $driver->setMaintenanceMode(true);
+            $fresh = $read();
+            Fixtures::run($fixture, 'printf %s '.escapeshellarg('<?php $upgrading = '.(time() - 3600).'; ?>').' > '.escapeshellarg($file));
+            $stale = $read();
+        } finally {
+            $driver->setMaintenanceMode(false);
+        }
+
+        expect($fresh)->toBeTrue()
+            ->and($stale)->toBeFalse()
+            ->and($read())->toBeFalse();
     });
 }

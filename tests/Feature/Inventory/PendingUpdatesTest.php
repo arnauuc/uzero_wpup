@@ -7,6 +7,7 @@ use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteInventory;
+use App\Domain\Inventory\WpCliReader;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\ComponentType;
 use App\Models\Site;
@@ -24,6 +25,7 @@ function pendingUpdates(?Repository $cache = null, int $maxLookups = 5): Pending
         app(Factory::class),
         $cache ?? new Repository(new ArrayStore),
         app(SecretRedactor::class),
+        app(WpCliReader::class),
         'https://api.wordpress.org/plugins/info/1.2/',
         'https://api.wordpress.org/themes/info/1.2/',
         5,

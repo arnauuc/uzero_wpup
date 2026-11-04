@@ -6,8 +6,6 @@ namespace App\Domain\Inventory;
 
 use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\InstalledComponents;
-use App\Domain\Drivers\Exceptions\ConnectionFailed;
-use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\ComponentType;
@@ -55,6 +53,7 @@ final readonly class PendingUpdates
         private Factory $http,
         private Cache $cache,
         private SecretRedactor $redactor,
+        private WpCliReader $reader,
         private string $pluginsInfoUrl,
         private string $themesInfoUrl,
         private int $httpTimeoutSeconds,
@@ -86,11 +85,11 @@ final readonly class PendingUpdates
                 }
 
                 $fromOrg = $this->isWordPressOrg($entry);
-                $wporgSlug = $this->text($entry['slug'] ?? null) ?? $this->text($entry['theme'] ?? null);
+                $wporgSlug = $this->reader->text($entry['slug'] ?? null) ?? $this->reader->text($entry['theme'] ?? null);
                 $pending[] = [
                     'kind' => $kind, 'slug' => $slug, 'wporg' => $fromOrg ? ($wporgSlug ?? $slug) : $wporgSlug,
                     'from_org' => $fromOrg, 'current' => $current, 'new' => $new, 'entry' => $entry,
-                    'php' => $this->text($entry['requires_php'] ?? null), 'wp' => $this->text($entry['requires'] ?? null),
+                    'php' => $this->reader->text($entry['requires_php'] ?? null), 'wp' => $this->reader->text($entry['requires'] ?? null),
                 ];
             }
         }
@@ -110,9 +109,9 @@ final readonly class PendingUpdates
                 $row['current'],
                 $row['new'],
                 $host,
-                $row['php'] ?? $this->text($found['requires_php'] ?? null),
-                $row['wp'] ?? $this->text($found['requires'] ?? null),
-                $this->text($row['entry']['wc_requires'] ?? null) ?? $this->text($row['entry']['wc_requires_at_least'] ?? null),
+                $row['php'] ?? $this->reader->text($found['requires_php'] ?? null),
+                $row['wp'] ?? $this->reader->text($found['requires'] ?? null),
+                $this->reader->text($row['entry']['wc_requires'] ?? null) ?? $this->reader->text($row['entry']['wc_requires_at_least'] ?? null),
                 $row['from_org'] ? PendingUpdate::SOURCE_WORDPRESS_ORG : PendingUpdate::SOURCE_TRANSIENT,
                 $licensed,
             );
@@ -206,15 +205,7 @@ final readonly class PendingUpdates
      */
     private function run(SiteDriver $driver, array $args, string $what, array &$warnings): ?CommandResult
     {
-        try {
-            return $driver->wp($args, $this->commandTimeoutSeconds);
-        } catch (ConnectionFailed $e) {
-            throw $e;
-        } catch (DriverException $e) {
-            $warnings[] = $this->redactor->redact("No s'ha pogut llegir {$what}: {$e->getMessage()}");
-
-            return null;
-        }
+        return $this->reader->run($driver, $args, $this->commandTimeoutSeconds, $what, $warnings);
     }
 
     /**
@@ -350,11 +341,6 @@ final readonly class PendingUpdates
         $host = parse_url(trim($url), PHP_URL_HOST);
 
         return [is_string($host) && $host !== '' ? strtolower($host) : null, true];
-    }
-
-    private function text(mixed $value): ?string
-    {
-        return is_string($value) && $value !== '' ? $value : null;
     }
 
     private function currentVersion(InstalledComponents $installed, ComponentType $kind, string $slug): ?string

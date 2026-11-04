@@ -80,7 +80,45 @@ final readonly class InventoryStep implements ReadOnlyStep
             count($snapshot->themes),
         );
 
+        $summary .= $this->stateSummary($snapshot->environment['state'] ?? null);
+
         return StepOutcome::succeeded($summary, '', ['snapshot_id' => $snapshot->id]);
+    }
+
+    /**
+     * Only what matters before updating (UZEROWPUP-33); empty when all is normal.
+     */
+    private function stateSummary(mixed $state): string
+    {
+        if (! is_array($state)) {
+            return '';
+        }
+
+        $notes = [];
+        if (($state['maintenance'] ?? false) === true) {
+            $notes[] = 'manteniment actiu';
+        }
+        $woocommerce = is_array($state['woocommerce'] ?? null) ? $state['woocommerce'] : [];
+        if (($woocommerce['db_update_needed'] ?? false) === true) {
+            $notes[] = 'BD de WooCommerce pendent d\'actualitzar';
+        }
+        $templates = is_array($woocommerce['overridden_templates'] ?? null) ? $woocommerce['overridden_templates'] : [];
+        if ($templates !== []) {
+            $outdated = count(array_filter($templates, static fn (mixed $t): bool => is_array($t) && ($t['outdated'] ?? false) === true));
+            $notes[] = sprintf('%d plantilles sobreescrites (%d desfasades)', count($templates), $outdated);
+        }
+        $cron = is_array($state['cron'] ?? null) ? $state['cron'] : [];
+        $overdue = is_int($cron['overdue_events'] ?? null) ? $cron['overdue_events'] : 0;
+        if ($overdue > 0) {
+            $notes[] = sprintf('%d esdeveniments de cron endarrerits', $overdue);
+        }
+
+        $warnings = is_array($state['warnings'] ?? null) ? count($state['warnings']) : 0;
+        if ($warnings > 0) {
+            $notes[] = sprintf("%d avisos de l'estat previ", $warnings);
+        }
+
+        return $notes === [] ? '' : '; '.implode('; ', $notes);
     }
 
     private function siteName(StepContext $context): string

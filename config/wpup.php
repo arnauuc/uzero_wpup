@@ -167,6 +167,15 @@ return [
             // Requirements are cached per slug and version.
             'cache_ttl_seconds' => 86400,
         ],
+        // Pre-update state (UZEROWPUP-33): WP-CLI timeout per read, and how late
+        // a WP-Cron event must be (it runs on traffic) to count as overdue, and
+        // how long a .maintenance file keeps the site in maintenance mode.
+        'state' => [
+            'command_timeout_seconds' => 60,
+            'cron_overdue_after_seconds' => 600,
+            // A .maintenance file older than this is ignored by WordPress.
+            'maintenance_ttl_seconds' => 600,
+        ],
     ],
 
     /*
