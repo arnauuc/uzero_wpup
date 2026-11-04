@@ -59,7 +59,7 @@ final readonly class SiteInventory
         $installed = $driver->installedComponents();
         $php = $driver->phpRuntime();
         $probe = $probeWeb ? $this->probe?->run($site, $driver) : null;
-        [$phpVersion, $phpSource, $phpEnvironment] = $this->php($php, $probe, $probeWeb);
+        [$phpVersion, $phpSource, $phpEnvironment] = $this->php($php, $probe, $probeWeb, $driver);
 
         $pending = $this->pending?->read($driver, $installed, now()->getTimestamp());
 
@@ -93,8 +93,15 @@ final readonly class SiteInventory
     /**
      * @return array{0: string, 1: PhpVersionSource, 2: array<string, mixed>}
      */
-    private function php(PhpRuntime $cli, ?HttpProbeResult $probe, bool $probeWeb): array
+    private function php(PhpRuntime $cli, ?HttpProbeResult $probe, bool $probeWeb, SiteDriver $driver): array
     {
+        // The web wins: if WP-CLI guessed another PHP (a stale Plesk pool) and
+        // the web's version is installed, WP-CLI switches to it.
+        $webMinor = $probe?->minor();
+        if ($webMinor !== null && $webMinor !== $cli->minor()) {
+            $cli = $driver->adoptWebPhp($webMinor) ?? $cli;
+        }
+
         $warnings = $cli->warnings;
         $version = $cli->version;
         $source = $cli->source;
@@ -107,7 +114,7 @@ final readonly class SiteInventory
             $warnings = array_values(array_filter($warnings, static fn (string $w): bool => $w !== PhpRuntime::UNVERIFIED_WARNING));
 
             if ($probe->minor() !== $cli->minor()) {
-                $blocked = "El web serveix PHP {$probe->version}, però WP-CLI fa servir PHP {$cli->version} ({$cli->binary}): no s'actualitza fins que coincideixin.";
+                $blocked = "El web serveix PHP {$probe->version}, però WP-CLI fa servir PHP {$cli->version} ({$cli->binary}): i aquesta versió no està instal·lada per a WP-CLI: no s'actualitza fins que coincideixin.";
                 $warnings[] = $blocked;
             }
         } elseif ($probe !== null) {

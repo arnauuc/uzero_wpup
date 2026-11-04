@@ -113,6 +113,14 @@ if [ "${PLESK_PHP_LAYOUT:-0}" = 1 ]; then
     printf '; Fixture: Plesk-style pool marker for %s (not used by Apache here).\n[%s]\n' "$SITE_DOMAIN" "$SITE_DOMAIN" \
         > "/opt/plesk/php/${PHP_MINOR}/etc/php-fpm.d/${SITE_DOMAIN}.conf"
     chmod 0644 "/opt/plesk/php/${PHP_MINOR}/etc/php-fpm.d/${SITE_DOMAIN}.conf"
+    # A stale pool from an earlier PHP version, as Plesk leaves behind after a
+    # version change (older mtime, and that PHP is not installed here).
+    if [ -n "${PLESK_STALE_POOL_VERSION:-}" ]; then
+        mkdir -p "/opt/plesk/php/${PLESK_STALE_POOL_VERSION}/etc/php-fpm.d"
+        printf '; Fixture: stale pool for %s.\n[%s]\n' "$SITE_DOMAIN" "$SITE_DOMAIN" \
+            > "/opt/plesk/php/${PLESK_STALE_POOL_VERSION}/etc/php-fpm.d/${SITE_DOMAIN}.conf"
+        touch -d '2025-01-01 00:00' "/opt/plesk/php/${PLESK_STALE_POOL_VERSION}/etc/php-fpm.d/${SITE_DOMAIN}.conf"
+    fi
 fi
 
 /usr/sbin/sshd

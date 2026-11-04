@@ -14,6 +14,7 @@ use App\Enums\CheckResult;
 use App\Enums\ComponentType;
 use App\Enums\HostingPanel;
 use App\Enums\PhpVersionSource;
+use App\Models\SiteSnapshot;
 use Tests\Contracts\SiteDriverContract;
 use Tests\Support\Fixtures;
 
@@ -115,6 +116,7 @@ describe('SshDriver', function (): void {
 it('uses the PHP of the domain handler on Plesk', function (): void {
     $runtime = sshFixture('wp83')->phpRuntime();
 
+    // wp83 also has a stale, older pool under 7.4 (PLESK_STALE_POOL_VERSION).
     expect($runtime->source)->toBe(PhpVersionSource::PleskHandler)
         ->and($runtime->binary)->toBe('/opt/plesk/php/8.3/bin/php')
         ->and($runtime->minor())->toBe('8.3')
@@ -180,4 +182,20 @@ it('falls back to the account PHP when the configured binary does not run', func
 
     expect($runtime->source)->toBe(PhpVersionSource::Cli)
         ->and(implode(' ', $runtime->warnings))->toContain('/nonexistent/php');
+});
+
+it('prefers the PHP the web was last seen serving over the pools', function (): void {
+    $site = Fixtures::site('wp83');
+    SiteSnapshot::factory()->for($site)->create(['php_version' => '8.3.99', 'php_source' => PhpVersionSource::HttpProbe, 'taken_at' => now()]);
+    $runtime = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'))->phpRuntime();
+
+    expect($runtime->binary)->toBe('/opt/plesk/php/8.3/bin/php')
+        ->and($runtime->warnings)->toBe([]);
+});
+
+it('adopts the installed PHP of the web, and refuses one that is not installed', function (): void {
+    $driver = sshFixture('wp83');
+
+    expect($driver->adoptWebPhp('7.4'))->toBeNull()
+        ->and($driver->adoptWebPhp('8.3')?->binary)->toBe('/opt/plesk/php/8.3/bin/php');
 });

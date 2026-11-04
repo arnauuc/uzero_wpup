@@ -47,6 +47,15 @@ interface SiteDriver
     public function phpRuntime(): PhpRuntime;
 
     /**
+     * Switches WP-CLI to the installed PHP of version "X.Y" (the one the HTTP
+     * probe saw the web serve), when the guess of phpRuntime() was another.
+     * Returns the new runtime, or null if that version is not installed.
+     *
+     * @throws DriverException
+     */
+    public function adoptWebPhp(string $minor): ?PhpRuntime;
+
+    /**
      * Versions of core, plugins, themes, drop-ins and must-use plugins.
      *
      * @throws DriverException

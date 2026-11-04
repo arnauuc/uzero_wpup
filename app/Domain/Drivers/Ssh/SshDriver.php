@@ -540,7 +540,14 @@ final class SshDriver implements SiteDriver
     {
         $warnings = [];
         $configured = $this->target->phpBinary;
-        $handler = $this->target->pleskDomain === null ? null : $this->pleskHandlerBinary($warnings);
+        $handler = null;
+
+        if ($this->target->pleskDomain !== null) {
+            // What the web was last seen serving wins over the pools (stale ones
+            // stay behind when a domain changes PHP version in Plesk).
+            $hint = $this->target->webPhpMinor;
+            $handler = ($hint === null ? null : $this->binaryForMinor($hint)) ?? $this->pleskHandlerBinary($warnings);
+        }
 
         if ($handler !== null) {
             try {
@@ -595,24 +602,72 @@ final class SshDriver implements SiteDriver
             $globs[] = "/opt/plesk/php/*/etc/php-fpm.d/{$file}";
             $globs[] = "/etc/php/*/fpm/pool.d/{$file}";
         }
-        $found = $this->exec('for f in '.implode(' ', $globs).'; do [ -e "$f" ] && printf "%s\n" "$f"; done; true')->stdout;
+        $found = $this->exec('for f in '.implode(' ', $globs).'; do [ -e "$f" ] && stat -c "%Y %n" -- "$f"; done; true')->stdout;
 
+        /** @var array<string, int> $binaries binary => newest pool mtime */
         $binaries = [];
-        foreach (array_filter(explode("\n", $found)) as $path) {
-            if (preg_match('#^/opt/plesk/php/(\d+\.\d+)/etc/php-fpm\.d/#', $path, $m) === 1) {
-                $binaries["/opt/plesk/php/{$m[1]}/bin/php"] = true;
-            } elseif (preg_match('#^/etc/php/(\d+\.\d+)/fpm/pool\.d/#', $path, $m) === 1) {
-                $binaries["/usr/bin/php{$m[1]}"] = true;
+        foreach (array_filter(explode("\n", $found)) as $line) {
+            [$mtime, $path] = array_pad(explode(' ', trim($line), 2), 2, '');
+            $binary = match (true) {
+                preg_match('#^/opt/plesk/php/(\d+\.\d+)/etc/php-fpm\.d/#', $path, $m) === 1 => "/opt/plesk/php/{$m[1]}/bin/php",
+                preg_match('#^/etc/php/(\d+\.\d+)/fpm/pool\.d/#', $path, $m) === 1 => "/usr/bin/php{$m[1]}",
+                default => null,
+            };
+            if ($binary !== null && ctype_digit($mtime)) {
+                $binaries[$binary] = max((int) $mtime, $binaries[$binary] ?? 0);
             }
         }
 
-        if (count($binaries) === 1) {
-            return (string) array_key_first($binaries);
+        if ($binaries === []) {
+            $warnings[] = "No s'ha trobat el pool de PHP-FPM del domini {$domain} a Plesk (handler FastCGI o sense permís de lectura).";
+
+            return null;
         }
 
-        $warnings[] = $binaries === []
-            ? "No s'ha trobat el pool de PHP-FPM del domini {$domain} a Plesk (handler FastCGI o sense permís de lectura)."
-            : "El domini {$domain} té diversos pools de PHP-FPM (".implode(', ', array_keys($binaries)).'): no se sap quin serveix el web.';
+        // Plesk leaves the old pool behind when a domain changes PHP version
+        // (common, so no warning): the newest one is the last change. The HTTP
+        // probe confirms it, and WP-CLI switches if the web says otherwise.
+        arsort($binaries);
+
+        return (string) array_key_first($binaries);
+    }
+
+    public function adoptWebPhp(string $minor): ?PhpRuntime
+    {
+        $binary = $this->binaryForMinor($minor);
+        if ($binary === null) {
+            return null;
+        }
+
+        $version = $this->phpVersionOf($binary);
+        if (PhpRuntime::minorOf($version) !== $minor) {
+            return null;
+        }
+
+        $previous = $this->phpRuntime();
+        $this->wpCliReady = false;
+
+        return $this->runtime = new PhpRuntime($version, $binary, $previous->source, [
+            ...$previous->warnings,
+            "El web serveix PHP {$minor}: WP-CLI passa de {$previous->binary} a {$binary}.",
+        ]);
+    }
+
+    /**
+     * The installed binary of PHP "X.Y" (Plesk's builds first, then the OS
+     * vendor's), or null.
+     */
+    private function binaryForMinor(string $minor): ?string
+    {
+        if (preg_match('/^\d+\.\d+$/', $minor) !== 1) {
+            return null;
+        }
+
+        foreach (["/opt/plesk/php/{$minor}/bin/php", "/usr/bin/php{$minor}"] as $binary) {
+            if ($this->exec('test -x '.escapeshellarg($binary))->successful()) {
+                return $binary;
+            }
+        }
 
         return null;
     }
