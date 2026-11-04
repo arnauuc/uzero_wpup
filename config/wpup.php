@@ -154,6 +154,19 @@ return [
             'max_response_bytes' => 65536,
             'max_extensions' => 500,
         ],
+        // Pending updates (UZEROWPUP-32): WordPress.org info API (one GET per
+        // .org component with a pending update), WP-CLI timeout for the site
+        // transients, lookup cap and age after which a transient is stale.
+        'wordpress_org' => [
+            'plugins_info_url' => 'https://api.wordpress.org/plugins/info/1.2/',
+            'themes_info_url' => 'https://api.wordpress.org/themes/info/1.2/',
+            'timeout_seconds' => 10,
+            'command_timeout_seconds' => 60,
+            'max_lookups' => 100,
+            'stale_after_seconds' => 43200,
+            // Requirements are cached per slug and version.
+            'cache_ttl_seconds' => 86400,
+        ],
     ],
 
     /*

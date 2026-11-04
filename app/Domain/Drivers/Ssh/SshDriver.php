@@ -132,7 +132,7 @@ final class SshDriver implements SiteDriver
         $db = trim($this->wpOk(['eval', 'echo $GLOBALS["wpdb"]->db_server_info();'], 'La lectura de la versió de la BD')->stdout);
 
         $components = [];
-        foreach ($this->wpJson(['plugin', 'list', '--format=json', '--fields=name,version,status,title']) as $plugin) {
+        foreach ($this->wpJson(['plugin', 'list', '--format=json', '--skip-update-check', '--fields=name,version,status,title']) as $plugin) {
             $status = self::field($plugin, 'status');
             $type = match (true) {
                 $status === 'must-use' => ComponentType::MuPlugin,
@@ -145,7 +145,7 @@ final class SshDriver implements SiteDriver
         }
 
         $activeTheme = $parentTheme = null;
-        foreach ($this->wpJson(['theme', 'list', '--format=json', '--fields=name,version,status,title']) as $theme) {
+        foreach ($this->wpJson(['theme', 'list', '--format=json', '--skip-update-check', '--fields=name,version,status,title']) as $theme) {
             $status = self::field($theme, 'status');
             $name = self::field($theme, 'name');
             $activeTheme = $status === 'active' ? $name : $activeTheme;
