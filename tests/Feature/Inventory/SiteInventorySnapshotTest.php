@@ -39,7 +39,7 @@ it('stores core, php and database versions with the configured php source', func
         ->and($snapshot->php_source)->toBe(PhpVersionSource::Configured)
         ->and($snapshot->db_server_version)->toBe('10.11.9-MariaDB')
         ->and($snapshot->pending_updates)->toBe([])
-        ->and($snapshot->environment)->toBe(['php' => ['binary' => 'php', 'warnings' => []]]);
+        ->and($snapshot->environment['php'] ?? null)->toMatchArray(['binary' => 'php', 'warnings' => [], 'cli_source' => 'configured']);
 });
 
 it('separates plugins, themes, drop-ins and mu-plugins and keeps inactive ones', function (): void {
@@ -86,5 +86,5 @@ it('records where the PHP version came from and its warnings', function (): void
 
     expect($snapshot->php_version)->toBe('7.4.33')
         ->and($snapshot->php_source)->toBe(PhpVersionSource::Cli)
-        ->and($snapshot->environment)->toBe(['php' => ['binary' => 'php', 'warnings' => ['no verificat']]]);
+        ->and($snapshot->environment['php'] ?? null)->toMatchArray(['binary' => 'php', 'warnings' => ['no verificat'], 'cli_version' => '7.4.33']);
 });

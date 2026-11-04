@@ -36,7 +36,7 @@ final class SshDriver implements SiteDriver
 {
     private const SHELL_MARKER = 'wpup-shell-ok';
 
-    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head'];
+    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64'];
 
     private ?string $home = null;
 
@@ -489,6 +489,29 @@ final class SshDriver implements SiteDriver
         [$size, $inode] = array_pad(explode(' ', $out, 2), 2, 'none');
 
         return [ctype_digit($size) ? (int) $size : 0, $inode];
+    }
+
+    public function putWebFile(string $name, string $contents): void
+    {
+        // noclobber: never replace a file of the site.
+        $this->mustExec(
+            'set -C; umask 022; printf %s '.escapeshellarg(base64_encode($contents)).' | base64 -d > '.escapeshellarg($this->webPath($name)),
+            "L'escriptura de {$name} al lloc",
+        );
+    }
+
+    public function removeWebFile(string $name): void
+    {
+        $this->mustExec('rm -f -- '.escapeshellarg($this->webPath($name)), "L'esborrat de {$name} del lloc");
+    }
+
+    private function webPath(string $name): string
+    {
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_-]*\.php$/', $name) !== 1) {
+            throw new DriverException("Nom de fitxer web no vàlid: {$name}");
+        }
+
+        return rtrim($this->target->wpPath, '/').'/'.$name;
     }
 
     public function phpRuntime(): PhpRuntime

@@ -1,7 +1,8 @@
 {
     "preset": "laravel",
     "exclude": [
-        "docker"
+        "docker",
+        "resources/probe"
     ],
     "rules": {
         "declare_strict_types": true

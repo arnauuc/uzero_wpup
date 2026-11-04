@@ -61,8 +61,9 @@ test: ## Run Pest against wpup_test
 	$(APP) env DB_DATABASE=wpup_test php artisan migrate --database=pgsql_owner --force
 	$(APP) env DB_HOST=postgres DB_DATABASE=wpup_test ./vendor/bin/pest
 
-lint: ## Pint --test + ESLint
+lint: ## Pint --test + ESLint + PHPCompatibility of the HTTP probe (PHP 5.4+)
 	$(APP) ./vendor/bin/pint --test
+	$(APP) ./vendor/bin/phpcs -q --runtime-set installed_paths vendor/phpcompatibility/php-compatibility --standard=PHPCompatibility --runtime-set testVersion 5.4- resources/probe
 	$(VERIFIER) npm run lint
 
 stan: ## Larastan (level max) + tsc --noEmit

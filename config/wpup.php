@@ -144,6 +144,13 @@ return [
      */
     'inventory' => [
         'step_timeout_seconds' => 600,
+        // Temporary HTTP probe that reports the web's PHP (UZEROWPUP-30): request
+        // timeout, and how long the file answers if it could not be deleted.
+        'http_probe' => [
+            'timeout_seconds' => 20,
+            'ttl_seconds' => 300,
+            'verify_tls' => (bool) env('WPUP_HTTP_PROBE_VERIFY_TLS', true),
+        ],
     ],
 
     /*
