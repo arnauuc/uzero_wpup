@@ -59,6 +59,14 @@ final class SiteDriverContract
                     ->and($driver->installedComponents()->phpVersion)->toBe($runtime->version);
             });
 
+            it('adopts only an installed PHP version for WP-CLI', function () use ($factory): void {
+                $driver = $factory();
+                $current = $driver->phpRuntime();
+
+                expect($driver->adoptWebPhp('0.1'))->toBeNull()
+                    ->and($driver->phpRuntime()->binary)->toBe($current->binary);
+            });
+
             it('runs WP-CLI and agrees with the inventory', function () use ($factory): void {
                 $driver = $factory();
                 $result = $driver->wp(['core', 'version']);

@@ -174,3 +174,17 @@ it('does not touch the site in a dry run', function (): void {
         ->and(json_encode($snapshot->environment))->toContain('dry-run');
     Http::assertNothingSent();
 });
+
+it('switches WP-CLI to the PHP the web serves when it is installed', function (): void {
+    Http::fake(['*' => Http::response(['php_version' => '7.4.33'])]);
+    $driver = new FakeDriver;
+    $driver->installedPhp = ['7.4' => '7.4.33'];
+
+    [$snapshot, $php] = probeInventory($driver);
+
+    expect($snapshot->php_version)->toBe('7.4.33')
+        ->and($php['binary'])->toBe('/opt/plesk/php/7.4/bin/php')
+        ->and($php['cli_version'])->toBe('7.4.33')
+        ->and($php['blocked_reason'])->toBeNull()
+        ->and($driver->phpRuntime()->version)->toBe('7.4.33');
+});

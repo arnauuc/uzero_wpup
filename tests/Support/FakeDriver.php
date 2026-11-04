@@ -52,6 +52,9 @@ final class FakeDriver implements SiteDriver
     /** Simulates an upload that fails after a partial file was written. */
     public bool $failWebUpload = false;
 
+    /** @var array<string, string> other installed PHP versions, "X.Y" => PHP_VERSION (adoptWebPhp) */
+    public array $installedPhp = [];
+
     /** Null: the configured PHP, with $phpVersion. */
     public ?PhpRuntime $phpRuntime = null;
 
@@ -111,6 +114,18 @@ final class FakeDriver implements SiteDriver
     public function phpRuntime(): PhpRuntime
     {
         return $this->phpRuntime ?? new PhpRuntime($this->phpVersion, 'php', PhpVersionSource::Configured);
+    }
+
+    public function adoptWebPhp(string $minor): ?PhpRuntime
+    {
+        $version = $this->installedPhp[$minor] ?? null;
+        if ($version === null) {
+            return null;
+        }
+
+        $previous = $this->phpRuntime();
+
+        return $this->phpRuntime = new PhpRuntime($version, "/opt/plesk/php/{$minor}/bin/php", $previous->source, [...$previous->warnings, "WP-CLI passa a PHP {$minor}."]);
     }
 
     public function installedComponents(): InstalledComponents
