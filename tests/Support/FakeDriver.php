@@ -134,6 +134,9 @@ final class FakeDriver implements SiteDriver
     /** @var array<string, int> table => bytes, what `wp db size --all-tables-with-prefix` reports */
     public array $dbTables = ['wp_options' => 300_000, 'wp_posts' => 20_000_000, 'wp_postmeta' => 30_000_000];
 
+    /** @var list<string> names of the driver methods that change the site, in call order (UZEROWPUP-36) */
+    public array $writeCalls = [];
+
     /** @var list<list<string>> every WP-CLI call, for assertions */
     public array $wpCalls = [];
 
@@ -163,6 +166,7 @@ final class FakeDriver implements SiteDriver
 
     public function putWebFile(string $name, string $contents): void
     {
+        $this->writeCalls[] = 'putWebFile';
         WebFileName::valid($name);
         if (isset($this->webFiles[$name])) {
             throw new DriverException("{$name} ja existeix");
@@ -177,6 +181,7 @@ final class FakeDriver implements SiteDriver
 
     public function removeWebFile(string $name): void
     {
+        $this->writeCalls[] = 'removeWebFile';
         WebFileName::valid($name);
         unset($this->webFiles[$name]);
     }
@@ -252,11 +257,15 @@ final class FakeDriver implements SiteDriver
 
     public function dumpDatabase(string $remotePath): RemoteFile
     {
+        $this->writeCalls[] = 'dumpDatabase';
+
         return $this->store($remotePath, (string) json_encode(['options' => $this->options]));
     }
 
     public function archiveFiles(string $remotePath, array $excludes): RemoteFile
     {
+        $this->writeCalls[] = 'archiveFiles';
+
         return $this->store($remotePath, serialize(['core' => $this->coreVersion, 'components' => $this->components, 'excludes' => $excludes]));
     }
 
@@ -273,11 +282,14 @@ final class FakeDriver implements SiteDriver
 
     public function upload(string $localPath, string $remotePath): RemoteFile
     {
+        $this->writeCalls[] = 'upload';
+
         return $this->store($remotePath, (string) file_get_contents($localPath));
     }
 
     public function applyUpdate(UpdatePackage $package): CommandResult
     {
+        $this->writeCalls[] = 'applyUpdate';
         $content = $this->files[$package->file->path] ?? throw new RemoteCommandFailed('El paquet no és al lloc.');
 
         if (hash('sha256', $content) !== $package->file->sha256) {
@@ -295,11 +307,13 @@ final class FakeDriver implements SiteDriver
 
     public function setMaintenanceMode(bool $enabled): void
     {
+        $this->writeCalls[] = 'setMaintenanceMode';
         $this->maintenance = $enabled;
     }
 
     public function restoreDatabase(RemoteFile $dump): void
     {
+        $this->writeCalls[] = 'restoreDatabase';
         $data = json_decode($this->files[$dump->path] ?? throw new RemoteCommandFailed('No hi ha el dump.'), true);
         $restored = [];
 
@@ -314,6 +328,7 @@ final class FakeDriver implements SiteDriver
 
     public function restoreFiles(RemoteFile $archive): void
     {
+        $this->writeCalls[] = 'restoreFiles';
         $data = unserialize($this->files[$archive->path] ?? throw new RemoteCommandFailed("No hi ha l'arxiu."), ['allowed_classes' => [ComponentVersion::class, ComponentType::class]]);
 
         if (is_array($data) && is_string($data['core'] ?? null) && is_array($data['components'] ?? null)) {
@@ -365,6 +380,7 @@ final class FakeDriver implements SiteDriver
 
     public function remove(string $remotePath): void
     {
+        $this->writeCalls[] = 'remove';
         unset($this->files[$remotePath]);
     }
 

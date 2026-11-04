@@ -92,6 +92,15 @@ return [
     ],
 
     /*
+     * Update plan (UZEROWPUP-36). `order` is the order components are updated in
+     * (AGENTS.md).
+     */
+    'planning' => [
+        'step_timeout_seconds' => 60,
+        'order' => ['core', 'woocommerce', 'plugin', 'theme', 'translation'],
+    ],
+
+    /*
      * Site catalogue (UZEROWPUP-25). `default_window` applies to sites without
      * their own maintenance window (ADR-0006); the other lists are the values a
      * profile may use.

@@ -26,6 +26,8 @@ use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Notifications\LogSiteBlockNotifier;
 use App\Domain\Notifications\SiteBlockNotifier;
+use App\Domain\Planning\PlanStep;
+use App\Domain\Planning\UpdatePlanner;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
@@ -148,6 +150,7 @@ class AppServiceProvider extends ServiceProvider
         ));
         // Until the notification channels exist (F5), blocks only reach the log.
         $this->app->bind(SiteBlockNotifier::class, LogSiteBlockNotifier::class);
+        $this->app->bind(UpdatePlanner::class, static fn (): UpdatePlanner => new UpdatePlanner(array_values(array_filter((array) config('wpup.planning.order'), is_string(...)))));
         $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
@@ -180,6 +183,17 @@ class AppServiceProvider extends ServiceProvider
                     self::configInt('wpup.inventory.step_timeout_seconds'),
                     $app->make(SiteBlocking::class),
                 ),
+            ]));
+            // The plan reads a fresh inventory without touching the site (no probe, no block change).
+            $resolver->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
+                new InventoryStep(
+                    $app->make(SiteInventory::class),
+                    static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+                    $app->make(RunAuthorization::class),
+                    self::configInt('wpup.inventory.step_timeout_seconds'),
+                    readOnlySite: true,
+                ),
+                new PlanStep($app->make(UpdatePlanner::class), self::configInt('wpup.planning.step_timeout_seconds')),
             ]));
         });
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(
