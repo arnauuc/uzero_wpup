@@ -44,6 +44,8 @@ final class SshDriver implements SiteDriver
 
     private ?PhpRuntime $runtime = null;
 
+    private ?DriverException $runtimeFailure = null;
+
     public function __construct(
         private readonly SshTarget $target,
         private readonly SshConnection $connection,
@@ -491,7 +493,17 @@ final class SshDriver implements SiteDriver
 
     public function phpRuntime(): PhpRuntime
     {
-        return $this->runtime ??= $this->detectPhp();
+        // A failed detection is remembered too: every WP-CLI call needs the
+        // binary, and repeating the remote lookups would only fail again.
+        if ($this->runtimeFailure !== null) {
+            throw $this->runtimeFailure;
+        }
+
+        try {
+            return $this->runtime ??= $this->detectPhp();
+        } catch (DriverException $e) {
+            throw $this->runtimeFailure = $e;
+        }
     }
 
     private function php(): string
@@ -525,12 +537,20 @@ final class SshDriver implements SiteDriver
         }
 
         if ($configured !== null) {
-            return new PhpRuntime($this->phpVersionOf($configured), $configured, PhpVersionSource::Configured, $warnings);
+            try {
+                return new PhpRuntime($this->phpVersionOf($configured), $configured, PhpVersionSource::Configured, $warnings);
+            } catch (RemoteCommandFailed) {
+                $warnings[] = "El PHP configurat al lloc ({$configured}) no s'ha pogut executar.";
+            }
         }
 
         $warnings[] = 'Es fa servir el PHP per defecte del compte (`php`), que pot no ser el que serveix el web.';
 
-        return new PhpRuntime($this->phpVersionOf('php'), 'php', PhpVersionSource::Cli, $warnings);
+        try {
+            return new PhpRuntime($this->phpVersionOf('php'), 'php', PhpVersionSource::Cli, $warnings);
+        } catch (RemoteCommandFailed $e) {
+            throw new RemoteCommandFailed(implode(' ', [...$warnings, $e->getMessage()]), $e->result);
+        }
     }
 
     /**
@@ -555,7 +575,7 @@ final class SshDriver implements SiteDriver
             $globs[] = "/opt/plesk/php/*/etc/php-fpm.d/{$file}";
             $globs[] = "/etc/php/*/fpm/pool.d/{$file}";
         }
-        $found = $this->exec('for f in '.implode(' ', $globs).'; do [ -e "$f" ] && printf "%s\n" "$f"; done; true', 30)->stdout;
+        $found = $this->exec('for f in '.implode(' ', $globs).'; do [ -e "$f" ] && printf "%s\n" "$f"; done; true')->stdout;
 
         $binaries = [];
         foreach (array_filter(explode("\n", $found)) as $path) {
@@ -577,9 +597,19 @@ final class SshDriver implements SiteDriver
         return null;
     }
 
+    /**
+     * PHP_VERSION of $binary. Startup warnings that a php.ini sends to stdout
+     * come before it, so only the last line counts, and it must be a version.
+     */
     private function phpVersionOf(string $binary): string
     {
-        return trim($this->mustExec(escapeshellarg($binary).' -r '.escapeshellarg('echo PHP_VERSION;'), "La lectura de la versió de PHP ({$binary})", 30)->stdout);
+        $result = $this->mustExec(escapeshellarg($binary).' -r '.escapeshellarg('echo PHP_VERSION;'), "La lectura de la versió de PHP ({$binary})");
+        $lines = array_values(array_filter(array_map(trim(...), explode("\n", $result->stdout))));
+        $version = (string) end($lines);
+
+        return preg_match('/^\d+\.\d+\.\d+/', $version) === 1
+            ? $version
+            : throw new RemoteCommandFailed("La lectura de la versió de PHP ({$binary}) no ha tornat cap versió.", $result);
     }
 
     private function exec(string $command, ?int $timeoutSeconds = null): CommandResult

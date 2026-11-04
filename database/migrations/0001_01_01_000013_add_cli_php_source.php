@@ -22,6 +22,8 @@ return new class extends Migration
     public function down(): void
     {
         DB::statement('ALTER TABLE "site_snapshots" DROP CONSTRAINT "site_snapshots_php_source_check"');
+        // The previous schema has no "unverified CLI" value: the closest one.
+        DB::table('site_snapshots')->where('php_source', 'cli')->update(['php_source' => 'configured']);
         DB::statement(<<<'SQL'
             ALTER TABLE "site_snapshots" ADD CONSTRAINT "site_snapshots_php_source_check"
             CHECK ("php_source" IN ('plesk_handler', 'http_probe', 'configured'))

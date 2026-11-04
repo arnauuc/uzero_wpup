@@ -73,7 +73,7 @@ final class FakeDriver implements SiteDriver
         return new ProbeResult([
             new ProbeCheck('connexió', CheckResult::Ok, 'fake'),
             new ProbeCheck('wp-cli', CheckResult::Ok, 'fake'),
-            new ProbeCheck('php', CheckResult::Ok, $this->phpVersion),
+            new ProbeCheck('php', CheckResult::Ok, $this->phpRuntime()->version),
         ]);
     }
 
@@ -84,7 +84,7 @@ final class FakeDriver implements SiteDriver
 
     public function installedComponents(): InstalledComponents
     {
-        return new InstalledComponents($this->coreVersion, $this->phpVersion, $this->dbServerVersion, array_values($this->components), $this->activeTheme, $this->parentTheme);
+        return new InstalledComponents($this->coreVersion, $this->phpRuntime()->version, $this->dbServerVersion, array_values($this->components), $this->activeTheme, $this->parentTheme);
     }
 
     public function wp(array $args, ?int $timeoutSeconds = null): CommandResult

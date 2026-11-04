@@ -156,3 +156,28 @@ it('does not look for a Plesk handler on other panels', function (): void {
 
     expect($runtime->source)->toBe(PhpVersionSource::Cli);
 });
+
+it('reads the version from the last line when php.ini prints startup warnings', function (): void {
+    // A wrapper that, like a noisy php.ini, writes a warning to stdout first.
+    Fixtures::run('wp74', 'printf \'#!/bin/sh\necho "PHP Warning:  Module imagick already loaded in Unknown on line 0"\nexec php "$@"\n\' > "$HOME/noisy-php" && chmod +x "$HOME/noisy-php"');
+    $site = Fixtures::site('wp74');
+    $site->update(['php_binary' => '/var/www/vhosts/wp74.fixtures.test/noisy-php']);
+
+    try {
+        $runtime = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'))->phpRuntime();
+
+        expect($runtime->source)->toBe(PhpVersionSource::Configured)
+            ->and($runtime->version)->toMatch('/^7\.4\.\d+$/');
+    } finally {
+        Fixtures::run('wp74', 'rm -f "$HOME/noisy-php"');
+    }
+});
+
+it('falls back to the account PHP when the configured binary does not run', function (): void {
+    $site = Fixtures::site('wp74');
+    $site->update(['php_binary' => '/nonexistent/php']);
+    $runtime = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'))->phpRuntime();
+
+    expect($runtime->source)->toBe(PhpVersionSource::Cli)
+        ->and(implode(' ', $runtime->warnings))->toContain('/nonexistent/php');
+});
