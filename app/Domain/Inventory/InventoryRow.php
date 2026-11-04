@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Domain\Inventory;
 
+use App\Enums\RunStatus;
+
 /**
  * What `wpup inventory` reports about one site, read from the snapshot of its run.
  * Every field but the identity is null/empty when the run produced no snapshot.
@@ -17,7 +19,7 @@ final readonly class InventoryRow
         public string $site,
         public string $url,
         public int $runId,
-        public string $runStatus,
+        public RunStatus $runStatus,
         public ?string $failure,
         public ?string $core,
         public ?string $woocommerce,
@@ -47,7 +49,9 @@ final readonly class InventoryRow
         return [
             'site' => $this->site,
             'url' => $this->url,
-            'run' => ['id' => $this->runId, 'status' => $this->runStatus, 'failure' => $this->failure],
+            'run' => $this->runId,
+            'status' => $this->runStatus->value,
+            'failure' => $this->failure,
             'core' => $this->core,
             'woocommerce' => $this->woocommerce,
             'php' => ['version' => $this->php, 'source' => $this->phpSource, 'warnings' => $this->phpWarnings],
@@ -71,7 +75,7 @@ final readonly class InventoryRow
     {
         return [
             $this->site, $this->url, $this->core, $this->woocommerce, $this->php, $this->phpSource, $this->dbServer,
-            $this->pendingUpdates, $this->unlicensed, $this->hasSnapshot() ? ($this->blocked ? 'yes' : 'no') : null, $this->blockedReason,
+            $this->pendingUpdates, $this->unlicensed, $this->blocked ? 'yes' : 'no', $this->blockedReason, $this->runStatus->value, $this->failure,
         ];
     }
 }

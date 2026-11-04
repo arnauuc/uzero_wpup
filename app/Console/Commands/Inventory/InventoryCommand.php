@@ -9,9 +9,9 @@ use App\Console\Concerns\LaunchesRuns;
 use App\Console\Concerns\SelectsSites;
 use App\Console\WpupCommand;
 use App\Domain\Identity\Ability;
-use App\Domain\Inventory\InventoryExportException;
 use App\Domain\Inventory\InventoryReport;
 use App\Domain\Inventory\InventoryRow;
+use App\Enums\RunStatus;
 use App\Enums\RunType;
 use App\Models\Run;
 
@@ -27,7 +27,7 @@ final class InventoryCommand extends WpupCommand implements ChangesState
         '.self::DRY_RUN.'
         '.self::QUEUED.'
         '.self::JSON.'
-        {--csv= : Escriu l\'inventari en CSV a aquest camí (cal --wait o --follow)}';
+        {--csv : Escriu l\'inventari en CSV a la sortida estàndard (cal --wait; redirigeix-lo: > fitxer.csv)}';
 
     protected $description = 'Inventari de versions, PHP real i actualitzacions pendents dels llocs';
 
@@ -41,17 +41,16 @@ final class InventoryCommand extends WpupCommand implements ChangesState
 
     protected function perform(): int
     {
-        $csv = $this->stringOption('csv');
-        if ($csv !== null) {
-            if ($this->option('wait') !== true && $this->option('follow') !== true) {
-                $this->error('--csv necessita --wait o --follow: l\'inventari s\'ha d\'esperar per poder-lo exportar.');
-
-                return self::FAILURE;
-            }
-            try {
-                InventoryReport::assertWritable($csv);
-            } catch (InventoryExportException $e) {
-                $this->error($e->getMessage());
+        $csv = $this->option('csv') === true;
+        if ($csv) {
+            $error = match (true) {
+                $this->wantsJson() => '--csv i --json són incompatibles: tria un sol format.',
+                $this->option('follow') === true => '--csv no es pot combinar amb --follow: el progrés embrutaria el CSV de la sortida.',
+                $this->option('wait') !== true => '--csv necessita --wait: cal esperar l\'inventari per poder-lo exportar.',
+                default => null,
+            };
+            if ($error !== null) {
+                $this->error($error);
 
                 return self::FAILURE;
             }
@@ -62,34 +61,21 @@ final class InventoryCommand extends WpupCommand implements ChangesState
             return self::FAILURE;
         }
 
-        $exportFailed = false;
-        $present = function (array $runs) use ($csv, &$exportFailed): void {
+        $present = function (array $runs) use ($csv): void {
             /** @var list<Run> $runs */
             $report = app(InventoryReport::class);
             $rows = $report->rows($runs);
 
-            if ($csv !== null) {
-                try {
-                    $report->writeCsv($csv, $rows);
-                } catch (InventoryExportException $e) {
-                    $exportFailed = true;
-                    $this->error($e->getMessage());
-                }
-            }
-
-            if ($this->wantsJson()) {
+            if ($csv) {
+                $this->output->write($report->csv($rows));
+            } elseif ($this->wantsJson()) {
                 $this->emitJson($report->document($rows));
             } else {
                 array_map($this->printRow(...), $rows);
-                if ($csv !== null && ! $exportFailed) {
-                    $this->line("CSV escrit a {$csv}.");
-                }
             }
         };
 
-        $exit = $this->launchRuns(RunType::Inventory, array_values($sites->all()), ['dry_run' => $this->isDryRun()], null, $present);
-
-        return $exportFailed ? self::FAILURE : $exit;
+        return $this->launchRuns(RunType::Inventory, array_values($sites->all()), ['dry_run' => $this->isDryRun()], null, $present);
     }
 
     private function printRow(InventoryRow $row): void
@@ -97,9 +83,13 @@ final class InventoryCommand extends WpupCommand implements ChangesState
         $this->line('');
         $this->line("<options=bold>{$row->site}</> ({$row->url}) — execució #{$row->runId}");
 
-        if (! $row->hasSnapshot()) {
-            $this->error("L'inventari ha fallat ({$row->runStatus}): {$row->failure}");
+        if ($row->runStatus === RunStatus::Skipped) {
+            $this->line("omès: {$row->failure}");
+        } elseif ($row->runStatus !== RunStatus::Succeeded) {
+            $this->error("L'inventari no ha acabat bé ({$row->runStatus->value}): {$row->failure}");
+        }
 
+        if (! $row->hasSnapshot()) {
             return;
         }
 

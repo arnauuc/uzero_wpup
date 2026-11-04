@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace App\Domain\Inventory;
 
+use App\Domain\Sites\BlockOutcome;
+use App\Enums\RunStatus;
 use App\Models\Run;
+use App\Models\RunStep;
 use App\Models\SiteSnapshot;
+use RuntimeException;
+use UnexpectedValueException;
 
 /**
  * Turns finished inventory runs into rows for the terminal, JSON and CSV
@@ -15,7 +20,7 @@ final class InventoryReport
 {
     public const array CSV_COLUMNS = [
         'site', 'url', 'core', 'woocommerce', 'php', 'php_source', 'db_server',
-        'pending_updates', 'unlicensed', 'blocked', 'blocked_reason',
+        'pending_updates', 'unlicensed', 'blocked', 'blocked_reason', 'status', 'failure',
     ];
 
     /** Cells starting with one of these would be run as a formula by a spreadsheet. */
@@ -27,7 +32,19 @@ final class InventoryReport
      */
     public function rows(array $runs): array
     {
-        return array_map($this->row(...), $runs);
+        $ids = array_map(static fn (Run $run): int => $run->id, $runs);
+        // Loaded at once, not per row.
+        $loaded = Run::query()->whereKey($ids)->with('site')->get()->keyBy('id');
+        $snapshots = SiteSnapshot::query()->whereIn('run_id', $ids)->get()->keyBy('run_id');
+        $steps = RunStep::query()->whereIn('run_id', $ids)->where('name', InventoryStep::NAME)->get()->keyBy('run_id');
+
+        $rows = [];
+        foreach ($runs as $run) {
+            $fresh = $loaded->get($run->id) ?? $run;
+            $rows[] = $this->row($fresh, $snapshots->get($run->id), $steps->get($run->id));
+        }
+
+        return $rows;
     }
 
     /**
@@ -39,49 +56,30 @@ final class InventoryReport
         $version = config('wpup.inventory.report_version');
 
         return [
-            'version' => is_int($version) ? $version : 1,
+            'version' => is_int($version) ? $version : throw new UnexpectedValueException('wpup.inventory.report_version must be an integer.'),
             'sites' => array_map(static fn (InventoryRow $row): array => $row->toArray(), $rows),
         ];
     }
 
     /**
-     * Refuses to overwrite an existing file.
-     *
-     * @throws InventoryExportException
-     */
-    public static function assertWritable(string $path): void
-    {
-        if (file_exists($path)) {
-            throw new InventoryExportException("El fitxer {$path} ja existeix; no se sobreescriu.");
-        }
-        $directory = dirname($path);
-        if (! is_dir($directory) || ! is_writable($directory)) {
-            throw new InventoryExportException("No es pot escriure a {$directory}.");
-        }
-    }
-
-    /**
      * @param  list<InventoryRow>  $rows
-     *
-     * @throws InventoryExportException
      */
-    public function writeCsv(string $path, array $rows): void
+    public function csv(array $rows): string
     {
-        self::assertWritable($path);
-        // Mode x: fails instead of overwriting a file created in the meantime.
-        $handle = @fopen($path, 'x');
+        $handle = fopen('php://memory', 'w+');
         if ($handle === false) {
-            throw new InventoryExportException("No s'ha pogut crear {$path}.");
+            throw new RuntimeException('Cannot open a memory stream.');
         }
 
-        try {
-            fputcsv($handle, self::CSV_COLUMNS, ',', '"', '');
-            foreach ($rows as $row) {
-                fputcsv($handle, array_map(self::cell(...), $row->toCsv()), ',', '"', '');
-            }
-        } finally {
-            fclose($handle);
+        fputcsv($handle, self::CSV_COLUMNS, ',', '"', '');
+        foreach ($rows as $row) {
+            fputcsv($handle, array_map(self::cell(...), $row->toCsv()), ',', '"', '');
         }
+        rewind($handle);
+        $csv = (string) stream_get_contents($handle);
+        fclose($handle);
+
+        return $csv;
     }
 
     private static function cell(string|int|null $value): string|int
@@ -90,32 +88,46 @@ final class InventoryReport
             return $value ?? '';
         }
 
+        $value = str_replace(["\r\n", "\r", "\n"], ' ', $value);
+
         return $value !== '' && str_contains(self::FORMULA_PREFIXES, $value[0]) ? "'".$value : $value;
     }
 
-    private function row(Run $run): InventoryRow
+    private function row(Run $run, ?SiteSnapshot $snapshot, ?RunStep $step): InventoryRow
     {
-        $site = $run->site()->firstOrFail();
-        $snapshot = SiteSnapshot::query()->where('run_id', $run->id)->first();
-        $failure = $run->status->value === 'succeeded' ? null : (is_string($run->result_summary['reason'] ?? null)
+        $site = $run->site;
+        $siteBlock = $site?->blocked_reason;
+        $failure = $run->status === RunStatus::Succeeded ? null : (is_string($run->result_summary['reason'] ?? null)
             ? $run->result_summary['reason']
             : "L'execució ha acabat com a {$run->status->value}.");
 
+        // What the inventory decided about the block. A dry run changes nothing, so
+        // it reports what the real one would do; otherwise the site's state is the truth.
+        $block = self::array(self::array($step?->result)['block'] ?? null);
+        $outcome = $block['outcome'] ?? null;
+        $blockedReason = $siteBlock;
+        if (($run->flags['dry_run'] ?? false) === true) {
+            if ($outcome === BlockOutcome::WouldBlock->value && is_string($block['reason'] ?? null)) {
+                $blockedReason = $block['reason'];
+            } elseif ($outcome === BlockOutcome::WouldUnblock->value) {
+                $blockedReason = null;
+            }
+        }
+        $name = $site->name ?? '(sense lloc)';
+        $url = $site->url ?? '';
+
         if ($snapshot === null) {
-            return new InventoryRow($site->name, $site->url, $run->id, $run->status->value, $failure ?? "L'execució no ha deixat cap inventari.",
-                null, null, null, null, [], null, null, null, false, false, 0, $site->blocked_reason !== null, $site->blocked_reason);
+            return new InventoryRow($name, $url, $run->id, $run->status, $failure ?? "L'execució no ha deixat cap inventari.",
+                null, null, null, null, [], null, null, null, false, false, 0, $blockedReason !== null, $blockedReason);
         }
 
         $state = self::array($snapshot->environment['state'] ?? null);
         $woocommerce = self::array($state['woocommerce'] ?? null);
         $templates = self::array($woocommerce['overridden_templates'] ?? null);
         $php = self::array($snapshot->environment['php'] ?? null);
-        $failed = $this->failedPrerequisites($snapshot);
-        // A dry run leaves the block of the site as it was: show what it would do.
-        $blockedReasons = ($run->flags['dry_run'] ?? false) === true ? $failed : ($site->blocked_reason !== null ? [$site->blocked_reason] : []);
 
         return new InventoryRow(
-            $site->name, $site->url, $run->id, $run->status->value, $failure,
+            $name, $url, $run->id, $run->status, $failure,
             $snapshot->core_version,
             $this->woocommerceVersion($snapshot),
             $snapshot->php_version,
@@ -127,8 +139,8 @@ final class InventoryReport
             ($state['maintenance'] ?? false) === true,
             ($woocommerce['db_update_needed'] ?? false) === true,
             count(array_filter($templates, static fn (mixed $t): bool => is_array($t) && ($t['outdated'] ?? false) === true)),
-            $blockedReasons !== [],
-            $blockedReasons === [] ? null : implode(' ', $blockedReasons),
+            $blockedReason !== null,
+            $blockedReason,
         );
     }
 
@@ -141,21 +153,6 @@ final class InventoryReport
         }
 
         return null;
-    }
-
-    /**
-     * @return list<string>
-     */
-    private function failedPrerequisites(SiteSnapshot $snapshot): array
-    {
-        $reasons = [];
-        foreach (self::array($snapshot->environment['prerequisites'] ?? null) as $check) {
-            if (is_array($check) && ($check['passed'] ?? true) === false && is_string($check['reason'] ?? null)) {
-                $reasons[] = $check['reason'];
-            }
-        }
-
-        return $reasons;
     }
 
     /**
