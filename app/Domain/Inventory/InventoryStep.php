@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Domain\Inventory;
 
 use App\Domain\Audit\AuditActor;
+use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
@@ -71,11 +72,26 @@ final readonly class InventoryStep implements ReadOnlyStep
         }
 
         try {
-            // A dry run changes nothing on the site, not even a temporary probe.
-            $snapshot = $this->inventory->take($site, ($this->driverFor)($site, $actor), $context->run, probeWeb: ! $context->dryRun);
+            $driver = ($this->driverFor)($site, $actor);
         } catch (DriverException $e) {
             return StepOutcome::failed("No s'ha pogut fer l'inventari: {$e->getMessage()}");
         }
+
+        try {
+            // A dry run changes nothing on the site, not even a temporary probe.
+            $result = $this->inventory->takeWithPrerequisites($site, $driver, $context->run, probeWeb: ! $context->dryRun);
+        } catch (ConnectionFailed $e) {
+            // Transient: the site is not blocked for a network failure.
+            return StepOutcome::failed("No s'ha pogut fer l'inventari: {$e->getMessage()}");
+        } catch (DriverException $e) {
+            // WP-CLI does not work on the site: it cannot be updated either.
+            if ($this->blocking !== null && ! $context->dryRun) {
+                $this->blocking->blockForWpCli($site, $actor);
+            }
+
+            return StepOutcome::failed("No s'ha pogut fer l'inventari: {$e->getMessage()}");
+        }
+        $snapshot = $result->snapshot;
 
         $summary = sprintf(
             'WordPress %s, PHP %s, %d connectors, %d temes',
@@ -86,7 +102,7 @@ final readonly class InventoryStep implements ReadOnlyStep
         );
 
         $summary .= $this->stateSummary($snapshot->environment['state'] ?? null);
-        $summary .= $this->blockSummary($site, $snapshot->environment['prerequisites'] ?? null, $actor, $context->dryRun);
+        $summary .= $this->blockSummary($site, $result->prerequisites, $actor, $context->dryRun);
 
         return StepOutcome::succeeded($summary, '', ['snapshot_id' => $snapshot->id]);
     }
@@ -95,22 +111,27 @@ final readonly class InventoryStep implements ReadOnlyStep
      * Blocks or releases the site from the stored prerequisites and says so; empty when
      * there is nothing to say (UZEROWPUP-34).
      */
-    private function blockSummary(Site $site, mixed $stored, AuditActor $actor, bool $dryRun): string
+    /**
+     * @param  list<PrerequisiteCheck>|null  $checks  null when the inventory evaluated no prerequisites
+     */
+    private function blockSummary(Site $site, ?array $checks, AuditActor $actor, bool $dryRun): string
     {
-        if ($this->blocking === null || ! is_array($stored)) {
+        if ($this->blocking === null || $checks === null) {
             return '';
         }
 
-        $checks = array_values(array_filter(array_map(PrerequisiteCheck::fromArray(...), $stored)));
         $result = $this->blocking->apply($site, $checks, $actor, $dryRun);
 
-        return match ($result->outcome) {
+        $summary = match ($result->outcome) {
             BlockOutcome::Blocked => "; bloquejat: {$result->reason}",
             BlockOutcome::WouldBlock => "; es bloquejaria: {$result->reason}",
             BlockOutcome::Unblocked => '; desbloquejat',
             BlockOutcome::WouldUnblock => '; es desbloquejaria',
             BlockOutcome::Unchanged => $result->reason === null ? '' : "; bloquejat: {$result->reason}",
         };
+
+        // No HTTP probe in a dry run: the PHP checks did not take part in the prediction.
+        return $dryRun ? $summary.'; en dry-run no es verifica el PHP del web' : $summary;
     }
 
     /**

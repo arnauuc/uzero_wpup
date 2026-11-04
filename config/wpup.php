@@ -187,6 +187,8 @@ return [
         'prerequisites' => [
             'backup_space_factor' => 1.5,
             'command_timeout_seconds' => 120,
+            // du over a big uploads folder takes long.
+            'du_timeout_seconds' => 180,
         ],
     ],
 

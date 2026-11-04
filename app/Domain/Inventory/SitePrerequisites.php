@@ -8,6 +8,7 @@ use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
 use App\Enums\PrerequisiteName;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 
 /**
@@ -32,11 +33,29 @@ final readonly class SitePrerequisites
     /** ADR-0007: configurable, but never below the agent's syntax. */
     public const string PHP_FLOOR = '7.4';
 
+    /**
+     * Stable reasons (no live figures): SiteBlocking compares them to know
+     * whether the block changed, so a number that moves every inventory would
+     * audit and notify every time. Figures go in PrerequisiteCheck::$value.
+     */
+    public const string REASON_SPACE_UNKNOWN = "no s'ha pogut estimar l'espai per a la còpia";
+
+    public const string REASON_SPACE_SHORT = 'espai insuficient per a la còpia';
+
+    public const string REASON_WRITE_UNKNOWN = "no s'han pogut comprovar els permisos d'escriptura";
+
+    public const string REASON_WRITE_DENIED = 'el compte no pot escriure a: ';
+
+    public const string REASON_WP_CLI = 'WP-CLI no funciona al lloc';
+
+    public const string REASON_INCOMPLETE = 'prerequisits incomplets';
+
     public function __construct(
         private WpCliReader $reader,
         private string $minPhp,
         private float $backupSpaceFactor,
         private int $commandTimeoutSeconds,
+        private int $duTimeoutSeconds = 180,
     ) {
         self::assertMinimumPhp($minPhp);
     }
@@ -55,23 +74,36 @@ final readonly class SitePrerequisites
      * @param  string  $phpVersion  the site's PHP as recorded in the snapshot
      * @param  array<string, mixed>  $phpEnvironment  the snapshot's environment.php
      * @param  int|null  $diskFreeBytes  free disk already read by SiteState, if it could
-     * @return list<PrerequisiteCheck>
      *
      * @throws ConnectionFailed
      */
-    public function check(SiteDriver $driver, string $phpVersion, array $phpEnvironment, ?int $diskFreeBytes): array
+    public function check(SiteDriver $driver, string $phpVersion, array $phpEnvironment, ?int $diskFreeBytes): PrerequisitesResult
     {
         $unverified = $phpEnvironment['blocked_reason'] ?? null;
+        $warnings = [];
 
-        return [
+        return new PrerequisitesResult([
             $this->phpMinimum($phpVersion),
             is_string($unverified) && $unverified !== ''
                 ? new PrerequisiteCheck(PrerequisiteName::PhpVerified, false, $unverified)
                 : new PrerequisiteCheck(PrerequisiteName::PhpVerified, true),
-            $this->backupSpace($driver, $diskFreeBytes),
+            $this->backupSpace($driver, $diskFreeBytes, $warnings),
             new PrerequisiteCheck(PrerequisiteName::WpCli, true),
-            $this->writable($driver),
-        ];
+            $this->writable($driver, $warnings),
+        ], $warnings);
+    }
+
+    /**
+     * A DriverException that fails a check is never swallowed silently: it is
+     * logged (redacted) and kept as a warning of the snapshot.
+     *
+     * @param  list<string>  $warnings
+     */
+    private function warn(array &$warnings, string $what, DriverException $e): void
+    {
+        $message = $this->reader->redact("No s'ha pogut comprovar {$what}: {$e->getMessage()}");
+        $warnings[] = $message;
+        Log::warning($message);
     }
 
     private function phpMinimum(string $version): PrerequisiteCheck
@@ -81,17 +113,22 @@ final readonly class SitePrerequisites
             : new PrerequisiteCheck(PrerequisiteName::PhpMinimum, false, "PHP < {$this->minPhp}: no suportat", $version);
     }
 
-    private function backupSpace(SiteDriver $driver, ?int $diskFreeBytes): PrerequisiteCheck
+    /**
+     * @param  list<string>  $warnings
+     */
+    private function backupSpace(SiteDriver $driver, ?int $diskFreeBytes, array &$warnings): PrerequisiteCheck
     {
-        $unknown = new PrerequisiteCheck(PrerequisiteName::BackupSpace, false, "no s'ha pogut estimar l'espai per a la còpia");
+        $unknown = new PrerequisiteCheck(PrerequisiteName::BackupSpace, false, self::REASON_SPACE_UNKNOWN);
 
         try {
-            $database = $this->databaseBytes($driver);
-            $files = $driver->diskUsageBytes();
+            $database = $this->databaseBytes($driver, $warnings);
+            $files = $driver->diskUsageBytes($this->duTimeoutSeconds);
             $free = $diskFreeBytes ?? $driver->freeDiskBytes();
         } catch (ConnectionFailed $e) {
             throw $e;
-        } catch (DriverException) {
+        } catch (DriverException $e) {
+            $this->warn($warnings, "l'espai per a la còpia", $e);
+
             return $unknown;
         }
         if ($database === null) {
@@ -102,28 +139,30 @@ final readonly class SitePrerequisites
 
         return $free >= $needed
             ? new PrerequisiteCheck(PrerequisiteName::BackupSpace, true, null, $needed)
-            : new PrerequisiteCheck(PrerequisiteName::BackupSpace, false, sprintf(
-                'espai insuficient per a la còpia: calen %s i només hi ha %s lliures',
-                self::megabytes($needed),
-                self::megabytes($free),
-            ), $needed);
+            : new PrerequisiteCheck(PrerequisiteName::BackupSpace, false, self::REASON_SPACE_SHORT, $needed);
     }
 
     /**
      * Sum of the tables with the site's prefix; null if WP-CLI could not tell.
      *
+     * @param  list<string>  $warnings
+     *
      * @throws ConnectionFailed
      */
-    private function databaseBytes(SiteDriver $driver): ?int
+    private function databaseBytes(SiteDriver $driver, array &$warnings): ?int
     {
-        $warnings = [];
         $result = $this->reader->run($driver, ['db', 'size', '--size_format=b', '--all-tables-with-prefix', '--format=json'], $this->commandTimeoutSeconds, 'la mida de la base de dades', $warnings);
-        if ($result === null || ! $result->successful()) {
+        if ($result === null) {
+            return null;
+        }
+        if (! $result->successful()) {
+            $warnings[] = $this->reader->redact("No s'ha pogut llegir la mida de la base de dades (codi {$result->exitCode}): ".trim($result->stderr));
+
             return null;
         }
 
-        $rows = json_decode((string) $this->reader->lastLine($result->stdout), true);
-        if (! is_array($rows) || $rows === []) {
+        $rows = $this->reader->json($result->stdout);
+        if ($rows === null || $rows === []) {
             return null;
         }
 
@@ -139,23 +178,23 @@ final readonly class SitePrerequisites
         return $total;
     }
 
-    private function writable(SiteDriver $driver): PrerequisiteCheck
+    /**
+     * @param  list<string>  $warnings
+     */
+    private function writable(SiteDriver $driver, array &$warnings): PrerequisiteCheck
     {
         try {
             $paths = $driver->unwritablePaths();
         } catch (ConnectionFailed $e) {
             throw $e;
-        } catch (DriverException) {
-            return new PrerequisiteCheck(PrerequisiteName::Writable, false, "no s'han pogut comprovar els permisos d'escriptura");
+        } catch (DriverException $e) {
+            $this->warn($warnings, "els permisos d'escriptura", $e);
+
+            return new PrerequisiteCheck(PrerequisiteName::Writable, false, self::REASON_WRITE_UNKNOWN);
         }
 
         return $paths === []
             ? new PrerequisiteCheck(PrerequisiteName::Writable, true)
-            : new PrerequisiteCheck(PrerequisiteName::Writable, false, 'el compte no pot escriure a: '.implode(', ', $paths));
-    }
-
-    private static function megabytes(int $bytes): string
-    {
-        return number_format($bytes / 1_048_576, 0, ',', '.').' MB';
+            : new PrerequisiteCheck(PrerequisiteName::Writable, false, self::REASON_WRITE_DENIED.implode(', ', $paths));
     }
 }

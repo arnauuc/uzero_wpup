@@ -199,3 +199,15 @@ it('adopts the installed PHP of the web, and refuses one that is not installed',
     expect($driver->adoptWebPhp('7.4'))->toBeNull()
         ->and($driver->adoptWebPhp('8.3')?->binary)->toBe('/opt/plesk/php/8.3/bin/php');
 });
+
+it('reports the unwritable paths of a missing WordPress root and refuses to size it (UZEROWPUP-34)', function (): void {
+    $site = Fixtures::site('wp83');
+    $site->update(['wp_path' => '/var/www/vhosts/wp83.fixtures.test/missing']);
+    $driver = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'));
+
+    $unwritable = $driver->unwritablePaths();
+
+    expect($unwritable)->toHaveCount(4)
+        ->and($unwritable[0])->toBe('/var/www/vhosts/wp83.fixtures.test/missing')
+        ->and(fn () => $driver->diskUsageBytes(30))->toThrow(DriverException::class);
+})->skip(fn () => ! Fixtures::up('wp83'), 'Llocs de prova aturats: make fixtures-up');

@@ -144,6 +144,7 @@ class AppServiceProvider extends ServiceProvider
             self::configString('wpup.min_site_php'),
             self::configFloat('wpup.inventory.prerequisites.backup_space_factor'),
             self::configInt('wpup.inventory.prerequisites.command_timeout_seconds'),
+            self::configInt('wpup.inventory.prerequisites.du_timeout_seconds'),
         ));
         // Until the notification channels exist (F5), blocks only reach the log.
         $this->app->bind(SiteBlockNotifier::class, LogSiteBlockNotifier::class);

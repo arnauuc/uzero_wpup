@@ -152,9 +152,11 @@ interface SiteDriver
      * Bytes used on disk by the WordPress root (code, uploads…), to estimate
      * the size of a file backup (UZEROWPUP-34).
      *
-     * @throws DriverException
+     * @param  int|null  $timeoutSeconds  a big site may need more than the usual command timeout
+     *
+     * @throws DriverException including when the measure times out
      */
-    public function diskUsageBytes(): int;
+    public function diskUsageBytes(?int $timeoutSeconds = null): int;
 
     /**
      * The paths of the code the account must be able to write to update and

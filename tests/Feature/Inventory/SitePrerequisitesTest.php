@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Drivers\Exceptions\ConnectionFailed;
+use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\PrerequisiteCheck;
 use App\Domain\Inventory\SiteInventory;
@@ -18,11 +19,13 @@ use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Sites\BlockOutcome;
 use App\Domain\Sites\SiteBlocking;
 use App\Enums\PrerequisiteName;
+use App\Enums\RunStepStatus;
 use App\Enums\RunType;
 use App\Enums\SiteBlockSource;
 use App\Models\AuditLogEntry;
 use App\Models\Run;
 use App\Models\Site;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Tests\Support\FakeDriver;
 
@@ -80,7 +83,7 @@ function blocking(): array
 it('passes every prerequisite on a healthy site', function (): void {
     $driver = new FakeDriver;
 
-    $checks = prerequisites()->check($driver, '8.3.14', ['blocked_reason' => null], null);
+    $checks = prerequisites()->check($driver, '8.3.14', ['blocked_reason' => null], null)->checks;
 
     expect($checks)->toHaveCount(5)
         ->and(array_filter($checks, static fn (PrerequisiteCheck $c): bool => ! $c->passed))->toBe([]);
@@ -89,8 +92,8 @@ it('passes every prerequisite on a healthy site', function (): void {
 it('fails php_minimum below 7.4 with the exact reason and passes at 7.4', function (): void {
     $driver = new FakeDriver;
 
-    $old = failed(prerequisites()->check($driver, '7.3.33', [], null), PrerequisiteName::PhpMinimum);
-    $edge = failed(prerequisites()->check($driver, '7.4.0', [], null), PrerequisiteName::PhpMinimum);
+    $old = failed(prerequisites()->check($driver, '7.3.33', [], null)->checks, PrerequisiteName::PhpMinimum);
+    $edge = failed(prerequisites()->check($driver, '7.4.0', [], null)->checks, PrerequisiteName::PhpMinimum);
 
     expect($old?->reason)->toBe('PHP < 7.4: no suportat')
         ->and($old?->value)->toBe('7.3.33')
@@ -98,7 +101,7 @@ it('fails php_minimum below 7.4 with the exact reason and passes at 7.4', functi
 });
 
 it('uses the configured minimum in the reason', function (): void {
-    $check = failed(prerequisites('8.1')->check(new FakeDriver, '8.0.30', [], null), PrerequisiteName::PhpMinimum);
+    $check = failed(prerequisites('8.1')->check(new FakeDriver, '8.0.30', [], null)->checks, PrerequisiteName::PhpMinimum);
 
     expect($check?->reason)->toBe('PHP < 8.1: no suportat');
 });
@@ -121,7 +124,7 @@ it('accepts 7.4 and above as a minimum', function (): void {
 });
 
 it('fails php_verified with the reason of the PHP cross-check', function (): void {
-    $check = failed(prerequisites()->check(new FakeDriver, '8.3.14', ['blocked_reason' => 'No se sap quin PHP serveix el web'], null), PrerequisiteName::PhpVerified);
+    $check = failed(prerequisites()->check(new FakeDriver, '8.3.14', ['blocked_reason' => 'No se sap quin PHP serveix el web'], null)->checks, PrerequisiteName::PhpVerified);
 
     expect($check?->reason)->toBe('No se sap quin PHP serveix el web');
 });
@@ -131,7 +134,7 @@ it('fails backup_space when database plus files times the factor exceed the free
     $driver->filesBytes = 40_000_000;
     $driver->dbTables = ['wp_posts' => 20_000_000, 'wp_options' => 10_000_000];
 
-    $check = failed(prerequisites()->check($driver, '8.3.14', [], null), PrerequisiteName::BackupSpace);
+    $check = failed(prerequisites()->check($driver, '8.3.14', [], null)->checks, PrerequisiteName::BackupSpace);
 
     // (40M + 30M) x 1.5 = 105M > 100M
     expect($check?->value)->toBe(105_000_000)
@@ -143,8 +146,8 @@ it('passes backup_space with enough room, using the free disk of the state when 
     $driver->filesBytes = 40_000_000;
     $driver->dbTables = ['wp_posts' => 20_000_000, 'wp_options' => 10_000_000];
 
-    $withStateDisk = prerequisites()->check($driver, '8.3.14', [], 105_000_000);
-    $withDriverDisk = prerequisites()->check($driver, '8.3.14', [], null);
+    $withStateDisk = prerequisites()->check($driver, '8.3.14', [], 105_000_000)->checks;
+    $withDriverDisk = prerequisites()->check($driver, '8.3.14', [], null)->checks;
 
     expect(failed($withStateDisk, PrerequisiteName::BackupSpace))->toBeNull()
         ->and(failed($withDriverDisk, PrerequisiteName::BackupSpace))->not->toBeNull();
@@ -159,7 +162,7 @@ it('fails closed when the sizes cannot be estimated', function (string $break): 
         'no tables' => $driver->dbTables = [],
         default => throw new LogicException($break),
     };
-    $check = failed(prerequisites()->check($driver, '8.3.14', [], null), PrerequisiteName::BackupSpace);
+    $check = failed(prerequisites()->check($driver, '8.3.14', [], null)->checks, PrerequisiteName::BackupSpace);
 
     expect($check?->reason)->toBe("no s'ha pogut estimar l'espai per a la còpia");
 })->with(['db command', 'files', 'free disk', 'no tables']);
@@ -168,14 +171,14 @@ it('lets a lost connection through instead of calling it a failed prerequisite',
     $driver = new FakeDriver;
     $driver->wpFailure = new ConnectionFailed('sense xarxa');
 
-    expect(fn () => prerequisites()->check($driver, '8.3.14', [], null))->toThrow(ConnectionFailed::class);
+    expect(fn () => prerequisites()->check($driver, '8.3.14', [], null)->checks)->toThrow(ConnectionFailed::class);
 });
 
 it('fails writable naming the paths the account cannot write', function (): void {
     $driver = new FakeDriver;
     $driver->unwritable = ['/var/www/html/wp-content/plugins', '/var/www/html/wp-content/themes'];
 
-    $check = failed(prerequisites()->check($driver, '8.3.14', [], null), PrerequisiteName::Writable);
+    $check = failed(prerequisites()->check($driver, '8.3.14', [], null)->checks, PrerequisiteName::Writable);
 
     expect($check?->reason)->toBe('el compte no pot escriure a: /var/www/html/wp-content/plugins, /var/www/html/wp-content/themes');
 });
@@ -201,14 +204,24 @@ it('ignores malformed stored checks', function (): void {
         ->and(PrerequisiteCheck::fromArray(['name' => 'wp_cli', 'passed' => 'yes']))->toBeNull();
 });
 
+/**
+ * A complete set of checks where only the given ones fail.
+ *
+ * @param  array<string, string>  $failing  check name => reason
+ * @return list<PrerequisiteCheck>
+ */
+function allChecks(array $failing = []): array
+{
+    return array_map(
+        static fn (PrerequisiteName $name): PrerequisiteCheck => new PrerequisiteCheck($name, ! isset($failing[$name->value]), $failing[$name->value] ?? null),
+        PrerequisiteName::cases(),
+    );
+}
+
 it('blocks a site with the joined reasons, audits and notifies', function (): void {
     [$blocking, $notifier] = blocking();
     $site = blockingSite();
-    $checks = [
-        new PrerequisiteCheck(PrerequisiteName::PhpMinimum, false, 'PHP < 7.4: no suportat'),
-        new PrerequisiteCheck(PrerequisiteName::Writable, false, 'el compte no pot escriure a: /x'),
-        new PrerequisiteCheck(PrerequisiteName::WpCli, true),
-    ];
+    $checks = allChecks(['php_minimum' => 'PHP < 7.4: no suportat', 'writable' => 'el compte no pot escriure a: /x']);
 
     $result = $blocking->apply($site, $checks, AuditActor::system('tests'), false);
 
@@ -221,10 +234,25 @@ it('blocks a site with the joined reasons, audits and notifies', function (): vo
         ->and(AuditLogEntry::query()->where('action', 'site.blocked')->where('object_id', (string) $site->id)->count())->toBe(1);
 });
 
+it('treats an incomplete list of checks as a failure', function (array $checks): void {
+    /** @var list<PrerequisiteCheck> $checks */
+    [$blocking] = blocking();
+    $site = blockingSite();
+
+    $result = $blocking->apply($site, $checks, AuditActor::system('tests'), false);
+
+    expect($result->outcome)->toBe(BlockOutcome::Blocked)
+        ->and($site->refresh()->blocked_reason)->toBe('prerequisits incomplets');
+})->with([
+    'empty' => [[]],
+    'missing one' => [array_slice(allChecks(), 1)],
+    'duplicated' => [[...allChecks(), new PrerequisiteCheck(PrerequisiteName::WpCli, true)]],
+]);
+
 it('audits and notifies only when the block changes', function (): void {
     [$blocking, $notifier] = blocking();
     $site = blockingSite();
-    $bad = [new PrerequisiteCheck(PrerequisiteName::PhpMinimum, false, 'PHP < 7.4: no suportat')];
+    $bad = allChecks(['php_minimum' => 'PHP < 7.4: no suportat']);
     $actor = AuditActor::system('tests');
 
     $blocking->apply($site, $bad, $actor, false);
@@ -237,7 +265,7 @@ it('audits and notifies only when the block changes', function (): void {
         ->and(AuditLogEntry::query()->where('action', 'site.blocked')->count())->toBe(1);
 
     // A different reason is a change, but the block keeps its start time.
-    $blocking->apply($site, [new PrerequisiteCheck(PrerequisiteName::Writable, false, 'sense permisos')], $actor, false);
+    $blocking->apply($site, allChecks(['writable' => 'sense permisos']), $actor, false);
     expect($site->refresh()->blocked_reason)->toBe('sense permisos')
         ->and($site->blocked_at?->equalTo($blockedAt ?? now()))->toBeTrue()
         ->and($notifier->calls)->toHaveCount(2);
@@ -246,11 +274,10 @@ it('audits and notifies only when the block changes', function (): void {
 it('lifts its own block once everything passes, and only then audits and notifies', function (): void {
     [$blocking, $notifier] = blocking();
     $site = blockingSite(SiteBlockSource::Prerequisites, 'PHP < 7.4: no suportat');
-    $good = [new PrerequisiteCheck(PrerequisiteName::PhpMinimum, true)];
     $actor = AuditActor::system('tests');
 
-    $first = $blocking->apply($site, $good, $actor, false);
-    $second = $blocking->apply($site, $good, $actor, false);
+    $first = $blocking->apply($site, allChecks(), $actor, false);
+    $second = $blocking->apply($site, allChecks(), $actor, false);
 
     $site->refresh();
     expect($first->outcome)->toBe(BlockOutcome::Unblocked)
@@ -268,8 +295,8 @@ it('never lifts nor overwrites a block set by an operator', function (?SiteBlock
     $site = blockingSite($by, 'Migració en curs');
     $actor = AuditActor::system('tests');
 
-    $good = $blocking->apply($site, [new PrerequisiteCheck(PrerequisiteName::PhpMinimum, true)], $actor, false);
-    $bad = $blocking->apply($site, [new PrerequisiteCheck(PrerequisiteName::PhpMinimum, false, 'PHP < 7.4: no suportat')], $actor, false);
+    $good = $blocking->apply($site, allChecks(), $actor, false);
+    $bad = $blocking->apply($site, allChecks(['php_minimum' => 'PHP < 7.4: no suportat']), $actor, false);
 
     $site->refresh();
     expect($good->outcome)->toBe(BlockOutcome::Unchanged)
@@ -280,11 +307,48 @@ it('never lifts nor overwrites a block set by an operator', function (?SiteBlock
         ->and(AuditLogEntry::query()->whereIn('action', ['site.blocked', 'site.unblocked'])->count())->toBe(0);
 })->with([[SiteBlockSource::Operator], 'legacy block without source' => [null]]);
 
+it('does not trample an operator block made while the inventory ran', function (): void {
+    [$blocking, $notifier] = blocking();
+    $stale = blockingSite();
+    Site::query()->whereKey($stale->id)->update(['blocked_by' => 'operator', 'blocked_reason' => 'Migració en curs', 'blocked_at' => now()]);
+
+    $result = $blocking->apply($stale, allChecks(['php_minimum' => 'PHP < 7.4: no suportat']), AuditActor::system('tests'), false);
+
+    expect($result->outcome)->toBe(BlockOutcome::Unchanged)
+        ->and($result->reason)->toBe('Migració en curs')
+        ->and($stale->blocked_reason)->toBe('Migració en curs')
+        ->and(Site::query()->findOrFail($stale->id)->blocked_by)->toBe(SiteBlockSource::Operator)
+        ->and($notifier->calls)->toBe([]);
+});
+
+it('leaves the site unblocked when the audit fails, and audits on the retry', function (): void {
+    [$blocking, $notifier] = blocking();
+    $site = blockingSite();
+    $bad = allChecks(['php_minimum' => 'PHP < 7.4: no suportat']);
+    $failOnce = true;
+    Event::listen('eloquent.creating: '.AuditLogEntry::class, static function () use (&$failOnce): void {
+        if ($failOnce) {
+            $failOnce = false;
+            throw new RuntimeException('audit down');
+        }
+    });
+
+    expect(fn () => $blocking->apply($site, $bad, AuditActor::system('tests'), false))->toThrow(RuntimeException::class);
+    expect($site->refresh()->blocked_reason)->toBeNull()
+        ->and($notifier->calls)->toBe([]);
+
+    $blocking->apply($site, $bad, AuditActor::system('tests'), false);
+
+    expect($site->refresh()->blocked_reason)->toBe('PHP < 7.4: no suportat')
+        ->and(AuditLogEntry::query()->where('action', 'site.blocked')->count())->toBe(1)
+        ->and($notifier->calls)->toHaveCount(1);
+});
+
 it('does nothing to a healthy, unblocked site', function (): void {
     [$blocking, $notifier] = blocking();
     $site = blockingSite();
 
-    $result = $blocking->apply($site, [new PrerequisiteCheck(PrerequisiteName::WpCli, true)], AuditActor::system('tests'), false);
+    $result = $blocking->apply($site, allChecks(), AuditActor::system('tests'), false);
 
     expect($result->outcome)->toBe(BlockOutcome::Unchanged)
         ->and($result->reason)->toBeNull()
@@ -295,17 +359,34 @@ it('does not change the site in a dry run, only says what would happen', functio
     [$blocking, $notifier] = blocking();
     $actor = AuditActor::system('tests');
     $site = blockingSite();
-    $blocked = blockingSite(SiteBlockSource::Prerequisites, 'PHP < 7.4: no suportat');
+    $blocked = blockingSite(SiteBlockSource::Prerequisites, 'el compte no pot escriure a: /x');
 
-    $would = $blocking->apply($site, [new PrerequisiteCheck(PrerequisiteName::PhpMinimum, false, 'PHP < 7.4: no suportat')], $actor, true);
-    $wouldLift = $blocking->apply($blocked, [new PrerequisiteCheck(PrerequisiteName::PhpMinimum, true)], $actor, true);
+    $would = $blocking->apply($site, allChecks(['writable' => 'el compte no pot escriure a: /x']), $actor, true);
+    $wouldLift = $blocking->apply($blocked, allChecks(), $actor, true);
 
     expect($would->outcome)->toBe(BlockOutcome::WouldBlock)
         ->and($site->refresh()->blocked_reason)->toBeNull()
         ->and($wouldLift->outcome)->toBe(BlockOutcome::WouldUnblock)
-        ->and($blocked->refresh()->blocked_reason)->toBe('PHP < 7.4: no suportat')
+        ->and($blocked->refresh()->blocked_reason)->toBe('el compte no pot escriure a: /x')
         ->and($notifier->calls)->toBe([])
         ->and(AuditLogEntry::query()->whereIn('action', ['site.blocked', 'site.unblocked'])->count())->toBe(0);
+});
+
+it('lets the PHP checks decide nothing in a dry run and never promises to lift a PHP block', function (): void {
+    [$blocking] = blocking();
+    $actor = AuditActor::system('tests');
+    $phpBlocked = blockingSite(SiteBlockSource::Prerequisites, 'PHP < 7.4: no suportat');
+    $healthy = blockingSite();
+
+    // CLI PHP looks old, but without the probe that proves nothing.
+    $noBlock = $blocking->apply($healthy, allChecks(['php_minimum' => 'PHP < 7.4: no suportat']), $actor, true);
+    // CLI PHP looks fine, but the stored block came from the web's PHP.
+    $kept = $blocking->apply($phpBlocked, allChecks(), $actor, true);
+
+    expect($noBlock->outcome)->toBe(BlockOutcome::Unchanged)
+        ->and($noBlock->reason)->toBeNull()
+        ->and($kept->outcome)->toBe(BlockOutcome::Unchanged)
+        ->and($kept->reason)->toBe('PHP < 7.4: no suportat');
 });
 
 it('logs through the default notifier', function (): void {
@@ -353,15 +434,96 @@ it('blocks the site from the inventory step and puts the reason in the summary',
         ->and($run->site?->refresh()->blocked_reason)->toBeNull();
 });
 
-it('only reports "es bloquejaria" in a dry run inventory step', function (): void {
-    [$step, $notifier] = stepWithBlocking(new FakeDriver('6.8.3', '7.3.33'));
+it('only reports "es bloquejaria" in a dry run inventory step, without judging the PHP', function (): void {
+    $driver = new FakeDriver('6.8.3', '7.3.33');
+    $driver->unwritable = ['/var/www/html'];
+    [$step, $notifier] = stepWithBlocking($driver);
     $run = Run::factory()->create(['type' => RunType::Inventory]);
 
     $outcome = $step->run(new StepContext($run, true));
 
-    expect($outcome->summary)->toContain('; es bloquejaria: PHP < 7.4: no suportat')
+    expect($outcome->summary)->toContain('; es bloquejaria: el compte no pot escriure a: /var/www/html')
+        ->and($outcome->summary)->not->toContain('PHP < 7.4')
+        ->and($outcome->summary)->toContain('en dry-run no es verifica el PHP del web')
         ->and($run->site?->refresh()->blocked_reason)->toBeNull()
         ->and($notifier->calls)->toBe([]);
+});
+
+it('blocks the site when WP-CLI does not work, but not on a lost connection', function (): void {
+    $driver = new FakeDriver;
+    [$step, $notifier] = stepWithBlocking($driver);
+    $run = Run::factory()->create(['type' => RunType::Inventory]);
+
+    $driver->installedFailure = new ConnectionFailed('sense xarxa');
+    $lost = $step->run(new StepContext($run, false));
+    $afterLost = $run->site?->refresh()->blocked_reason;
+
+    $driver->installedFailure = new RemoteCommandFailed('wp ha petat');
+    $dry = $step->run(new StepContext($run, true));
+    $afterDry = $run->site?->refresh()->blocked_reason;
+    $broken = $step->run(new StepContext($run, false));
+
+    expect($lost->status)->toBe(RunStepStatus::Failed)
+        ->and($afterLost)->toBeNull()
+        ->and($afterDry)->toBeNull()
+        ->and($broken->status)->toBe(RunStepStatus::Failed)
+        ->and($run->site?->refresh()->blocked_reason)->toBe('WP-CLI no funciona al lloc')
+        ->and($notifier->calls)->toBe(['blocked:WP-CLI no funciona al lloc']);
+
+    // WP-CLI works again: the tool lifts its own block.
+    $driver->installedFailure = null;
+    $fixed = $step->run(new StepContext($run, false));
+    expect($fixed->summary)->toContain('; desbloquejat');
+});
+
+it('does not audit nor notify again when only live figures change between inventories', function (): void {
+    $driver = new FakeDriver(freeDisk: 1_000);
+    [$step, $notifier] = stepWithBlocking($driver);
+    $run = Run::factory()->create(['type' => RunType::Inventory]);
+
+    $step->run(new StepContext($run, false));
+    $driver->freeDisk = 2_000;
+    $driver->filesBytes = 300_000_000;
+    $second = $step->run(new StepContext(Run::factory()->create(['type' => RunType::Inventory, 'site_id' => $run->site_id]), false));
+
+    expect($run->site?->refresh()->blocked_reason)->toBe('espai insuficient per a la còpia')
+        ->and($second->summary)->toContain('; bloquejat: espai insuficient per a la còpia')
+        ->and($notifier->calls)->toHaveCount(1)
+        ->and(AuditLogEntry::query()->where('action', 'site.blocked')->count())->toBe(1);
+});
+
+it('passes the configured du timeout and fails closed when it times out', function (): void {
+    $driver = new FakeDriver;
+    $service = new SitePrerequisites(new WpCliReader(app(SecretRedactor::class)), '7.4', 1.5, 10, 77);
+
+    $service->check($driver, '8.3.14', [], null);
+    $driver->diskUsageFails = true;
+    $result = $service->check($driver, '8.3.14', [], null);
+
+    expect($driver->duTimeouts)->toBe([77, 77])
+        ->and(failed($result->checks, PrerequisiteName::BackupSpace)?->reason)->toBe("no s'ha pogut estimar l'espai per a la còpia")
+        ->and($result->warnings)->toHaveCount(1)
+        ->and(config('wpup.inventory.prerequisites.du_timeout_seconds'))->toBeInt();
+});
+
+it('fails writable closed, with a stable reason and a warning, when the check itself fails', function (): void {
+    $driver = new FakeDriver;
+    $driver->unwritableFails = true;
+    Log::shouldReceive('warning')->once();
+
+    $result = prerequisites()->check($driver, '8.3.14', [], null);
+
+    expect(failed($result->checks, PrerequisiteName::Writable)?->reason)->toBe("no s'han pogut comprovar els permisos d'escriptura")
+        ->and($result->warnings)->toHaveCount(1);
+});
+
+it('stores the evaluation warnings in the snapshot', function (): void {
+    $driver = new FakeDriver;
+    $driver->diskUsageFails = true;
+
+    $snapshot = (new SiteInventory(null, null, null, prerequisites()))->take(Site::factory()->create(), $driver);
+
+    expect($snapshot->environment['prerequisites_warnings'] ?? null)->toHaveCount(1);
 });
 
 it('says nothing about blocking for a healthy site', function (): void {

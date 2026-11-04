@@ -127,18 +127,20 @@ final class SshDriver implements SiteDriver
         $root = rtrim($this->target->wpPath, '/');
         $paths = [$root, $root.'/wp-content', $root.'/wp-content/plugins', $root.'/wp-content/themes'];
         $script = 'for p in '.implode(' ', array_map(escapeshellarg(...), $paths)).'; do [ -w "$p" ] || printf "%s\\n" "$p"; done';
-        $result = $this->exec($script, 30);
+        // A failed or timed out command is an error, never "all writable".
+        $result = $this->mustExec($script, 'La comprovació dels permisos d\'escriptura', 30);
 
         return array_values(array_filter(array_map('trim', explode("\n", $result->stdout)), static fn (string $p): bool => $p !== ''));
     }
 
-    public function diskUsageBytes(): int
+    public function diskUsageBytes(?int $timeoutSeconds = null): int
     {
         // GNU du: exit 1 for an unreadable subdirectory still prints the total of the rest.
-        $result = $this->exec('du -sb -- '.escapeshellarg(rtrim($this->target->wpPath, '/')));
+        // A timeout throws from the connection (exit 124 never reaches here).
+        $result = $this->exec('du -sb -- '.escapeshellarg(rtrim($this->target->wpPath, '/')), $timeoutSeconds);
         $bytes = explode("\t", trim($result->stdout))[0];
 
-        return ctype_digit($bytes) ? (int) $bytes : throw self::failure("La lectura de l'espai que ocupa el lloc", $result);
+        return ctype_digit($bytes) && $result->exitCode <= 1 ? (int) $bytes : throw self::failure("La lectura de l'espai que ocupa el lloc", $result);
     }
 
     public function installedComponents(): InstalledComponents

@@ -119,6 +119,15 @@ final class FakeDriver implements SiteDriver
     /** Makes diskUsageBytes() throw a DriverException. */
     public bool $diskUsageFails = false;
 
+    /** @var list<int|null> the timeout of every diskUsageBytes() call */
+    public array $duTimeouts = [];
+
+    /** Thrown by installedComponents() when set (WP-CLI broken, lost connection…). */
+    public ?\Throwable $installedFailure = null;
+
+    /** Makes unwritablePaths() throw a DriverException. */
+    public bool $unwritableFails = false;
+
     /** @var list<string> paths unwritablePaths() reports */
     public array $unwritable = [];
 
@@ -191,6 +200,10 @@ final class FakeDriver implements SiteDriver
 
     public function installedComponents(): InstalledComponents
     {
+        if ($this->installedFailure !== null) {
+            throw $this->installedFailure;
+        }
+
         return new InstalledComponents($this->coreVersion, $this->phpRuntime()->version, $this->dbServerVersion, array_values($this->components), $this->activeTheme, $this->parentTheme);
     }
 
@@ -330,8 +343,10 @@ final class FakeDriver implements SiteDriver
         return $this->freeDisk;
     }
 
-    public function diskUsageBytes(): int
+    public function diskUsageBytes(?int $timeoutSeconds = null): int
     {
+        $this->duTimeouts[] = $timeoutSeconds;
+
         if ($this->diskUsageFails) {
             throw new DriverException('du ha fallat');
         }
@@ -341,6 +356,10 @@ final class FakeDriver implements SiteDriver
 
     public function unwritablePaths(): array
     {
+        if ($this->unwritableFails) {
+            throw new DriverException('la comprovació de permisos ha fallat');
+        }
+
         return $this->unwritable;
     }
 
