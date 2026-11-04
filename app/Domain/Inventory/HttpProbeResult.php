@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Domain\Inventory;
 
+use App\Domain\Drivers\Data\PhpRuntime;
+
 /**
  * What the temporary HTTP probe reported (UZEROWPUP-30). $version is null when
  * the probe could not be read; $error says why. $removed is false when the
@@ -28,6 +30,6 @@ final readonly class HttpProbeResult
      */
     public function minor(): ?string
     {
-        return $this->version === null ? null : implode('.', array_slice(explode('.', $this->version), 0, 2));
+        return $this->version === null ? null : PhpRuntime::minorOf($this->version);
     }
 }

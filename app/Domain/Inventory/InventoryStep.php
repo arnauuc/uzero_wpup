@@ -47,7 +47,8 @@ final readonly class InventoryStep implements ReadOnlyStep
 
     public function describe(StepContext $context): string
     {
-        return "Llegirà les versions del nucli, els connectors, els temes, els drop-ins, els mu-plugins, PHP i la base de dades del lloc {$this->siteName($context)}.";
+        return "Llegirà les versions del nucli, els connectors, els temes, els drop-ins, els mu-plugins, PHP i la base de dades del lloc {$this->siteName($context)}"
+            .($context->dryRun ? '.' : ", i confirmarà el PHP del web amb un probe temporal que s'esborra en acabar.");
     }
 
     public function run(StepContext $context): StepOutcome
@@ -65,7 +66,8 @@ final readonly class InventoryStep implements ReadOnlyStep
         }
 
         try {
-            $snapshot = $this->inventory->take($site, ($this->driverFor)($site, $actor), $context->run);
+            // A dry run changes nothing on the site, not even a temporary probe.
+            $snapshot = $this->inventory->take($site, ($this->driverFor)($site, $actor), $context->run, probeWeb: ! $context->dryRun);
         } catch (DriverException $e) {
             return StepOutcome::failed("No s'ha pogut fer l'inventari: {$e->getMessage()}");
         }

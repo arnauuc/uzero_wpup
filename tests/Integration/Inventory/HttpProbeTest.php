@@ -36,14 +36,6 @@ function probeFixture(string $name, int $port): array
     return [$site, app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'))];
 }
 
-function probeScript(string $token, int $expiresAt): string
-{
-    return strtr((string) file_get_contents(base_path('resources/probe/probe.php')), [
-        '__WPUP_TOKEN_SHA256__' => hash('sha256', $token),
-        '__WPUP_EXPIRES_AT__' => (string) $expiresAt,
-    ]);
-}
-
 function probeLeftovers(string $name): string
 {
     return trim(Fixtures::run($name, "ls /var/www/vhosts/{$name}.fixtures.test/httpdocs | grep '^wpup-probe-' || true"));
@@ -66,7 +58,7 @@ it('answers a valid token only once, and a wrong one never', function (): void {
     $url = 'http://wp83:8083/wpup-probe-contracttest.php';
 
     try {
-        $driver->putWebFile('wpup-probe-contracttest.php', probeScript('right-token', time() + 60));
+        $driver->putWebFile('wpup-probe-contracttest.php', HttpProbe::script('right-token', 60));
 
         $wrong = Http::withHeaders(['X-Wpup-Probe' => 'wrong-token'])->get($url);
         $none = Http::get($url);
@@ -86,7 +78,8 @@ it('answers a valid token only once, and a wrong one never', function (): void {
 
 it('refuses to answer and deletes itself after its deadline', function (): void {
     [, $driver] = probeFixture('wp83', 8083);
-    $driver->putWebFile('wpup-probe-expired.php', probeScript('right-token', time() - 1));
+    $driver->putWebFile('wpup-probe-expired.php', HttpProbe::script('right-token', 60));
+    Fixtures::run('wp83', "touch -d '-10 minutes' /var/www/vhosts/wp83.fixtures.test/httpdocs/wpup-probe-expired.php");
 
     $response = Http::withHeaders(['X-Wpup-Probe' => 'right-token'])->get('http://wp83:8083/wpup-probe-expired.php');
 

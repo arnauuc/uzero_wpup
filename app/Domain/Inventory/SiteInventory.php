@@ -45,11 +45,16 @@ final readonly class SiteInventory
 
     public const string THEME_INACTIVE = 'inactive';
 
-    public function take(Site $site, SiteDriver $driver, ?Run $run = null): SiteSnapshot
+    /**
+     * $probeWeb false (dry runs) skips the HTTP probe, which writes a temporary
+     * file to the site.
+     */
+    public function take(Site $site, SiteDriver $driver, ?Run $run = null, bool $probeWeb = true): SiteSnapshot
     {
         $installed = $driver->installedComponents();
         $php = $driver->phpRuntime();
-        [$phpVersion, $phpSource, $phpEnvironment] = $this->php($php, $this->probe?->run($site, $driver));
+        $probe = $probeWeb ? $this->probe?->run($site, $driver) : null;
+        [$phpVersion, $phpSource, $phpEnvironment] = $this->php($php, $probe, $probeWeb);
 
         $values = [
             'site_id' => $site->id,
@@ -81,7 +86,7 @@ final readonly class SiteInventory
     /**
      * @return array{0: string, 1: PhpVersionSource, 2: array<string, mixed>}
      */
-    private function php(PhpRuntime $cli, ?HttpProbeResult $probe): array
+    private function php(PhpRuntime $cli, ?HttpProbeResult $probe, bool $probeWeb): array
     {
         $warnings = $cli->warnings;
         $version = $cli->version;
@@ -91,6 +96,8 @@ final readonly class SiteInventory
         if ($probe !== null && $probe->version !== null) {
             $version = $probe->version;
             $source = PhpVersionSource::HttpProbe;
+            // The web confirmed it: the CLI PHP is no longer unverified.
+            $warnings = array_values(array_filter($warnings, static fn (string $w): bool => $w !== PhpRuntime::UNVERIFIED_WARNING));
 
             if ($probe->minor() !== $cli->minor()) {
                 $blocked = "El web serveix PHP {$probe->version}, però WP-CLI fa servir PHP {$cli->version} ({$cli->binary}): no s'actualitza fins que coincideixin.";
@@ -98,6 +105,14 @@ final readonly class SiteInventory
             }
         } elseif ($probe !== null) {
             $warnings[] = "El probe HTTP no ha pogut confirmar el PHP del web: {$probe->error}.";
+
+            // Nothing tells which PHP the web runs: do not update on a guess.
+            if ($cli->source === PhpVersionSource::Cli) {
+                $blocked = "No se sap quin PHP serveix el web (només el del compte, {$cli->version}): no s'actualitza fins que es pugui verificar.";
+                $warnings[] = $blocked;
+            }
+        } elseif (! $probeWeb) {
+            $warnings[] = 'Probe HTTP no executat (dry-run): el PHP del web no s\'ha verificat.';
         }
 
         if ($probe !== null && ! $probe->removed) {

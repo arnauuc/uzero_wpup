@@ -13,7 +13,9 @@
  */
 
 $wpupTokenHash = '__WPUP_TOKEN_SHA256__';
-$wpupExpiresAt = (int) '__WPUP_EXPIRES_AT__';
+// Lifetime counted from the file's own mtime, so the site's clock is the only
+// one involved (no skew with the tool server).
+$wpupTtl = (int) '__WPUP_TTL_SECONDS__';
 
 function wpup_probe_not_found()
 {
@@ -36,7 +38,8 @@ function wpup_probe_equals($known, $given)
     return $diff === 0;
 }
 
-if (time() > $wpupExpiresAt) {
+$wpupWritten = @filemtime(__FILE__);
+if ($wpupWritten === false || time() > $wpupWritten + $wpupTtl) {
     @unlink(__FILE__);
     wpup_probe_not_found();
 }

@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Inventory\HttpProbe;
 use App\Domain\Inventory\SiteInventory;
 use App\Enums\PhpVersionSource;
@@ -109,4 +110,67 @@ it('never logs or returns the token', function (): void {
 
     expect($result->version)->toBeNull()
         ->and((string) $result->error)->not->toMatch('/[0-9a-f]{64}/');
+});
+
+it('removes a partial probe left by a failed upload', function (): void {
+    Http::fake();
+    $driver = new FakeDriver;
+    $driver->failWebUpload = true;
+
+    [, $php] = probeInventory($driver);
+
+    expect($driver->webFiles)->toBe([])
+        ->and(implode(' ', $php['warnings']))->toContain("no s'ha pogut pujar el probe");
+    Http::assertNothingSent();
+});
+
+it('blocks the site when neither the handler nor the web tell its PHP', function (): void {
+    Http::fake(['*' => Http::response('Forbidden', 403)]);
+    $driver = new FakeDriver;
+    $driver->phpRuntime = new PhpRuntime('8.2.20', 'php', PhpVersionSource::Cli, [PhpRuntime::UNVERIFIED_WARNING]);
+
+    [, $php] = probeInventory($driver);
+
+    expect($php['blocked_reason'])->toContain('No se sap quin PHP serveix el web');
+});
+
+it('drops the unverified warning once the web confirms the CLI PHP', function (): void {
+    Http::fake(['*' => Http::response(['php_version' => '8.2.20'])]);
+    $driver = new FakeDriver;
+    $driver->phpRuntime = new PhpRuntime('8.2.20', 'php', PhpVersionSource::Cli, [PhpRuntime::UNVERIFIED_WARNING]);
+
+    [, $php] = probeInventory($driver);
+
+    expect($php['warnings'])->toBe([])
+        ->and($php['blocked_reason'])->toBeNull();
+});
+
+it('refuses oversized or malformed versions', function (): void {
+    Http::fake(['*' => Http::response(['php_version' => '8.3.14'.str_repeat('x', 300)])]);
+
+    [$snapshot, $php] = probeInventory(new FakeDriver);
+
+    expect($snapshot->php_source)->toBe(PhpVersionSource::Configured)
+        ->and(implode(' ', $php['warnings']))->toContain('no és vàlida');
+});
+
+it('refuses an answer bigger than the limit without reading it', function (): void {
+    config(['wpup.inventory.http_probe.max_response_bytes' => 100]);
+    Http::fake(['*' => Http::response(['php_version' => '8.3.14', 'extensions' => array_fill(0, 50, 'curl')])]);
+
+    [, $php] = probeInventory(new FakeDriver);
+
+    expect(implode(' ', $php['warnings']))->toContain('no és vàlida');
+});
+
+it('does not touch the site in a dry run', function (): void {
+    Http::fake();
+    $driver = new FakeDriver;
+    $run = Run::factory()->create(['type' => 'inventory', 'flags' => ['dry_run' => true]]);
+
+    $snapshot = app(SiteInventory::class)->take($run->site()->firstOrFail(), $driver, $run, probeWeb: false);
+
+    expect($driver->webFilesWritten)->toBe([])
+        ->and(json_encode($snapshot->environment))->toContain('dry-run');
+    Http::assertNothingSent();
 });

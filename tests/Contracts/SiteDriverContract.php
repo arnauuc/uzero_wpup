@@ -166,6 +166,21 @@ final class SiteDriverContract
                     ->and($lines)->not->toContain('wpup-contract-before');
             });
 
+            it('writes a temporary web file without overwriting, and removes it idempotently', function () use ($factory): void {
+                $driver = $factory();
+                $name = 'wpup-contract-'.bin2hex(random_bytes(4)).'.php';
+
+                try {
+                    $driver->putWebFile($name, '<?php echo 1;');
+                    expect(fn () => $driver->putWebFile($name, '<?php echo 2;'))->toThrow(DriverException::class);
+                } finally {
+                    $driver->removeWebFile($name);
+                }
+                $driver->removeWebFile($name);
+                expect(fn () => $driver->putWebFile('../escape.php', '<?php'))->toThrow(DriverException::class)
+                    ->and(fn () => $driver->putWebFile('wp-config.txt', 'x'))->toThrow(DriverException::class);
+            });
+
             it('reports free disk space', function () use ($factory): void {
                 expect($factory()->freeDiskBytes())->toBeGreaterThan(0);
             });

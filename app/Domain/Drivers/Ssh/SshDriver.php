@@ -18,6 +18,7 @@ use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
+use App\Domain\Drivers\WebFileName;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
@@ -507,11 +508,7 @@ final class SshDriver implements SiteDriver
 
     private function webPath(string $name): string
     {
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_-]*\.php$/', $name) !== 1) {
-            throw new DriverException("Nom de fitxer web no vàlid: {$name}");
-        }
-
-        return rtrim($this->target->wpPath, '/').'/'.$name;
+        return rtrim($this->target->wpPath, '/').'/'.WebFileName::valid($name);
     }
 
     public function phpRuntime(): PhpRuntime
@@ -567,7 +564,7 @@ final class SshDriver implements SiteDriver
             }
         }
 
-        $warnings[] = 'Es fa servir el PHP per defecte del compte (`php`), que pot no ser el que serveix el web.';
+        $warnings[] = PhpRuntime::UNVERIFIED_WARNING;
 
         try {
             return new PhpRuntime($this->phpVersionOf('php'), 'php', PhpVersionSource::Cli, $warnings);
@@ -630,7 +627,7 @@ final class SshDriver implements SiteDriver
         $lines = array_values(array_filter(array_map(trim(...), explode("\n", $result->stdout))));
         $version = (string) end($lines);
 
-        return preg_match('/^\d+\.\d+\.\d+/', $version) === 1
+        return PhpRuntime::isVersion($version)
             ? $version
             : throw new RemoteCommandFailed("La lectura de la versió de PHP ({$binary}) no ha tornat cap versió.", $result);
     }

@@ -109,6 +109,8 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.http_probe.timeout_seconds'),
             self::configInt('wpup.inventory.http_probe.ttl_seconds'),
             config('wpup.inventory.http_probe.verify_tls') !== false,
+            self::configInt('wpup.inventory.http_probe.max_response_bytes'),
+            self::configInt('wpup.inventory.http_probe.max_extensions'),
         ));
         $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.

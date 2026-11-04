@@ -150,6 +150,9 @@ return [
             'timeout_seconds' => 20,
             'ttl_seconds' => 300,
             'verify_tls' => (bool) env('WPUP_HTTP_PROBE_VERIFY_TLS', true),
+            // The answer is a short JSON: anything bigger is refused unread.
+            'max_response_bytes' => 65536,
+            'max_extensions' => 500,
         ],
     ],
 
