@@ -139,6 +139,14 @@ return [
     ],
 
     /*
+     * Version inventory (UZEROWPUP-31). Reads core, plugins, themes, drop-ins,
+     * must-use plugins, PHP and the database server in a single driver call.
+     */
+    'inventory' => [
+        'step_timeout_seconds' => 600,
+    ],
+
+    /*
      * SSH driver (UZEROWPUP-23, ADR-0002). Commands go through phpseclib with the
      * key in memory; rsync uses a throwaway ssh-agent per transfer. The tool
      * works in `work_dir` inside the account's home and installs its own pinned

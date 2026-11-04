@@ -7,6 +7,7 @@ namespace App\Domain\Runs;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Identity\Ability;
+use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
 use App\Models\Run;
 use App\Models\User;
@@ -29,6 +30,12 @@ final readonly class RunAuthorization
         $actor = new AuditActor($run->user_id, $run->actor, $run->channel);
 
         if ($user instanceof User && $ability->allows($user)) {
+            return $actor;
+        }
+
+        // Runs the scheduler queues itself (weekly inventory, nightly updates)
+        // have no operator. Only routine operations; never credential management.
+        if ($run->user_id === null && $run->channel === AuditChannel::System && $ability === Ability::RunOperations) {
             return $actor;
         }
 

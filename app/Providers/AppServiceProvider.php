@@ -4,16 +4,20 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Credentials\KeyRotationStep;
 use App\Domain\Credentials\SecretsRekey;
 use App\Domain\Credentials\SecretsRekeyStep;
 use App\Domain\Credentials\SshKeyManager;
 use App\Domain\Drivers\DriverFactory;
+use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\Ssh\SshSettings;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
+use App\Domain\Inventory\InventoryStep;
+use App\Domain\Inventory\SiteInventory;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Pipeline;
@@ -32,6 +36,7 @@ use App\Domain\Secrets\SecretStore;
 use App\Domain\Secrets\SecretStoreException;
 use App\Domain\Sites\SiteTestStep;
 use App\Enums\RunType;
+use App\Models\Site;
 use App\Support\Logging\RedactSecretsTap;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Foundation\Application;
@@ -96,7 +101,7 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.concurrency.lease_seconds'),
         ));
         $this->app->singleton(PipelineResolver::class);
-        // Credential operations queued by the CLI for the workers (ADR-0011).
+        // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
             $resolver->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([
                 new SiteTestStep(
@@ -117,6 +122,14 @@ class AppServiceProvider extends ServiceProvider
                     $app->make(SecretsRekey::class),
                     $app->make(RunAuthorization::class),
                     self::configInt('wpup.credential_operations.secrets_rekey_timeout_seconds'),
+                ),
+            ]));
+            $resolver->register(RunType::Inventory, static fn (): Pipeline => new Pipeline([
+                new InventoryStep(
+                    $app->make(SiteInventory::class),
+                    static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+                    $app->make(RunAuthorization::class),
+                    self::configInt('wpup.inventory.step_timeout_seconds'),
                 ),
             ]));
         });
