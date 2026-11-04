@@ -12,13 +12,11 @@ namespace App\Domain\Inventory;
 final readonly class SiteStateResult
 {
     /**
-     * @param  array{version: string, db_version: ?string, db_update_needed: bool, overridden_templates: list<array{file: string, theme_version: ?string, core_version: ?string, outdated: bool}>}|null  $woocommerce
-     * @param  array{disabled: bool, overdue_events: int, oldest_overdue_seconds: ?int}|null  $cron
      * @param  list<string>  $warnings  operator-facing
      */
     public function __construct(
-        public ?array $woocommerce,
-        public ?array $cron,
+        public ?WooCommerceState $woocommerce,
+        public ?CronState $cron,
         public ?bool $maintenance,
         public ?int $diskFreeBytes,
         public array $warnings,
@@ -30,8 +28,8 @@ final readonly class SiteStateResult
     public function toArray(): array
     {
         return [
-            'woocommerce' => $this->woocommerce,
-            'cron' => $this->cron,
+            'woocommerce' => $this->woocommerce?->toArray(),
+            'cron' => $this->cron?->toArray(),
             'maintenance' => $this->maintenance,
             'disk_free_bytes' => $this->diskFreeBytes,
             'warnings' => $this->warnings,

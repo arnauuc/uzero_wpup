@@ -21,6 +21,7 @@ use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteInventory;
 use App\Domain\Inventory\SiteState;
+use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Pipeline;
@@ -119,6 +120,7 @@ class AppServiceProvider extends ServiceProvider
             $app->make(HttpFactory::class),
             $app->make(CacheFactory::class)->store(),
             $app->make(SecretRedactor::class),
+            $app->make(WpCliReader::class),
             self::configString('wpup.inventory.wordpress_org.plugins_info_url'),
             self::configString('wpup.inventory.wordpress_org.themes_info_url'),
             self::configInt('wpup.inventory.wordpress_org.timeout_seconds'),
@@ -128,9 +130,10 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.wordpress_org.cache_ttl_seconds'),
         ));
         $this->app->bind(SiteState::class, static fn (Application $app): SiteState => new SiteState(
-            $app->make(SecretRedactor::class),
+            $app->make(WpCliReader::class),
             self::configInt('wpup.inventory.state.command_timeout_seconds'),
             self::configInt('wpup.inventory.state.cron_overdue_after_seconds'),
+            self::configInt('wpup.inventory.state.maintenance_ttl_seconds'),
         ));
         $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.

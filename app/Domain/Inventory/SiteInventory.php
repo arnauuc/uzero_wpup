@@ -33,11 +33,12 @@ use App\Models\SiteSnapshot;
  *   licensed=false is a premium package without download URL)
  * - environment.updates: array{warnings: list<string>}
  * - environment.state (UZEROWPUP-33, see SiteState; a null field could not be read, see warnings):
- *   array{woocommerce: ?array{version: string, db_version: ?string, db_update_needed: bool,
- *   overridden_templates: list<array{file: string, theme_version: ?string, core_version: ?string, outdated: bool}>},
+ *   array{woocommerce: ?array{version: string, db_version: ?string, db_update_needed: ?bool,
+ *   overridden_templates: ?list<array{file: string, theme_version: ?string, core_version: ?string, outdated: bool}>},
  *   cron: ?array{disabled: bool, overdue_events: int, oldest_overdue_seconds: ?int},
  *   maintenance: ?bool, disk_free_bytes: ?int, warnings: list<string>}
- *   (woocommerce is null when WooCommerce is not installed and active)
+ *   (woocommerce is null when WooCommerce is not installed and active; null anywhere else = could not be read,
+ *   see warnings; maintenance is true for a fresh .maintenance file, like wp_is_maintenance_mode())
  *
  * PHP: the version WP-CLI runs with (UZEROWPUP-29) is cross-checked with the
  * HTTP probe (UZEROWPUP-30). The web wins; if the minor versions differ, the

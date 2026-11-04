@@ -127,43 +127,50 @@ foreach (['wp74', 'wp83'] as $fixture) {
         $file = "{$dir}/cart.php";
 
         try {
-            Fixtures::run($fixture, 'mkdir -p '.escapeshellarg($dir).' && printf %s '.escapeshellarg("<?php\n/**\n * @version 1.0.0\n */\n").' > '.escapeshellarg($file));
+            Fixtures::run($fixture, 'mkdir -p '.escapeshellarg($dir).' && printf %s '.escapeshellarg("<?php\n/** @version 1.0.0 */\n").' > '.escapeshellarg($file));
 
             $state = app(SiteState::class)->read($driver, $driver->installedComponents(), time());
         } finally {
             Fixtures::run($fixture, 'rm -f '.escapeshellarg($file).' && rmdir '.escapeshellarg($dir).' '.escapeshellarg("{$theme}/woocommerce").' 2>/dev/null; true');
         }
 
-        $wc = $state->woocommerce ?? [];
         $override = null;
-        foreach ($wc['overridden_templates'] ?? [] as $template) {
-            if ($template['file'] === basename($theme).'/woocommerce/cart/cart.php') {
+        foreach ($state->woocommerce->overriddenTemplates ?? [] as $template) {
+            if ($template->file === basename($theme).'/woocommerce/cart/cart.php') {
                 $override = $template;
             }
         }
 
         expect($state->warnings)->toBe([])
-            ->and($wc['version'] ?? null)->not->toBeNull()
-            ->and($wc['db_version'] ?? null)->not->toBeNull()
-            ->and($override)->toMatchArray(['theme_version' => '1.0.0', 'outdated' => true])
-            ->and($override['core_version'] ?? null)->not->toBeNull()
-            ->and($state->cron)->toHaveKeys(['disabled', 'overdue_events', 'oldest_overdue_seconds'])
+            ->and($state->woocommerce?->version)->not->toBeNull()
+            ->and($state->woocommerce?->dbVersion)->not->toBeNull()
+            ->and($state->woocommerce?->dbUpdateNeeded)->toBeBool()
+            // The one-line header is cleaned up like WooCommerce does ("1.0.0 */" -> "1.0.0").
+            ->and($override?->themeVersion)->toBe('1.0.0')
+            ->and($override?->outdated)->toBeTrue()
+            ->and($override?->coreVersion)->not->toBeNull()
+            ->and($state->cron)->not->toBeNull()
             ->and($state->maintenance)->toBeFalse()
             ->and($state->diskFreeBytes)->toBeGreaterThan(0);
     });
 
-    it("sees the maintenance mode of {$fixture}", function () use ($fixture): void {
+    it("sees a fresh and a stale .maintenance file of {$fixture}", function () use ($fixture): void {
         $site = Fixtures::site($fixture);
         $driver = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'));
+        $file = trim($driver->wp(['eval', 'echo ABSPATH;'])->stdout).'.maintenance';
+        $read = static fn (): ?bool => app(SiteState::class)->read($driver, $driver->installedComponents(), time())->maintenance;
 
         try {
             $driver->setMaintenanceMode(true);
-            $on = app(SiteState::class)->read($driver, $driver->installedComponents(), time())->maintenance;
+            $fresh = $read();
+            Fixtures::run($fixture, 'printf %s '.escapeshellarg('<?php $upgrading = '.(time() - 3600).'; ?>').' > '.escapeshellarg($file));
+            $stale = $read();
         } finally {
             $driver->setMaintenanceMode(false);
         }
 
-        expect($on)->toBeTrue()
-            ->and(app(SiteState::class)->read($driver, $driver->installedComponents(), time())->maintenance)->toBeFalse();
+        expect($fresh)->toBeTrue()
+            ->and($stale)->toBeFalse()
+            ->and($read())->toBeFalse();
     });
 }

@@ -80,26 +80,35 @@ final class FakeDriver implements SiteDriver
     /** Makes `wp transient get` fail with this stderr (exit 1). */
     public ?string $transientError = null;
 
-    /** @var list<array{hook: string, next_run_gmt: string}> answer of `wp cron event list` */
+    /** @var list<array{hook: string, timestamp: int}> scheduled WP-Cron events */
     public array $cronEvents = [];
 
     public bool $cronDisabled = false;
 
+    /** The site's clock for the state snippet; null: the real time. */
+    public ?int $siteTime = null;
+
+    /** `$upgrading` of the .maintenance file written by setMaintenanceMode(); null: the site's time. */
+    public ?int $maintenanceUpgrading = null;
+
+    /** The .maintenance file exists but has no `$upgrading` timestamp. */
+    public bool $maintenanceWithoutTimestamp = false;
+
     public ?string $wcDbVersion = '9.8.0';
 
-    public bool $wcDbUpdateNeeded = false;
+    public ?bool $wcDbUpdateNeeded = false;
 
-    /** @var list<array{file: string, theme_version: string, core_version: string}> what the WooCommerce snippet reports */
+    /** The WooCommerce part of the snippet fails (a Throwable inside it). */
+    public bool $wcFails = false;
+
+    /** @var list<array{file: string, theme_version: string, core_version: string}> what the snippet reports as overridden templates */
     public array $wcOverriddenTemplates = [];
 
-    /** Raw stdout of the WooCommerce snippet instead of the modelled answer (notices, broken JSON…). */
-    public ?string $wcSnippetOutput = null;
+    /** Raw stdout of the whole state snippet instead of the modelled answer (notices, broken JSON…). */
+    public ?string $snippetOutput = null;
 
     /** @var list<string> WP-CLI commands (first arguments joined by space, e.g. "cron event list") that fail with exit 1 */
     public array $failingCommands = [];
-
-    /** Exit code of `wp maintenance-mode is-active` when it is neither 0 (active) nor 1 (not active), e.g. a PHP fatal (255). */
-    public ?int $maintenanceExitCode = null;
 
     /** Makes freeDiskBytes() throw a DriverException. */
     public bool $diskFails = false;
@@ -188,15 +197,8 @@ final class FakeDriver implements SiteDriver
         }
 
         return match (true) {
-            $args === ['eval', SiteState::WOOCOMMERCE_SNIPPET] => $this->ok($this->wcSnippetOutput ?? (string) json_encode([
-                'db_version' => $this->wcDbVersion,
-                'db_update_needed' => $this->wcDbUpdateNeeded,
-                'overridden_templates' => $this->wcOverriddenTemplates,
-            ])),
-            $args === ['eval', SiteState::CRON_DISABLED_SNIPPET] => $this->ok($this->cronDisabled ? '1' : '0'),
-            $args === ['cron', 'event', 'list', '--fields=hook,next_run_gmt', '--format=json'] => $this->ok((string) json_encode($this->cronEvents)),
+            $args === ['eval', SiteState::SNIPPET] => $this->ok($this->snippetOutput ?? $this->stateSnippet()),
             $args === ['core', 'version'] => $this->ok($this->coreVersion."\n"),
-            $args === ['maintenance-mode', 'is-active'] && $this->maintenanceExitCode !== null => new CommandResult($this->maintenanceExitCode, '', "PHP Fatal error: boom\n", 1),
             $args === ['maintenance-mode', 'is-active'] => $this->maintenance
                 ? $this->ok('')
                 : new CommandResult(1, '', '', 1),
@@ -321,6 +323,38 @@ final class FakeDriver implements SiteDriver
         $this->files[$remotePath] = $content;
 
         return new RemoteFile($remotePath, strlen($content), hash('sha256', $content));
+    }
+
+    /** What SiteState::SNIPPET prints on a site in this state. */
+    public function stateSnippet(): string
+    {
+        $now = $this->siteTime ?? time();
+        $due = [];
+        foreach ($this->cronEvents as $event) {
+            if ($event['timestamp'] <= $now) {
+                $due[$event['timestamp']] = ($due[$event['timestamp']] ?? 0) + 1;
+            }
+        }
+
+        $woocommerce = null;
+        if (isset($this->components['woocommerce:woocommerce']) && $this->components['woocommerce:woocommerce']->active) {
+            $woocommerce = $this->wcFails ? ['failed' => true] : [
+                'db_version' => $this->wcDbVersion,
+                'db_update_needed' => $this->wcDbUpdateNeeded,
+                'overridden_templates' => $this->wcOverriddenTemplates,
+            ];
+        }
+
+        return (string) json_encode([
+            'now' => $now,
+            'cron_disabled' => $this->cronDisabled,
+            'cron_overdue' => array_map(static fn (int $ts, int $n): array => [$ts, $n], array_keys($due), $due),
+            'maintenance' => [
+                'file' => $this->maintenance,
+                'upgrading' => $this->maintenance && ! $this->maintenanceWithoutTimestamp ? ($this->maintenanceUpgrading ?? $now) : null,
+            ],
+            'woocommerce' => $woocommerce,
+        ]);
     }
 
     private function ok(string $stdout): CommandResult

@@ -113,6 +113,11 @@ final readonly class InventoryStep implements ReadOnlyStep
             $notes[] = sprintf('%d esdeveniments de cron endarrerits', $overdue);
         }
 
+        $warnings = is_array($state['warnings'] ?? null) ? count($state['warnings']) : 0;
+        if ($warnings > 0) {
+            $notes[] = sprintf("%d avisos de l'estat previ", $warnings);
+        }
+
         return $notes === [] ? '' : '; '.implode('; ', $notes);
     }
 
