@@ -92,12 +92,13 @@ return [
     ],
 
     /*
-     * Update plan (UZEROWPUP-36). `order` is the order components are updated in
-     * (AGENTS.md).
+     * Update plan (UZEROWPUP-36). A plan never probes the web: it trusts the latest
+     * probe-verified PHP of the site only if it is at most this old and the CLI
+     * reports the same minor version.
      */
     'planning' => [
         'step_timeout_seconds' => 60,
-        'order' => ['core', 'woocommerce', 'plugin', 'theme', 'translation'],
+        'verified_php_max_age_seconds' => 604800,
     ],
 
     /*

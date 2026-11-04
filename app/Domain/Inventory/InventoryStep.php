@@ -57,7 +57,7 @@ final readonly class InventoryStep implements ReadOnlyStep
     public function describe(StepContext $context): string
     {
         return "Llegirà les versions del nucli, els connectors, els temes, els drop-ins, els mu-plugins, PHP i la base de dades del lloc {$this->siteName($context)}"
-            .($context->dryRun || $this->readOnlySite ? '.' : ", i confirmarà el PHP del web amb un probe temporal que s'esborra en acabar.");
+            .($this->leavesSiteAlone($context) ? '.' : ", i confirmarà el PHP del web amb un probe temporal que s'esborra en acabar.");
     }
 
     public function run(StepContext $context): StepOutcome
@@ -89,7 +89,6 @@ final readonly class InventoryStep implements ReadOnlyStep
         } catch (DriverException $e) {
             // WP-CLI does not work on the site: it cannot be updated either.
             if ($this->blocking !== null && ! $this->leavesSiteAlone($context)) {
-
                 $this->blocking->blockForWpCli($site, $actor);
             }
 

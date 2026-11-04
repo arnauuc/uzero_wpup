@@ -8,6 +8,7 @@ use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\SiteInventory;
+use App\Domain\Inventory\SiteState;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
 use App\Domain\Runs\Pipeline;
@@ -53,11 +54,22 @@ function plannedDriver(?string $helloRequiresPhp = null): FakeDriver
     return $driver;
 }
 
+/**
+ * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, changes: list<array{slug: string, action: string, reason: ?string}>}
+ */
+function planResult(Run $run): array
+{
+    /** @var array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, changes: list<array{slug: string, action: string, reason: ?string}>} $result */
+    $result = $run->steps()->where('name', 'plan')->firstOrFail()->result;
+
+    return $result;
+}
+
 function planRun(FakeDriver $driver, Site $site): Run
 {
     app(PipelineResolver::class)->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
         new InventoryStep(app(SiteInventory::class), static fn (Site $s, AuditActor $a): SiteDriver => $driver, app(RunAuthorization::class), 60, app(SiteBlocking::class), readOnlySite: true),
-        new PlanStep(app(UpdatePlanner::class), 60),
+        new PlanStep(app(UpdatePlanner::class), 60, 604800),
     ]));
     $run = Run::factory()->create(['type' => RunType::Plan, 'site_id' => $site->id]);
 
@@ -87,18 +99,56 @@ it('plans from a fresh inventory and stores the plan in the step', function (): 
     ]);
 });
 
-it('prefers an earlier web-verified PHP over the CLI guess', function (): void {
+it('uses a recent web-verified PHP of the same minor in place of the CLI guess', function (): void {
     $site = Site::factory()->create();
-    SiteSnapshot::factory()->create(['site_id' => $site->id, 'php_version' => '7.4.33', 'php_source' => PhpVersionSource::HttpProbe]);
-    $driver = plannedDriver('8.0');
+    SiteSnapshot::factory()->create(['site_id' => $site->id, 'php_version' => '8.3.9', 'php_source' => PhpVersionSource::HttpProbe, 'taken_at' => now()->subDay()]);
+    $driver = plannedDriver('8.3.12');
     $driver->phpRuntime = new PhpRuntime('8.3.14', 'php', PhpVersionSource::Cli, []);
 
-    $run = planRun($driver, $site);
-    /** @var array{php: array{version: string, source: string}, changes: list<array{slug: string, reason: ?string}>} $result */
-    $result = $run->steps()->where('name', 'plan')->firstOrFail()->result;
+    $result = planResult(planRun($driver, $site));
 
-    expect($result['php'])->toMatchArray(['version' => '7.4.33', 'source' => 'http_probe'])
+    expect($result['php'])->toMatchArray(['version' => '8.3.9', 'source' => 'http_probe', 'verified' => true])
         ->and(collect($result['changes'])->firstWhere('slug', 'hello')['reason'] ?? null)->toBe('php_incompatible');
+});
+
+it('does not trust a stale or different-minor web-verified PHP', function (string $version, int $ageDays): void {
+    $site = Site::factory()->create();
+    SiteSnapshot::factory()->create(['site_id' => $site->id, 'php_version' => $version, 'php_source' => PhpVersionSource::HttpProbe, 'taken_at' => now()->subDays($ageDays)]);
+    $driver = plannedDriver();
+    $driver->phpRuntime = new PhpRuntime('8.3.14', 'php', PhpVersionSource::Cli, []);
+
+    $result = planResult(planRun($driver, $site));
+
+    expect($result['php'])->toMatchArray(['version' => '8.3.14', 'source' => 'cli', 'verified' => false]);
+})->with([
+    'stale' => ['8.3.9', 30],
+    'other minor' => ['7.4.33', 1],
+]);
+
+it('picks the latest web-verified snapshot by taken_at, within the max age', function (): void {
+    $site = Site::factory()->create();
+    $newer = SiteSnapshot::factory()->create(['site_id' => $site->id, 'php_version' => '8.2.1', 'php_source' => PhpVersionSource::HttpProbe, 'taken_at' => now()->subDay()]);
+    SiteSnapshot::factory()->create(['site_id' => $site->id, 'php_version' => '8.1.1', 'php_source' => PhpVersionSource::HttpProbe, 'taken_at' => now()->subDays(5)]);
+    SiteSnapshot::factory()->create(['site_id' => $site->id, 'php_version' => '8.4.1', 'php_source' => PhpVersionSource::Cli, 'taken_at' => now()]);
+
+    expect(SiteSnapshot::latestWebVerifiedPhp($site)?->id)->toBe($newer->id)
+        ->and(SiteSnapshot::latestWebVerifiedPhp($site, 3600))->toBeNull()
+        ->and(SiteSnapshot::latestWebVerifiedPhp(Site::factory()->create()))->toBeNull();
+});
+
+it('skips everything with the reason a real run would block the site for', function (): void {
+    $site = Site::factory()->create();
+    // Little free disk: the backup_space prerequisite fails.
+    $driver = plannedDriver();
+    $driver->freeDisk = 1000;
+
+    $run = planRun($driver, $site);
+    $result = planResult($run);
+
+    expect($run->status)->toBe(RunStatus::Succeeded)
+        ->and($result['blocked_reason'])->toStartWith('es bloquejaria: espai insuficient')
+        ->and(array_unique(array_column($result['changes'], 'reason')))->toBe(['site_blocked'])
+        ->and($site->refresh()->blocked_reason)->toBeNull();
 });
 
 it('writes nothing to the site and leaves its block alone', function (): void {
@@ -116,7 +166,17 @@ it('writes nothing to the site and leaves its block alone', function (): void {
             ->and($driver->webFilesWritten)->toBe([])
             ->and($driver->maintenance)->toBeFalse();
         foreach ($driver->wpCalls as $call) {
-            expect($call[0])->toBeIn(['eval', 'core', 'transient', 'option', 'maintenance-mode', 'db'], 'unexpected WP-CLI call: '.implode(' ', $call));
+            $known = match ($call[0]) {
+                // Only the inventory's constant snippets, never an arbitrary eval.
+                'eval' => count($call) === 2 && in_array($call[1], [SiteState::SNIPPET, 'echo $GLOBALS["wpdb"]->db_server_info();'], true),
+                'core' => in_array($call[1] ?? '', ['version', 'check-update'], true),
+                'transient' => ($call[1] ?? '') === 'get',
+                'option' => ($call[1] ?? '') === 'get',
+                'maintenance-mode' => ($call[1] ?? '') === 'is-active',
+                'db' => ($call[1] ?? '') === 'size',
+                default => false,
+            };
+            expect($known)->toBeTrue('unexpected WP-CLI call: '.implode(' ', $call));
             expect(array_intersect($call, ['update', 'install', 'activate', 'delete', 'import']))->toBe([]);
         }
     }
@@ -139,7 +199,7 @@ it('skips every update of an already blocked site', function (): void {
 
 it('fails the plan step when the inventory left no snapshot', function (): void {
     $run = Run::factory()->create(['type' => RunType::Plan]);
-    $outcome = new PlanStep(app(UpdatePlanner::class), 60)->run(new StepContext($run, false, []));
+    $outcome = new PlanStep(app(UpdatePlanner::class), 60, 604800)->run(new StepContext($run, false, []));
 
     expect($outcome->status->value)->toBe('failed');
 });

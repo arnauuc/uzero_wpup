@@ -27,15 +27,17 @@ function pending(string $type, string $slug, string $from, string $to, array $ex
  * @param  array<mixed>  $updates
  * @param  array<string, mixed>  $site
  * @param  array<string, mixed>  $profile
+ * @param  list<array<string, mixed>>  $prerequisites
  */
-function planFor(array $updates, array $site = [], array $profile = [], string $php = '8.2.20', string $core = '6.8.1', string $woocommerce = '10.1.0', PhpVersionSource $source = PhpVersionSource::HttpProbe): UpdatePlan
+function planFor(array $updates, array $site = [], array $profile = [], string $php = '8.2.20', string $core = '6.8.1', string $woocommerce = '10.1.0', PhpVersionSource $source = PhpVersionSource::HttpProbe, bool $wcActive = true, array $prerequisites = []): UpdatePlan
 {
     $siteModel = Site::factory()->create($site);
     $profileModel = $profile === [] ? null : SiteProfile::factory()->create(['site_id' => $siteModel->id] + $profile);
     $snapshot = SiteSnapshot::factory()->create([
         'site_id' => $siteModel->id,
         'core_version' => $core,
-        'plugins' => [['slug' => 'woocommerce', 'version' => $woocommerce, 'active' => true, 'title' => null, 'type' => 'woocommerce']],
+        'plugins' => [['slug' => 'woocommerce', 'version' => $woocommerce, 'active' => $wcActive, 'title' => null, 'type' => 'woocommerce']],
+        'environment' => ['prerequisites' => $prerequisites],
         'pending_updates' => $updates,
     ]);
 
@@ -209,4 +211,78 @@ it('classifies major versions per component type', function (string $type, strin
     ['plugin', '2.9.1', '3.0.0', true],
     ['plugin', '2.1', '2.9', false],
     ['theme', '1.0', 'dev-main', true],
+]);
+
+it('matches WooCommerce as a plugin, as woocommerce and by slug', function (string $entry): void {
+    $plan = planFor([pending('woocommerce', 'woocommerce', '10.1.0', '10.2.0')], [], ['frozen_components' => [$entry]]);
+
+    expect(changeOf($plan, 'woocommerce')->reason)->toBe(SkipReason::Frozen);
+})->with(['woocommerce', 'plugin:woocommerce', 'woocommerce:woocommerce']);
+
+it('does not match a plugin named like a WooCommerce type entry', function (): void {
+    $plan = planFor([pending('plugin', 'akismet', '5.3', '5.4')], [], ['frozen_components' => ['woocommerce:akismet']]);
+
+    expect(changeOf($plan, 'akismet')->action)->toBe(PlanAction::Update);
+});
+
+it('plans a single core row: the highest non-major offer, by version and not by string', function (): void {
+    $plan = planFor([
+        pending('core', 'wordpress', '6.8.1', '6.8.9'),
+        pending('core', 'wordpress', '6.8.1', '6.8.10'),
+        pending('core', 'wordpress', '6.8.1', '6.9.0'),
+    ]);
+
+    expect($plan->changes)->toHaveCount(1)
+        ->and($plan->changes[0]->targetVersion)->toBe('6.8.10')
+        ->and($plan->changes[0]->action)->toBe(PlanAction::Update);
+});
+
+it('plans the lowest major core offer, skipped as major, when all are major', function (): void {
+    $plan = planFor([pending('core', 'wordpress', '6.8.1', '7.0.0'), pending('core', 'wordpress', '6.8.1', '6.9.2'), pending('core', 'wordpress', '6.8.1', '6.10.0')]);
+
+    expect($plan->changes)->toHaveCount(1)
+        ->and($plan->changes[0]->targetVersion)->toBe('6.9.2')
+        ->and($plan->changes[0]->reason)->toBe(SkipReason::MajorRequiresStaging);
+});
+
+it('treats an inactive WooCommerce as not installed for requires_wc', function (): void {
+    $plan = planFor([pending('plugin', 'ext', '1.0', '1.1', ['requires_wc' => '9.0'])], wcActive: false);
+
+    expect(changeOf($plan, 'ext')->reason)->toBe(SkipReason::Dependency)->and(changeOf($plan, 'ext')->detail)->toContain('no està instal·lat');
+});
+
+it('skips everything when a prerequisite that needs no probe fails, as a real run would block', function (string $name): void {
+    $plan = planFor([pending('plugin', 'akismet', '5.3', '5.4')], prerequisites: [['name' => $name, 'passed' => false, 'reason' => 'motiu de prova', 'value' => null]]);
+
+    expect($plan->blockedReason)->toBe('es bloquejaria: motiu de prova')
+        ->and(changeOf($plan, 'akismet')->reason)->toBe(SkipReason::SiteBlocked)
+        ->and(changeOf($plan, 'akismet')->detail)->toBe('es bloquejaria: motiu de prova');
+})->with(['backup_space', 'writable', 'wp_cli', 'php_minimum']);
+
+it('ignores php_verified, and php_minimum when the PHP is not web-verified', function (): void {
+    $failing = static fn (string $name): array => [['name' => $name, 'passed' => false, 'reason' => 'x', 'value' => null]];
+
+    expect(planFor([pending('plugin', 'a', '1.0', '1.1')], prerequisites: $failing('php_verified'))->blockedReason)->toBeNull();
+
+    $site = Site::factory()->create();
+    $snapshot = SiteSnapshot::factory()->create(['site_id' => $site->id, 'php_source' => PhpVersionSource::Cli, 'pending_updates' => [], 'plugins' => [], 'environment' => ['prerequisites' => $failing('php_minimum')]]);
+    expect(app(UpdatePlanner::class)->plan($snapshot, $site, null, '8.2.0', PhpVersionSource::Cli)->blockedReason)->toBeNull();
+});
+
+it('keeps an existing block over the one a run would apply', function (): void {
+    $plan = planFor([pending('plugin', 'a', '1.0', '1.1')], ['blocked_reason' => 'Bloqueig manual'], prerequisites: [['name' => 'writable', 'passed' => false, 'reason' => 'x', 'value' => null]]);
+
+    expect($plan->blockedReason)->toBe('Bloqueig manual');
+});
+
+it('refuses unknown values when reading a stored plan', function (array $mutation): void {
+    $data = planFor([pending('plugin', 'a', '1.0', '1.1')])->toArray();
+    $data = array_replace_recursive($data, $mutation);
+
+    expect(fn () => UpdatePlan::fromArray($data))->toThrow(UnexpectedValueException::class);
+})->with([
+    'php source' => [['php' => ['source' => 'nope']]],
+    'type' => [['changes' => [['type' => 'nope']]]],
+    'action' => [['changes' => [['action' => 'nope']]]],
+    'reason' => [['changes' => [['reason' => 'nope']]]],
 ]);

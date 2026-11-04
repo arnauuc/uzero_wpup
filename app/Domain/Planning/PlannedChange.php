@@ -61,14 +61,13 @@ final readonly class PlannedChange
             throw new UnexpectedValueException('Malformed planned change.');
         }
 
-        return new self(
-            ComponentType::from($type),
-            $slug,
-            $current,
-            $target,
-            PlanAction::from($action),
-            is_string($reason) ? SkipReason::from($reason) : null,
-            is_string($detail) ? $detail : null,
-        );
+        $componentType = ComponentType::tryFrom($type);
+        $planAction = PlanAction::tryFrom($action);
+        $skipReason = is_string($reason) ? SkipReason::tryFrom($reason) : null;
+        if ($componentType === null || $planAction === null || (is_string($reason) && $skipReason === null)) {
+            throw new UnexpectedValueException('Unknown value in a planned change.');
+        }
+
+        return new self($componentType, $slug, $current, $target, $planAction, $skipReason, is_string($detail) ? $detail : null);
     }
 }

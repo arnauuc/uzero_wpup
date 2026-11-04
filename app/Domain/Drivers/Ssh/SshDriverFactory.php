@@ -10,7 +10,6 @@ use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Secrets\SecretStore;
 use App\Enums\HostingPanel;
-use App\Enums\PhpVersionSource;
 use App\Enums\SiteDriverType;
 use App\Models\Site;
 use App\Models\SiteSnapshot;
@@ -27,11 +26,7 @@ final readonly class SshDriverFactory
      */
     private static function webPhpMinor(Site $site): ?string
     {
-        $version = SiteSnapshot::query()
-            ->where('site_id', $site->id)
-            ->where('php_source', PhpVersionSource::HttpProbe)
-            ->latest('taken_at')
-            ->value('php_version');
+        $version = SiteSnapshot::latestWebVerifiedPhp($site)?->php_version;
 
         return is_string($version) && PhpRuntime::isVersion($version) ? PhpRuntime::minorOf($version) : null;
     }

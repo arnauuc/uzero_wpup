@@ -68,6 +68,8 @@ final readonly class UpdatePlan
             $parsed[] = is_array($change) ? PlannedChange::fromArray($change) : throw new UnexpectedValueException('Malformed update plan.');
         }
 
-        return new self($php['version'], PhpVersionSource::from($php['source']), ($php['verified'] ?? false) === true, is_string($blocked) ? $blocked : null, $parsed);
+        $source = PhpVersionSource::tryFrom($php['source']) ?? throw new UnexpectedValueException('Unknown PHP source in an update plan.');
+
+        return new self($php['version'], $source, ($php['verified'] ?? false) === true, is_string($blocked) ? $blocked : null, $parsed);
     }
 }

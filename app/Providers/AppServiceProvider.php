@@ -150,7 +150,6 @@ class AppServiceProvider extends ServiceProvider
         ));
         // Until the notification channels exist (F5), blocks only reach the log.
         $this->app->bind(SiteBlockNotifier::class, LogSiteBlockNotifier::class);
-        $this->app->bind(UpdatePlanner::class, static fn (): UpdatePlanner => new UpdatePlanner(array_values(array_filter((array) config('wpup.planning.order'), is_string(...)))));
         $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
@@ -193,7 +192,7 @@ class AppServiceProvider extends ServiceProvider
                     self::configInt('wpup.inventory.step_timeout_seconds'),
                     readOnlySite: true,
                 ),
-                new PlanStep($app->make(UpdatePlanner::class), self::configInt('wpup.planning.step_timeout_seconds')),
+                new PlanStep($app->make(UpdatePlanner::class), self::configInt('wpup.planning.step_timeout_seconds'), self::configInt('wpup.planning.verified_php_max_age_seconds')),
             ]));
         });
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(

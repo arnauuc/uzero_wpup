@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Planning;
 
+use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Runs\ReadOnlyStep;
 use App\Domain\Runs\StepContext;
@@ -19,7 +20,7 @@ final readonly class PlanStep implements ReadOnlyStep
 {
     public const string NAME = 'plan';
 
-    public function __construct(private UpdatePlanner $planner, private int $timeoutSeconds) {}
+    public function __construct(private UpdatePlanner $planner, private int $timeoutSeconds, private int $verifiedPhpMaxAgeSeconds) {}
 
     public function name(): string
     {
@@ -45,18 +46,14 @@ final readonly class PlanStep implements ReadOnlyStep
             return StepOutcome::failed('No hi ha cap inventari fresc per planificar.');
         }
 
-        // The plan never probes the web, so the PHP may be the CLI's. An earlier
-        // snapshot confirmed by the HTTP probe is a better source than that guess.
+        // The plan never probes the web, so the PHP may be the CLI's. The latest probe
+        // verified PHP stands in for it only if it is recent and the CLI agrees on the minor.
         $php = $snapshot->php_version;
         $source = $snapshot->php_source;
         if ($source === PhpVersionSource::Cli) {
-            $verified = SiteSnapshot::query()
-                ->where('site_id', $site->id)
-                ->where('php_source', PhpVersionSource::HttpProbe->value)
-                ->where('id', '<', $snapshot->id)
-                ->orderByDesc('id')
-                ->first();
-            if ($verified !== null) {
+            $verified = SiteSnapshot::latestWebVerifiedPhp($site, $this->verifiedPhpMaxAgeSeconds);
+            if ($verified !== null && PhpRuntime::isVersion($php) && PhpRuntime::isVersion($verified->php_version)
+                && PhpRuntime::minorOf($verified->php_version) === PhpRuntime::minorOf($php)) {
                 $php = $verified->php_version;
                 $source = $verified->php_source;
             }
