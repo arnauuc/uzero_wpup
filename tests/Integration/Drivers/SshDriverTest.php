@@ -12,6 +12,8 @@ use App\Domain\Drivers\Ssh\SshDriver;
 use App\Domain\Drivers\Ssh\SshDriverFactory;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
+use App\Enums\HostingPanel;
+use App\Enums\PhpVersionSource;
 use Tests\Contracts\SiteDriverContract;
 use Tests\Support\Fixtures;
 
@@ -104,4 +106,78 @@ describe('SshDriver', function (): void {
 
         expect(glob(sys_get_temp_dir().'/wpup-ssh-*') ?: [])->toBe($before);
     });
+});
+
+/*
+ * Real PHP detection (UZEROWPUP-29). wp83 has Plesk's PHP layout (PLESK_PHP_LAYOUT),
+ * wp74 does not.
+ */
+it('uses the PHP of the domain handler on Plesk', function (): void {
+    $runtime = sshFixture('wp83')->phpRuntime();
+
+    expect($runtime->source)->toBe(PhpVersionSource::PleskHandler)
+        ->and($runtime->binary)->toBe('/opt/plesk/php/8.3/bin/php')
+        ->and($runtime->minor())->toBe('8.3')
+        ->and($runtime->warnings)->toBe([]);
+});
+
+it('prefers the domain handler over a different configured binary, with a warning', function (): void {
+    $site = Fixtures::site('wp83');
+    $site->update(['php_binary' => '/usr/local/bin/php']);
+    $runtime = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'))->phpRuntime();
+
+    expect($runtime->source)->toBe(PhpVersionSource::PleskHandler)
+        ->and($runtime->binary)->toBe('/opt/plesk/php/8.3/bin/php')
+        ->and(implode(' ', $runtime->warnings))->toContain('/usr/local/bin/php');
+});
+
+it('falls back to the configured binary when the handler cannot be read', function (): void {
+    $site = Fixtures::site('wp74');
+    $site->update(['php_binary' => '/usr/local/bin/php']);
+    $runtime = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'))->phpRuntime();
+
+    expect($runtime->source)->toBe(PhpVersionSource::Configured)
+        ->and($runtime->minor())->toBe('7.4')
+        ->and(implode(' ', $runtime->warnings))->toContain('No s\'ha trobat el pool');
+});
+
+it('marks the CLI PHP as unverified when nothing better is known', function (): void {
+    $runtime = sshFixture('wp74')->phpRuntime();
+
+    expect($runtime->source)->toBe(PhpVersionSource::Cli)
+        ->and($runtime->binary)->toBe('php')
+        ->and(implode(' ', $runtime->warnings))->toContain('pot no ser el que serveix el web');
+});
+
+it('does not look for a Plesk handler on other panels', function (): void {
+    $site = Fixtures::site('wp83');
+    $site->hostingAccount()->firstOrFail()->hostingServer()->firstOrFail()->update(['panel' => HostingPanel::Other]);
+    $runtime = app(SshDriverFactory::class)->forSite($site->fresh() ?? $site, AuditActor::system('tests'))->phpRuntime();
+
+    expect($runtime->source)->toBe(PhpVersionSource::Cli);
+});
+
+it('reads the version from the last line when php.ini prints startup warnings', function (): void {
+    // A wrapper that, like a noisy php.ini, writes a warning to stdout first.
+    Fixtures::run('wp74', 'printf \'#!/bin/sh\necho "PHP Warning:  Module imagick already loaded in Unknown on line 0"\nexec php "$@"\n\' > "$HOME/noisy-php" && chmod +x "$HOME/noisy-php"');
+    $site = Fixtures::site('wp74');
+    $site->update(['php_binary' => '/var/www/vhosts/wp74.fixtures.test/noisy-php']);
+
+    try {
+        $runtime = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'))->phpRuntime();
+
+        expect($runtime->source)->toBe(PhpVersionSource::Configured)
+            ->and($runtime->version)->toMatch('/^7\.4\.\d+$/');
+    } finally {
+        Fixtures::run('wp74', 'rm -f "$HOME/noisy-php"');
+    }
+});
+
+it('falls back to the account PHP when the configured binary does not run', function (): void {
+    $site = Fixtures::site('wp74');
+    $site->update(['php_binary' => '/nonexistent/php']);
+    $runtime = app(SshDriverFactory::class)->forSite($site, AuditActor::system('tests'))->phpRuntime();
+
+    expect($runtime->source)->toBe(PhpVersionSource::Cli)
+        ->and(implode(' ', $runtime->warnings))->toContain('/nonexistent/php');
 });

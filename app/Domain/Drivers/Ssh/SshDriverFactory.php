@@ -8,6 +8,7 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Secrets\SecretStore;
+use App\Enums\HostingPanel;
 use App\Enums\SiteDriverType;
 use App\Models\Site;
 
@@ -35,7 +36,16 @@ final readonly class SshDriverFactory
             ?? throw new ConnectionFailed("El compte {$account->system_user} no té cap clau SSH: genera-la amb ssh-key:generate.");
         $key = $this->secrets->reveal($ref, $actor, "ssh:{$site->name}");
 
-        $target = new SshTarget($server->hostname, $server->ssh_port, $account->system_user, $server->pinned_host_key, $site->wp_path, $site->php_binary);
+        $domain = $server->panel === HostingPanel::Plesk ? parse_url($site->url, PHP_URL_HOST) : null;
+        $target = new SshTarget(
+            $server->hostname,
+            $server->ssh_port,
+            $account->system_user,
+            $server->pinned_host_key,
+            $site->wp_path,
+            $site->php_binary,
+            is_string($domain) && $domain !== '' ? strtolower($domain) : null,
+        );
 
         return new SshDriver(
             $target,

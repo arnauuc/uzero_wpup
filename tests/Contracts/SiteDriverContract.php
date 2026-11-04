@@ -50,6 +50,15 @@ final class SiteDriverContract
                 expect($plugins)->not->toBeEmpty();
             });
 
+            it('reports the PHP it runs WP-CLI with, consistent with the inventory', function () use ($factory): void {
+                $driver = $factory();
+                $runtime = $driver->phpRuntime();
+
+                expect($runtime->version)->toMatch('/^\d+\.\d+\.\d+/')
+                    ->and($runtime->binary)->not->toBe('')
+                    ->and($driver->installedComponents()->phpVersion)->toBe($runtime->version);
+            });
+
             it('runs WP-CLI and agrees with the inventory', function () use ($factory): void {
                 $driver = $factory();
                 $result = $driver->wp(['core', 'version']);

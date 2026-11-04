@@ -16,6 +16,8 @@ final readonly class SshTarget
         public ?string $pinnedHostKey,
         public string $wpPath,
         public ?string $phpBinary,
+        // Domain name on a Plesk server, to find its PHP handler (UZEROWPUP-29).
+        public ?string $pleskDomain = null,
     ) {}
 
     public function label(): string

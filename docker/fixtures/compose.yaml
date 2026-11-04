@@ -82,6 +82,7 @@ services:
       SITE_USER: sub_wp81
       SITE_UID: "10081"
       SITE_DOMAIN: wp81.fixtures.test
+      PLESK_PHP_LAYOUT: "1"
       HTTP_PORT: "8082"
       SITE_URL: http://127.0.0.1:8082
       DB_NAME: wp81
@@ -106,6 +107,7 @@ services:
       SITE_USER: sub_wp83
       SITE_UID: "10083"
       SITE_DOMAIN: wp83.fixtures.test
+      PLESK_PHP_LAYOUT: "1"
       HTTP_PORT: "8083"
       SITE_URL: http://127.0.0.1:8083
       DB_NAME: wp83
