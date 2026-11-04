@@ -26,10 +26,11 @@ use App\Models\SiteSnapshot;
  * - mu_plugins: list<array{slug: string, version: string, title: ?string}>
  * - environment.php: array{binary: string, cli_version: string, cli_source: string,
  *   warnings: list<string>, sapi: ?string, extensions: list<string>, blocked_reason: ?string}
- * - pending_updates: list<array{type: 'core'|'plugin'|'theme'|'woocommerce', slug: string, current_version: string,
- *   new_version: string, package_url: ?string (no query string), package_has_query: bool, requires_php: ?string,
+ * - pending_updates: list<array{type: 'core'|'plugin'|'theme'|'woocommerce', slug: string, wporg_slug: ?string,
+ *   current_version: string, new_version: string, package_host: ?string, requires_php: ?string,
  *   requires_wp: ?string, requires_wc: ?string, source: 'wordpress.org'|'transient', licensed: bool}>
- *   (UZEROWPUP-32, see PendingUpdates; licensed=false is a premium package without download URL)
+ *   (UZEROWPUP-32, see PendingUpdates; slug is the installed name; package URLs are never stored;
+ *   licensed=false is a premium package without download URL)
  * - environment.updates: array{warnings: list<string>}
  *
  * PHP: the version WP-CLI runs with (UZEROWPUP-29) is cross-checked with the

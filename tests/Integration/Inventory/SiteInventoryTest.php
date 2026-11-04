@@ -69,8 +69,8 @@ foreach (['wp74', 'wp83'] as $fixture) {
         $current = is_array($current) ? $current : [];
         $current['last_checked'] = time();
         $current['response'] = [
-            'hello-dolly/hello.php' => ['id' => 'w.org/plugins/hello-dolly', 'slug' => 'hello-dolly', 'new_version' => '99.0', 'package' => 'https://downloads.wordpress.org/plugin/hello-dolly.99.0.zip?k=secret'],
-            'premium/premium.php' => ['slug' => 'premium', 'new_version' => '2.0', 'package' => ''],
+            'hello.php' => ['id' => 'w.org/plugins/hello-dolly', 'slug' => 'hello-dolly', 'new_version' => '99.0', 'package' => 'https://downloads.wordpress.org/plugin/hello-dolly.99.0.zip?k=secret'],
+            'classic-editor/classic-editor.php' => ['slug' => 'classic-editor', 'new_version' => '2.0', 'package' => ''],
         ];
         $value = json_encode($current, JSON_THROW_ON_ERROR);
 
@@ -85,8 +85,8 @@ foreach (['wp74', 'wp83'] as $fixture) {
                 $bySlug[$update->slug] = $update->toArray();
             }
 
-            expect($bySlug['hello-dolly'])->toMatchArray(['new_version' => '99.0', 'package_url' => 'https://downloads.wordpress.org/plugin/hello-dolly.99.0.zip', 'package_has_query' => true, 'requires_php' => '7.4', 'licensed' => true])
-                ->and($bySlug['premium']['licensed'])->toBeFalse();
+            expect($bySlug['hello'])->toMatchArray(['new_version' => '99.0', 'wporg_slug' => 'hello-dolly', 'package_host' => 'downloads.wordpress.org', 'requires_php' => '7.4', 'licensed' => true])
+                ->and($bySlug['classic-editor']['licensed'])->toBeFalse();
         } finally {
             $driver->wp(['transient', 'delete', 'update_plugins', '--network']);
         }
@@ -101,7 +101,7 @@ foreach (['wp74', 'wp83'] as $fixture) {
 
         // Whatever the site has pending (depends on the date), each row has the full shape.
         foreach ($snapshot->pending_updates as $update) {
-            expect($update)->toBeArray()->toHaveKeys(['type', 'slug', 'current_version', 'new_version', 'package_url', 'package_has_query', 'requires_php', 'requires_wp', 'requires_wc', 'source', 'licensed']);
+            expect($update)->toBeArray()->toHaveKeys(['type', 'slug', 'current_version', 'new_version', 'wporg_slug', 'package_host', 'requires_php', 'requires_wp', 'requires_wc', 'source', 'licensed']);
         }
         expect($snapshot->environment['updates'] ?? null)->toHaveKey('warnings');
     });

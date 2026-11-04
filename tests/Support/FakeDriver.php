@@ -70,6 +70,12 @@ final class FakeDriver implements SiteDriver
     /** @var list<array<string, string>> answer of `wp core check-update` */
     public array $coreUpdates = [];
 
+    /** Thrown by every wp() call when set (lost connection, failed command…). */
+    public ?\Throwable $wpFailure = null;
+
+    /** Makes `wp core check-update` fail. */
+    public bool $coreCheckFails = false;
+
     /** Makes `wp transient get` fail with this stderr (exit 1). */
     public ?string $transientError = null;
 
@@ -146,19 +152,24 @@ final class FakeDriver implements SiteDriver
     {
         $this->wpCalls[] = $args;
 
+        if ($this->wpFailure !== null) {
+            throw $this->wpFailure;
+        }
+
         return match (true) {
             $args === ['core', 'version'] => $this->ok($this->coreVersion."\n"),
             $args === ['maintenance-mode', 'is-active'] => $this->maintenance
                 ? $this->ok('')
                 : new CommandResult(1, '', '', 1),
-            $args === ['core', 'check-update', '--format=json'] => $this->ok($this->coreUpdates === []
-                ? "Success: WordPress is at the latest version.\n"
-                : (string) json_encode($this->coreUpdates)),
+            $args === ['core', 'check-update', '--format=json'] => $this->coreCheckFails
+                ? new CommandResult(1, '', "Error: could not check\n", 1)
+                : $this->ok((string) json_encode($this->coreUpdates)),
             count($args) === 5 && array_slice($args, 0, 2) === ['transient', 'get'] && array_slice($args, 3) === ['--network', '--format=json'] => $this->transientError !== null
                 ? new CommandResult(1, '', $this->transientError, 1)
                 : (isset($this->transients[$args[2]])
                     ? $this->ok((string) json_encode($this->transients[$args[2]]))
-                    : new CommandResult(1, '', "Warning: Transient with key \"{$args[2]}\" is not set.\n", 1)),
+                    // Real WP-CLI: warning on stderr, empty stdout, exit 0.
+                    : new CommandResult(0, '', "Warning: Transient with key \"{$args[2]}\" is not set.\n", 1)),
             count($args) === 3 && $args[0] === 'option' && $args[1] === 'get' => isset($this->options[$args[2]])
                 ? $this->ok($this->options[$args[2]]."\n")
                 : new CommandResult(1, '', "Error: Could not get '{$args[2]}' option.\n", 1),

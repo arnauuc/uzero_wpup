@@ -164,6 +164,8 @@ return [
             'command_timeout_seconds' => 60,
             'max_lookups' => 100,
             'stale_after_seconds' => 43200,
+            // Requirements are cached per slug and version.
+            'cache_ttl_seconds' => 86400,
         ],
     ],
 
