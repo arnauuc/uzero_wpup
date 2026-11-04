@@ -32,6 +32,12 @@ use App\Models\SiteSnapshot;
  *   (UZEROWPUP-32, see PendingUpdates; slug is the installed name; package URLs are never stored;
  *   licensed=false is a premium package without download URL)
  * - environment.updates: array{warnings: list<string>}
+ * - environment.state (UZEROWPUP-33, see SiteState; a null field could not be read, see warnings):
+ *   array{woocommerce: ?array{version: string, db_version: ?string, db_update_needed: bool,
+ *   overridden_templates: list<array{file: string, theme_version: ?string, core_version: ?string, outdated: bool}>},
+ *   cron: ?array{disabled: bool, overdue_events: int, oldest_overdue_seconds: ?int},
+ *   maintenance: ?bool, disk_free_bytes: ?int, warnings: list<string>}
+ *   (woocommerce is null when WooCommerce is not installed and active)
  *
  * PHP: the version WP-CLI runs with (UZEROWPUP-29) is cross-checked with the
  * HTTP probe (UZEROWPUP-30). The web wins; if the minor versions differ, the
@@ -42,8 +48,9 @@ final readonly class SiteInventory
     /**
      * @param  HttpProbe|null  $probe  null only in tests that do not exercise it
      * @param  PendingUpdates|null  $pending  null only in tests that do not exercise it (pending_updates stays empty)
+     * @param  SiteState|null  $state  null only in tests that do not exercise it (environment.state is left out)
      */
-    public function __construct(private ?HttpProbe $probe = null, private ?PendingUpdates $pending = null) {}
+    public function __construct(private ?HttpProbe $probe = null, private ?PendingUpdates $pending = null, private ?SiteState $state = null) {}
 
     public const string THEME_ACTIVE = 'active';
 
@@ -64,6 +71,8 @@ final readonly class SiteInventory
 
         $pending = $this->pending?->read($driver, $installed, now()->getTimestamp());
 
+        $state = $this->state?->read($driver, $installed, now()->getTimestamp());
+
         $values = [
             'site_id' => $site->id,
             'core_version' => $installed->coreVersion,
@@ -77,7 +86,11 @@ final readonly class SiteInventory
             'dropins' => $this->simple($installed, ComponentType::Dropin),
             'mu_plugins' => $this->simple($installed, ComponentType::MuPlugin),
             'pending_updates' => array_map(static fn (PendingUpdate $u): array => $u->toArray(), $pending->updates ?? []),
-            'environment' => ['php' => $phpEnvironment, 'updates' => ['warnings' => $pending->warnings ?? []]],
+            'environment' => [
+                'php' => $phpEnvironment,
+                'updates' => ['warnings' => $pending->warnings ?? []],
+                ...($state === null ? [] : ['state' => $state->toArray()]),
+            ],
             'taken_at' => now(),
         ];
 

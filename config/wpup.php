@@ -167,6 +167,12 @@ return [
             // Requirements are cached per slug and version.
             'cache_ttl_seconds' => 86400,
         ],
+        // Pre-update state (UZEROWPUP-33): WP-CLI timeout per read, and how late
+        // a WP-Cron event must be (it runs on traffic) to count as overdue.
+        'state' => [
+            'command_timeout_seconds' => 60,
+            'cron_overdue_after_seconds' => 600,
+        ],
     ],
 
     /*

@@ -18,6 +18,7 @@ use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\WebFileName;
+use App\Domain\Inventory\SiteState;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
@@ -78,6 +79,30 @@ final class FakeDriver implements SiteDriver
 
     /** Makes `wp transient get` fail with this stderr (exit 1). */
     public ?string $transientError = null;
+
+    /** @var list<array{hook: string, next_run_gmt: string}> answer of `wp cron event list` */
+    public array $cronEvents = [];
+
+    public bool $cronDisabled = false;
+
+    public ?string $wcDbVersion = '9.8.0';
+
+    public bool $wcDbUpdateNeeded = false;
+
+    /** @var list<array{file: string, theme_version: string, core_version: string}> what the WooCommerce snippet reports */
+    public array $wcOverriddenTemplates = [];
+
+    /** Raw stdout of the WooCommerce snippet instead of the modelled answer (notices, broken JSON…). */
+    public ?string $wcSnippetOutput = null;
+
+    /** @var list<string> WP-CLI commands (first arguments joined by space, e.g. "cron event list") that fail with exit 1 */
+    public array $failingCommands = [];
+
+    /** Exit code of `wp maintenance-mode is-active` when it is neither 0 (active) nor 1 (not active), e.g. a PHP fatal (255). */
+    public ?int $maintenanceExitCode = null;
+
+    /** Makes freeDiskBytes() throw a DriverException. */
+    public bool $diskFails = false;
 
     /** @var list<list<string>> every WP-CLI call, for assertions */
     public array $wpCalls = [];
@@ -156,8 +181,22 @@ final class FakeDriver implements SiteDriver
             throw $this->wpFailure;
         }
 
+        foreach ($this->failingCommands as $failing) {
+            if (implode(' ', array_slice($args, 0, count(explode(' ', $failing)))) === $failing) {
+                return new CommandResult(1, '', "Error: {$failing} failed\n", 1);
+            }
+        }
+
         return match (true) {
+            $args === ['eval', SiteState::WOOCOMMERCE_SNIPPET] => $this->ok($this->wcSnippetOutput ?? (string) json_encode([
+                'db_version' => $this->wcDbVersion,
+                'db_update_needed' => $this->wcDbUpdateNeeded,
+                'overridden_templates' => $this->wcOverriddenTemplates,
+            ])),
+            $args === ['eval', SiteState::CRON_DISABLED_SNIPPET] => $this->ok($this->cronDisabled ? '1' : '0'),
+            $args === ['cron', 'event', 'list', '--fields=hook,next_run_gmt', '--format=json'] => $this->ok((string) json_encode($this->cronEvents)),
             $args === ['core', 'version'] => $this->ok($this->coreVersion."\n"),
+            $args === ['maintenance-mode', 'is-active'] && $this->maintenanceExitCode !== null => new CommandResult($this->maintenanceExitCode, '', "PHP Fatal error: boom\n", 1),
             $args === ['maintenance-mode', 'is-active'] => $this->maintenance
                 ? $this->ok('')
                 : new CommandResult(1, '', '', 1),
@@ -265,6 +304,10 @@ final class FakeDriver implements SiteDriver
 
     public function freeDiskBytes(): int
     {
+        if ($this->diskFails) {
+            throw new DriverException('df ha fallat');
+        }
+
         return $this->freeDisk;
     }
 
