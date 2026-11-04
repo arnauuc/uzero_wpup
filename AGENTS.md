@@ -143,6 +143,7 @@ Si una sessió s'executa amb Opus, delega a subagents Sonnet tot el que sigui im
 | Documentació (`docs/`, ADRs, README, aquest fitxer) | Català |
 | Commits, títols i cossos de PR, comentaris a Plane | Català |
 | Sortida de la CLI i informes per a l'operador | Català, amb cadenes traduïbles (`lang/ca`) |
+| Respostes, preguntes i resums dels agents a les persones de l'equip (terminal, xat) | **Sempre català**, també quan la tasca, el codi o els resultats d'eines són en anglès |
 
 ## Regles innegociables de seguretat
 
