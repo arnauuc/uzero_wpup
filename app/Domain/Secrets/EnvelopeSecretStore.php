@@ -63,6 +63,13 @@ final readonly class EnvelopeSecretStore implements SecretStore
         $this->audit->record($actor, 'secret.replace', AuditResult::Success, 'secret', $id, ['purpose' => $row->purpose]);
     }
 
+    public function purpose(string $id): ?string
+    {
+        $purpose = StoredSecret::query()->whereKey($id)->value('purpose');
+
+        return is_string($purpose) ? $purpose : null;
+    }
+
     public function reveal(string $id, AuditActor $actor, string $reason): Secret
     {
         $row = $this->find($id);

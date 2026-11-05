@@ -21,17 +21,19 @@ Es fa una sola vegada des del teu portàtil (no cal que sigui a la VM).
 
    `token_access_type=offline` és obligatori: sense, no es rep cap refresh token. Dropbox mostra un **codi d'autorització** d'un sol ús.
 
-2. Canvia el codi per un refresh token. No escriguis els valors a la línia de comandes: l'historial de la shell els desaria. Fes servir `read -s`:
+2. Canvia el codi per un refresh token. Cap valor no ha d'anar a la línia de comandes (`argv` és visible amb `ps` i queda a l'historial): llegeix-los amb `read -s` i passa'ls a `curl` com a configuració per l'entrada estàndard (`-K -`):
 
    ```bash
-   read -rp  'App key: '        APP_KEY
-   read -rsp 'App secret: '     APP_SECRET; echo
-   read -rsp 'Codi d autoritzacio: ' AUTH_CODE; echo
-   curl -sS https://api.dropboxapi.com/oauth2/token \
-     -d code="$AUTH_CODE" -d grant_type=authorization_code \
-     -u "$APP_KEY:$APP_SECRET"
+   read -rp  'App key: '             APP_KEY
+   read -rsp 'App secret: '          APP_SECRET; echo
+   read -rsp 'Codi d autoritzacio: ' AUTH_CODE;  echo
+   printf 'user = "%s:%s"\ndata = "grant_type=authorization_code"\ndata = "code=%s"\n' \
+     "$APP_KEY" "$APP_SECRET" "$AUTH_CODE" |
+     curl -sS -K - https://api.dropboxapi.com/oauth2/token
    unset APP_KEY APP_SECRET AUTH_CODE
    ```
+
+   `printf` és una ordre interna de la shell, per tant els valors no apareixen a cap procés. El codi no hauria de contenir `"` ni `\`; si en té, no és un codi vàlid.
 
 3. A la resposta JSON, desa el valor de `refresh_token` (no caduca; ignora l'`access_token`). Copia'l a un gestor de contrasenyes fins al pas següent i no el deixis en cap fitxer ni al portapapers més del necessari.
 
@@ -47,11 +49,13 @@ sudo -u wpup wpup backup-target:dropbox dropbox-principal --root=uzero/copies
 - `--root` és una carpeta relativa dins de la carpeta de l'app, en minúscules (lletres, xifres, `.`, `_`, `-` separades per `/`).
 - L'ordre demana **App key**, **App secret** i **Refresh token** sense eco. Mai es passen com a arguments.
 - Les credencials es desen xifrades al `SecretStore` i l'acció queda a l'`audit_log` (`backup_target.dropbox.set`). La sortida no mostra cap valor.
+- Abans de desar res, l'eina comprova les credencials amb Dropbox (una renovació del token d'accés). Si Dropbox les rebutja, no es desa res. Amb `--dry-run` no es contacta amb Dropbox.
+- Cal un terminal interactiu.
 - La comanda només crea o actualitza la destinació; no l'enllaça a cap lloc.
 
 ## Rotació
 
-Per canviar l'App secret, el refresh token o la carpeta, torna a executar la mateixa comanda amb el mateix nom: substitueix el secret existent i actualitza `--root`. Si canvies `--root`, les còpies que ja hi havia a la carpeta antiga no es mouen.
+Per canviar l'App secret o el refresh token, torna a executar la mateixa comanda amb el mateix nom **i la mateixa `--root`**: substitueix el secret existent. L'eina no deixa canviar `--root` d'una destinació que ja té còpies (les deixaria orfes a la carpeta antiga): crea una destinació nova amb un altre nom.
 
 ## Revocació
 

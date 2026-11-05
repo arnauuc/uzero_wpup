@@ -4,19 +4,14 @@ declare(strict_types=1);
 
 namespace App\Console\Commands\Credentials;
 
-use App\Domain\Backups\Dropbox\DropboxCredential;
-use App\Domain\Backups\Dropbox\DropboxException;
-use App\Domain\Backups\Dropbox\DropboxTargetFactory;
-use App\Domain\Secrets\Secret;
-use App\Domain\Secrets\SecretStore;
-use App\Enums\AuditResult;
-use App\Enums\BackupTargetType;
-use App\Models\BackupTarget;
+use App\Domain\Backups\Dropbox\DropboxSetupException;
+use App\Domain\Backups\Dropbox\DropboxTargetSetup;
 
 /**
- * Creates or updates a Dropbox backup destination and stores its credential
- * ({app_key, app_secret, refresh_token}) in the SecretStore. The three values
- * are typed without echo, never given as arguments (history and `ps`).
+ * Creates or updates a Dropbox backup destination (DropboxTargetSetup). The
+ * credential ({app_key, app_secret, refresh_token}) goes to the SecretStore;
+ * the three values are typed without echo, never given as arguments (history
+ * and `ps`).
  */
 final class BackupTargetDropboxCommand extends CredentialCommand
 {
@@ -30,31 +25,29 @@ final class BackupTargetDropboxCommand extends CredentialCommand
     protected function perform(): int
     {
         $name = trim($this->stringArgument('name'));
-        $root = $this->stringOption('root');
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/D', $name) !== 1) {
-            $this->error('El nom ha de tenir lletres, xifres, «.», «_» o «-» (màxim 128 caràcters).');
+        $root = $this->stringOption('root') ?? '';
+        $setup = app(DropboxTargetSetup::class);
 
-            return self::FAILURE;
-        }
-        if ($root === null || ! DropboxTargetFactory::isValidRoot($root)) {
-            $this->error('Cal --root amb una carpeta relativa en minúscules (lletres, xifres, «.», «_», «-» separades per «/»).');
-
-            return self::FAILURE;
-        }
-
-        $existing = BackupTarget::query()->where('name', $name)->first();
-        if ($existing !== null && $existing->type !== BackupTargetType::Dropbox) {
-            $this->error("Ja hi ha una destinació «{$name}» d'un altre tipus; tria un altre nom.");
+        try {
+            $existing = $setup->check($name, $root);
+        } catch (DropboxSetupException $e) {
+            $this->error($e->getMessage());
 
             return self::FAILURE;
         }
 
         if ($this->isDryRun()) {
             $this->info($existing === null
-                ? "[dry-run] Es crearia la destinació de Dropbox «{$name}» (carpeta «{$root}») i es demanarien les credencials."
-                : "[dry-run] S'actualitzaria la carpeta de «{$name}» a «{$root}» i se'n substituirien les credencials.");
+                ? "[dry-run] Es crearia la destinació de Dropbox «{$name}» (carpeta «{$root}»); es demanarien les credencials i es comprovarien amb Dropbox."
+                : "[dry-run] S'actualitzaria la destinació «{$name}» (carpeta «{$root}»); es demanarien les credencials, es comprovarien amb Dropbox i se substituirien.");
 
             return self::SUCCESS;
+        }
+
+        if (! $this->input->isInteractive()) {
+            $this->error('Cal un terminal interactiu per escriure les credencials sense eco.');
+
+            return self::FAILURE;
         }
 
         $values = [];
@@ -62,55 +55,18 @@ final class BackupTargetDropboxCommand extends CredentialCommand
             $typed = $this->secret($label);
             $values[$field] = is_string($typed) ? $typed : '';
         }
-        $json = json_encode($values);
-        unset($values);
 
-        $secret = new Secret($json === false ? '' : $json);
-        unset($json);
         try {
-            try {
-                $credential = DropboxCredential::fromSecret($secret);
-                $credential->appSecret->wipe();
-                $credential->refreshToken->wipe();
-            } catch (DropboxException $e) {
-                // The messages only name the field, never its value.
-                $this->error($e->getMessage().' No s\'ha desat res.');
+            $result = $setup->apply($name, $root, $values, $this->actor());
+        } catch (DropboxSetupException $e) {
+            $this->error($e->getMessage());
 
-                return self::FAILURE;
-            }
-
-            $store = app(SecretStore::class);
-            if ($existing === null) {
-                $target = BackupTarget::query()->create([
-                    'name' => $name,
-                    'type' => BackupTargetType::Dropbox,
-                    'config' => ['root' => $root],
-                    'credential_ref' => $store->put('dropbox-credential', $secret, $this->actor()),
-                    'retention' => [],
-                    'active' => true,
-                ]);
-            } else {
-                $target = $existing;
-                $ref = $existing->credential_ref;
-                if ($ref === null || $ref === '') {
-                    $ref = $store->put('dropbox-credential', $secret, $this->actor());
-                } else {
-                    $store->replace($ref, $secret, $this->actor());
-                }
-                $existing->forceFill(['config' => [...$existing->config, 'root' => $root], 'credential_ref' => $ref])->save();
-            }
-        } finally {
-            $secret->wipe();
+            return self::FAILURE;
         }
 
-        $this->audit->record($this->actor(), 'backup_target.dropbox.set', AuditResult::Success, 'backup_target', (string) $target->id, [
-            'name' => $name,
-            'root' => $root,
-            'created' => $existing === null,
-        ]);
-        $this->info($existing === null
-            ? "Destinació de Dropbox «{$name}» creada; credencials desades xifrades."
-            : "Destinació de Dropbox «{$name}» actualitzada; credencials substituïdes.");
+        $this->info($result->created
+            ? "Destinació de Dropbox «{$name}» creada; credencials comprovades i desades xifrades."
+            : "Destinació de Dropbox «{$name}» actualitzada; credencials comprovades i substituïdes.");
 
         return self::SUCCESS;
     }
