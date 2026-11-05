@@ -243,6 +243,25 @@ return [
             // Temporary files of the store older than this are removed on the next write.
             'stale_after_seconds' => 86_400,
         ],
+        // Dropbox destinations (UZEROWPUP-107): a Dropbox app with "App folder"
+        // access only; config.root of the backup_targets row is a folder inside
+        // it and credential_ref the SecretStore JSON {app_key, app_secret,
+        // refresh_token}.
+        'dropbox' => [
+            'api_url' => 'https://api.dropboxapi.com/2/',
+            'content_url' => 'https://content.dropboxapi.com/2/',
+            'token_url' => 'https://api.dropboxapi.com/oauth2/token',
+            // Upload-session chunk: a multiple of 4 MiB, at most 150 MiB.
+            'chunk_bytes' => 8 * 1024 * 1024,
+            // Retries of a call answered 429/5xx or cut off, and the longest pause.
+            'max_retries' => 3,
+            'max_retry_after_seconds' => 60,
+            // Chunks and downloads are buffered on disk beyond this.
+            'buffer_memory_bytes' => 1_048_576,
+            // Per request; a download of a whole archive is one request.
+            'connect_timeout_seconds' => 10,
+            'timeout_seconds' => 3600,
+        ],
     ],
 
     'inventory' => [
