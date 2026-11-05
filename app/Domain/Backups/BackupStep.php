@@ -83,15 +83,10 @@ final readonly class BackupStep implements Step
         $summary = sprintf(
             'Punt de restauració verificat%s: BD %s, codi %s',
             $point->reused ? ' (ja fet)' : '',
-            self::size($point->local(BackupKind::Database)->size_bytes ?? 0),
-            self::size($point->local(BackupKind::Files)->size_bytes ?? 0),
+            ByteSize::human($point->local(BackupKind::Database)->size_bytes ?? 0),
+            ByteSize::human($point->local(BackupKind::Files)->size_bytes ?? 0),
         ).($point->warnings === [] ? '' : sprintf('; %d avisos', count($point->warnings)));
 
         return StepOutcome::succeeded($summary, implode("\n", $point->warnings), $point->summary());
-    }
-
-    private static function size(int $bytes): string
-    {
-        return $bytes >= 1_048_576 ? sprintf('%.1f MB', $bytes / 1_048_576) : sprintf('%.1f kB', $bytes / 1024);
     }
 }

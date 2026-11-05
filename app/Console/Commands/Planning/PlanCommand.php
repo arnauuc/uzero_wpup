@@ -13,7 +13,6 @@ use App\Domain\Planning\PlanReport;
 use App\Domain\Planning\PlanRow;
 use App\Enums\RunType;
 use App\Models\Run;
-use App\Models\Site;
 
 /**
  * Plan of the updates of one or more sites as queued runs (UZEROWPUP-36). It
@@ -42,17 +41,8 @@ final class PlanCommand extends WpupCommand
 
     protected function perform(): int
     {
-        $sites = $this->selectedSites();
-        if ($sites === null) {
-            return self::FAILURE;
-        }
-
-        // Only a site named explicitly can be inactive (--tag and --all select active ones).
-        $active = $sites->filter(static fn (Site $site): bool => $site->active)->values();
-        foreach ($sites->reject(static fn (Site $site): bool => $site->active) as $inactive) {
-            $this->error("{$inactive->name}: inactiu, no es planifica.");
-        }
-        if ($active->isEmpty()) {
+        $active = $this->activeSelectedSites('no es planifica');
+        if ($active === null) {
             return self::FAILURE;
         }
 
@@ -71,7 +61,7 @@ final class PlanCommand extends WpupCommand
             return array_filter($rows, static fn (PlanRow $row): bool => ! $row->hasPlan()) === [] ? 0 : self::FAILURE;
         };
 
-        return $this->launchRuns(RunType::Plan, array_values($active->all()), [], null, $present);
+        return $this->exitCodeWithSkipped($this->launchRuns(RunType::Plan, $active, [], null, $present));
     }
 
     private function printRow(PlanRow $row): void

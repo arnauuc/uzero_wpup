@@ -87,7 +87,7 @@ return [
             'list', 'help',
             'site:', 'user:add', 'user:list', 'user:role', 'user:deactivate',
             'lock:', 'backup:', 'agent:', 'client:', 'billing:', 'ssh-key:', 'secrets:', 'staging:', 'run:',
-            'inventory', 'plan', 'update', 'verify', 'rollback', 'runs', 'report', 'cleanup', 'doctor', 'stats',
+            'inventory', 'plan', 'backup', 'update', 'verify', 'rollback', 'runs', 'report', 'cleanup', 'doctor', 'stats',
         ],
     ],
 
@@ -167,6 +167,12 @@ return [
         'retention_days' => 7,
         // The backup step of a run: dump, archive, and copies to every destination.
         'step_timeout_seconds' => 3600,
+        // `wpup backup --json` and `wpup backup:list --json` document version (UZEROWPUP-45).
+        'report_version' => 1,
+        // `wpup backup:list` shows this many files unless --limit says otherwise, and the
+        // date format of the expiry in the terminal output of both backup commands.
+        'list_limit' => 200,
+        'date_format' => 'Y-m-d H:i',
         // Read size when hashing an object at its destination.
         'hash_chunk_bytes' => 1_048_576,
         // Temporary copies of restore points on the tool server (0700). Not /tmp:
