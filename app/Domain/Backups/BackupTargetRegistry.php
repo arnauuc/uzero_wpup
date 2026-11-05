@@ -52,4 +52,19 @@ final class BackupTargetRegistry
 
         return $factory($record, $site, $actor);
     }
+
+    /**
+     * Only to delete copies that already exist there (retention): unlike
+     * for(), it also opens a destination that was deactivated or is no longer
+     * linked to the site, so that its restore points do not stay forever.
+     * Never use it to write or read.
+     *
+     * @throws BackupTargetException when the type is not registered
+     */
+    public function forDeletion(BackupTargetRecord $record, Site $site, AuditActor $actor): BackupTarget
+    {
+        $factory = $this->factories[$record->type->value] ?? throw BackupTargetException::unregistered($record->type->value);
+
+        return $factory($record, $site, $actor);
+    }
 }
