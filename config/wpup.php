@@ -86,7 +86,7 @@ return [
         'allowed_commands' => [
             'list', 'help',
             'site:', 'user:add', 'user:list', 'user:role', 'user:deactivate',
-            'lock:', 'backup:', 'backup-target:', 'agent:', 'client:', 'billing:', 'ssh-key:', 'secrets:', 'staging:', 'run:',
+            'lock:', 'backup:', 'backup-target:', 'agent:', 'client:', 'billing:', 'ssh-key:', 'secrets:', 'staging:', 'run:', 'tool:backup',
             'inventory', 'plan', 'backup', 'update', 'verify', 'rollback', 'runs', 'report', 'cleanup', 'doctor', 'stats',
         ],
     ],
@@ -293,6 +293,16 @@ return [
         'config_paths' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('WPUP_TOOL_BACKUP_CONFIG_PATHS', base_path('deploy/config.env')))))),
         // Report files, if any (the run reports themselves live in the database).
         'report_paths' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('WPUP_TOOL_BACKUP_REPORT_PATHS', storage_path('app/reports')))))),
+        // The backup_targets row (type dropbox, not linked to any site) the
+        // copies go to, under tool/ of its config.root.
+        'target' => env('WPUP_TOOL_BACKUP_TARGET', 'tool'),
+        // Daily, after the default update window (ADR-0006) and the purge of
+        // restore points, so the copy holds the night's runs.
+        'time' => env('WPUP_TOOL_BACKUP_TIME', '07:00'),
+        // The run's steps: the read-only check (also under --dry-run) and the
+        // backup (dump, encryption, upload, SHA-256 check and retention).
+        'check_timeout_seconds' => 300,
+        'step_timeout_seconds' => 3600,
         // Timeouts of the local commands (seconds).
         'dump_timeout_seconds' => 900,
         'archive_timeout_seconds' => 300,

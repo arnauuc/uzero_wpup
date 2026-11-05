@@ -13,7 +13,9 @@ use Closure;
 /**
  * Resolves a configured destination (backup_targets row) to its BackupTarget
  * for a site. Each destination type registers a factory once, in
- * AppServiceProvider; nothing else needs to change to add one.
+ * AppServiceProvider; nothing else needs to change to add one. Types that can
+ * also hold the tool's own backup (UZEROWPUP-47), which has no site, register
+ * a second factory with registerForTool().
  */
 final class BackupTargetRegistry
 {
@@ -23,11 +25,24 @@ final class BackupTargetRegistry
     private array $factories = [];
 
     /**
+     * @var array<string, Closure(BackupTargetRecord, AuditActor): BackupTarget>
+     */
+    private array $toolFactories = [];
+
+    /**
      * @param  Closure(BackupTargetRecord, Site, AuditActor): BackupTarget  $factory  credentials it reveals are audited as the actor
      */
     public function register(BackupTargetType $type, Closure $factory): void
     {
         $this->factories[$type->value] = $factory;
+    }
+
+    /**
+     * @param  Closure(BackupTargetRecord, AuditActor): BackupTarget  $factory  credentials it reveals are audited as the actor
+     */
+    public function registerForTool(BackupTargetType $type, Closure $factory): void
+    {
+        $this->toolFactories[$type->value] = $factory;
     }
 
     public function has(BackupTargetType $type): bool
@@ -51,6 +66,28 @@ final class BackupTargetRegistry
         $factory = $this->factories[$record->type->value] ?? throw BackupTargetException::unregistered($record->type->value);
 
         return $factory($record, $site, $actor);
+    }
+
+    /**
+     * The destination of the tool's own backup: an active destination that no
+     * site uses, so the tool's copies (which hold every site's data) never
+     * share a folder with a site's restore points.
+     *
+     * @throws BackupTargetException when the type cannot hold the tool's backup, or the destination is inactive or a site's
+     */
+    public function forTool(BackupTargetRecord $record, AuditActor $actor): BackupTarget
+    {
+        if ($record->sites()->exists()) {
+            throw new BackupTargetException("La destinació de còpia «{$record->name}» la fan servir llocs: la còpia de l'eina en necessita una de pròpia.");
+        }
+        if (! $record->active) {
+            throw new BackupTargetException("La destinació de còpia «{$record->name}» està desactivada.");
+        }
+
+        $factory = $this->toolFactories[$record->type->value]
+            ?? throw new BackupTargetException("Les destinacions de tipus {$record->type->value} no poden guardar la còpia de l'eina.");
+
+        return $factory($record, $actor);
     }
 
     /**

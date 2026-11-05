@@ -64,7 +64,12 @@ use App\Domain\Secrets\SecretStore;
 use App\Domain\Secrets\SecretStoreException;
 use App\Domain\Sites\SiteBlocking;
 use App\Domain\Sites\SiteTestStep;
+use App\Domain\ToolBackup\ToolArchiveBuilder;
+use App\Domain\ToolBackup\ToolBackupCheckStep;
+use App\Domain\ToolBackup\ToolBackupContents;
+use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
+use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
 use App\Enums\BackupTargetType;
 use App\Enums\RunType;
@@ -165,6 +170,8 @@ class AppServiceProvider extends ServiceProvider
 
             // Dropbox, an App folder (UZEROWPUP-107).
             $registry->register(BackupTargetType::Dropbox, static fn (BackupTargetRecord $record, Site $site, AuditActor $actor): BackupTarget => $app->make(DropboxTargetFactory::class)->make($record, $actor));
+            // ...also for the tool's own backup (UZEROWPUP-47), which has no site.
+            $registry->registerForTool(BackupTargetType::Dropbox, static fn (BackupTargetRecord $record, AuditActor $actor): BackupTarget => $app->make(DropboxTargetFactory::class)->make($record, $actor));
 
             return $registry;
         });
@@ -209,6 +216,14 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.tool_backup.retention.daily'),
             self::configInt('wpup.tool_backup.retention.monthly'),
             self::configInt('wpup.tool_backup.stale_after_seconds'),
+        ));
+        $this->app->bind(ToolBackupService::class, static fn (Application $app): ToolBackupService => new ToolBackupService(
+            $app->make(ToolArchiveBuilder::class),
+            $app->make(ToolBackupContents::class),
+            $app->make(ToolBackupSettings::class),
+            $app->make(BackupTargetRegistry::class),
+            $app->make(AuditLogger::class),
+            self::configString('wpup.tool_backup.target'),
         ));
         $this->app->bind(ToolDatabase::class, static fn (Application $app): ToolDatabase => ToolDatabase::fromConnection($app->make(DatabaseManager::class)->connection()));
         $this->app->bind(HttpProbe::class, static fn (Application $app): HttpProbe => new HttpProbe(
@@ -313,6 +328,11 @@ class AppServiceProvider extends ServiceProvider
                         $app->make(RunAuthorization::class), $app->make(AuditLogger::class), $app->make(SecretRedactor::class), self::configInt('wpup.backups.restore.step_timeout_seconds')),
                 ]);
             });
+            // The tool's own backup (UZEROWPUP-47): a read-only check (also under --dry-run), then the copy.
+            $resolver->register(RunType::ToolBackup, static fn (): Pipeline => new Pipeline([
+                new ToolBackupCheckStep($app->make(ToolBackupService::class), $app->make(RunAuthorization::class), self::configInt('wpup.tool_backup.check_timeout_seconds')),
+                new ToolBackupStep($app->make(ToolBackupService::class), $app->make(RunAuthorization::class), self::configInt('wpup.tool_backup.step_timeout_seconds')),
+            ]));
             // The plan reads a fresh inventory without touching the site (no probe, no block change).
             $resolver->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
                 new InventoryStep(

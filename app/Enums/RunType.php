@@ -23,16 +23,23 @@ enum RunType: string
     case KeyRotation = 'key_rotation';
     case SecretsRekey = 'secrets_rekey';
 
+    /*
+     * The tool's own daily backup (UZEROWPUP-47, ADR-0009 §3): it reveals the
+     * Dropbox credential, so it runs on the workers too. No site.
+     */
+    case ToolBackup = 'tool_backup';
+
     /**
      * Whether the run takes the concurrency slots (global, per server, staging;
      * ADR-0006) and the site lock. Credential operations do not: they are short,
-     * and a `site:test` must not wait hours behind a nightly update. Operations
-     * that change keys take the hosting account lock themselves.
+     * and a `site:test` must not wait hours behind a nightly update. The tool's
+     * backup never touches a site. Operations that change keys take the
+     * hosting account lock themselves.
      */
     public function usesConcurrencyLimits(): bool
     {
         return match ($this) {
-            self::SiteTest, self::KeyRotation, self::SecretsRekey => false,
+            self::SiteTest, self::KeyRotation, self::SecretsRekey, self::ToolBackup => false,
             default => true,
         };
     }
