@@ -208,6 +208,7 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.tool_backup.encrypt_timeout_seconds'),
             self::configInt('wpup.tool_backup.retention.daily'),
             self::configInt('wpup.tool_backup.retention.monthly'),
+            self::configInt('wpup.tool_backup.stale_after_seconds'),
         ));
         $this->app->bind(ToolDatabase::class, static fn (Application $app): ToolDatabase => ToolDatabase::fromConnection($app->make(DatabaseManager::class)->connection()));
         $this->app->bind(HttpProbe::class, static fn (Application $app): HttpProbe => new HttpProbe(

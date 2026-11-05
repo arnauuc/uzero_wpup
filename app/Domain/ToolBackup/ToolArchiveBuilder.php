@@ -8,6 +8,7 @@ use App\Domain\Secrets\SecretRedactor;
 use App\Support\PrivateDirectory;
 use DateTimeInterface;
 use FilesystemIterator;
+use Illuminate\Support\Facades\Log;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use RuntimeException;
@@ -31,6 +32,9 @@ use Throwable;
 final readonly class ToolArchiveBuilder
 {
     public const int MANIFEST_VERSION = 1;
+
+    /** Work directories and archives of the staging directory start with it. */
+    public const string WORK_PREFIX = 'tool-backup-';
 
     private const string AGE_HEADER = "age-encryption.org/v1\n";
 
@@ -56,7 +60,8 @@ final readonly class ToolArchiveBuilder
 
         try {
             $staging = PrivateDirectory::ensure($this->settings->stagingDir);
-            $work = PrivateDirectory::ensure($staging.'/tool-backup-'.bin2hex(random_bytes(8)));
+            $warnings = [...$this->sweep($staging), ...$warnings];
+            $work = PrivateDirectory::ensure($staging.'/'.self::WORK_PREFIX.bin2hex(random_bytes(8)));
         } catch (RuntimeException $e) {
             throw new ToolBackupException($e->getMessage());
         }
@@ -152,10 +157,34 @@ final readonly class ToolArchiveBuilder
             'files' => array_map(static fn (ToolBackupFile $f): array => ['path' => $f->source, 'archive_path' => $f->archivePath, 'size_bytes' => $f->sizeBytes], $files),
             'skipped' => $warnings,
         ];
-        if (file_put_contents($path, json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)) === false) {
+        if (file_put_contents($path, json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR)) === false) {
             throw new ToolBackupException("No s'ha pogut escriure el manifest de la còpia de l'eina.");
         }
         chmod($path, 0600);
+    }
+
+    /**
+     * Removes what a run that died left in the staging directory (plaintext
+     * work directories, archives), once older than any run can last.
+     *
+     * @return list<string> warnings
+     */
+    private function sweep(string $staging): array
+    {
+        $warnings = [];
+        $limit = time() - $this->settings->staleAfterSeconds;
+        foreach (glob($staging.'/'.self::WORK_PREFIX.'*', GLOB_NOSORT) ?: [] as $path) {
+            $mtime = @filemtime($path);
+            if ($mtime === false || $mtime >= $limit) {
+                continue;
+            }
+            is_dir($path) && ! is_link($path) ? self::remove($path) : @unlink($path);
+            $warning = 'S\'ha esborrat «'.basename($path)."» del directori de staging: l'havia deixat una còpia anterior que no va acabar.";
+            Log::warning($warning);
+            $warnings[] = $warning;
+        }
+
+        return $warnings;
     }
 
     /**

@@ -19,8 +19,9 @@ use UnexpectedValueException;
  * rule 2):
  * - any segment of its path matches DENIED_NAMES (.env*, keys, secrets…);
  * - it is a symbolic link (it could point anywhere);
- * - its content looks like a secret (CONTENT_MARKERS).
- * Each skipped path leaves a warning; missing paths too.
+ * - its path is not valid UTF-8 (it could not be reported nor audited);
+ * - its content looks like a secret (looksSecret(); in doubt, it does).
+ * Each skipped path leaves a warning; missing and unreadable paths too.
  */
 final readonly class ToolBackupContents
 {
@@ -30,11 +31,16 @@ final readonly class ToolBackupContents
         '.ssh', '.gnupg', 'keys', '.keys', '*secret*', '*credential*', 'credstore*',
     ];
 
-    /** Content that never leaves the VM, even encrypted, outside the SecretStore. */
+    /**
+     * Content that never leaves the VM, even encrypted, outside the SecretStore.
+     * Case-insensitive. The last one is a key/value pair (env, INI, YAML, JSON)
+     * whose key names a secret and whose value is not empty nor null.
+     */
     private const array CONTENT_MARKERS = [
-        '/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/',
-        '/AGE-SECRET-KEY-1/',
-        '/^[ \t]*(?:export[ \t]+)?[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APP_KEY|PRIVATE_KEY|KEK)[ \t]*=[ \t]*["\']?(?!null\b)[^\s"\'#]/m',
+        '/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/i',
+        '/AGE-SECRET-KEY-1/i',
+        '/\btskey-[a-z]+-[a-z0-9]/i',
+        '/["\']?[a-z0-9_.-]*(?:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|auth[_-]?key|private)[a-z0-9_.-]*["\']?[ \t]*[:=][ \t]*["\']?(?!(?:null|none)\b|~)[^\s"\',}#]/i',
     ];
 
     private const int SCAN_CHUNK_BYTES = 1_048_576;
@@ -52,19 +58,12 @@ final readonly class ToolBackupContents
 
         foreach ($paths as $path) {
             if (! str_starts_with($path, '/')) {
-                $warnings[] = "S'omet «{$path}»: el camí ha de ser absolut.";
+                $warnings[] = 'S\'omet «'.self::printable($path).'»: el camí ha de ser absolut.';
 
                 continue;
             }
             $path = rtrim($path, '/');
-            if (self::isDenied($path)) {
-                $warnings[] = "S'omet «{$path}»: pot contenir secrets i no s'inclou mai a la còpia.";
-
-                continue;
-            }
-            if (is_link($path)) {
-                $warnings[] = "S'omet «{$path}»: és un enllaç simbòlic.";
-
+            if (! self::allowed($path, $warnings)) {
                 continue;
             }
             if (is_file($path)) {
@@ -95,7 +94,42 @@ final readonly class ToolBackupContents
     }
 
     /**
-     * Regular files under $dir, pruning denied names and symbolic links.
+     * Whether $text looks like it holds a secret. Fails closed: a regex error
+     * counts as a secret.
+     */
+    public static function looksLikeSecret(string $text): bool
+    {
+        foreach (self::CONTENT_MARKERS as $marker) {
+            if (preg_match($marker, $text) !== 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  list<string>  $warnings
+     */
+    private static function allowed(string $path, array &$warnings): bool
+    {
+        $reason = match (true) {
+            ! mb_check_encoding($path, 'UTF-8') => 'el nom no és UTF-8 vàlid.',
+            self::isDenied($path) => "pot contenir secrets i no s'inclou mai a la còpia.",
+            is_link($path) => 'és un enllaç simbòlic.',
+            is_dir($path) && (! is_readable($path) || ! is_executable($path)) => "no s'hi pot entrar.",
+            default => null,
+        };
+        if ($reason !== null) {
+            $warnings[] = 'S\'omet «'.self::printable($path)."»: {$reason}";
+        }
+
+        return $reason === null;
+    }
+
+    /**
+     * Regular files under $dir, pruning (with a warning) what allowed() refuses.
+     * A subdirectory that cannot be listed is skipped, never the whole walk.
      *
      * @param  list<string>  $warnings
      * @return list<string>
@@ -103,21 +137,14 @@ final readonly class ToolBackupContents
     private function walk(string $dir, array &$warnings): array
     {
         $filter = static function (SplFileInfo $item) use (&$warnings): bool {
-            $path = $item->getPathname();
-            if ($item->isLink() || self::isDenied($path)) {
-                $warnings[] = "S'omet «{$path}»: ".($item->isLink() ? 'és un enllaç simbòlic.' : 'pot contenir secrets.');
-
-                return false;
-            }
-
-            return true;
+            return self::allowed($item->getPathname(), $warnings);
         };
 
         try {
             $iterator = new RecursiveIteratorIterator(new RecursiveCallbackFilterIterator(
                 new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS | FilesystemIterator::CURRENT_AS_FILEINFO),
                 $filter,
-            ));
+            ), RecursiveIteratorIterator::LEAVES_ONLY, RecursiveIteratorIterator::CATCH_GET_CHILD);
             $found = [];
             foreach ($iterator as $item) {
                 if ($item instanceof SplFileInfo && $item->isFile()) {
@@ -168,10 +195,8 @@ final readonly class ToolBackupContents
                     return true;
                 }
                 $window = $tail.$chunk;
-                foreach (self::CONTENT_MARKERS as $marker) {
-                    if (preg_match($marker, $window) === 1) {
-                        return true;
-                    }
+                if (self::looksLikeSecret($window)) {
+                    return true;
                 }
                 $tail = substr($window, -self::SCAN_OVERLAP_BYTES);
             }
@@ -180,5 +205,10 @@ final readonly class ToolBackupContents
         }
 
         return false;
+    }
+
+    private static function printable(string $path): string
+    {
+        return mb_scrub($path, 'UTF-8');
     }
 }

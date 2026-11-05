@@ -6,6 +6,7 @@ use App\Domain\Secrets\SecretRedactor;
 use App\Domain\ToolBackup\ToolArchiveBuilder;
 use App\Domain\ToolBackup\ToolBackupContents;
 use App\Domain\ToolBackup\ToolBackupException;
+use App\Domain\ToolBackup\ToolBackupFile;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolDatabase;
 use Carbon\CarbonImmutable;
@@ -45,7 +46,7 @@ function toolBackupAgeKey(string $dir): array
  */
 function toolBackupBuilder(array $recipients, array $paths, string $staging, ?ToolDatabase $database = null): ToolArchiveBuilder
 {
-    $settings = new ToolBackupSettings($recipients, $paths, [], $staging, 600, 600, 600, 30, 12);
+    $settings = new ToolBackupSettings($recipients, $paths, [], $staging, 600, 600, 600, 30, 12, 7200);
 
     return new ToolArchiveBuilder($settings, new ToolBackupContents, $database ?? app(ToolDatabase::class), app(SecretRedactor::class));
 }
@@ -199,4 +200,71 @@ it('fails without leaving plaintext or quoting the database password', function 
                 ->and(str_contains($e->getMessage(), $password))->toBeFalse();
         })
         ->and($f->stagingFiles())->toBe([]);
+});
+
+it('removes what a run that died left in the staging directory, and only that', function (): void {
+    $f = toolBackupFixture();
+    mkdir($f->staging.'/tool-backup-dead/files', 0700, true);
+    file_put_contents($f->staging.'/tool-backup-dead/db.dump', 'plaintext');
+    file_put_contents($f->staging.'/tool-backup-dead.tar.age', 'old');
+    mkdir($f->staging.'/tool-backup-busy', 0700);
+    file_put_contents($f->staging.'/other-file', 'not ours');
+    touch($f->staging.'/tool-backup-dead', time() - 7201);
+    touch($f->staging.'/tool-backup-dead.tar.age', time() - 7201);
+    touch($f->staging.'/other-file', time() - 7201);
+
+    $archive = toolBackupBuilder([$f->recipient], [$f->dir.'/etc/config.env'], $f->staging)->build(CarbonImmutable::now());
+    $expected = ['other-file', basename($archive->path), 'tool-backup-busy'];
+    sort($expected);
+
+    expect($f->stagingFiles())->toBe($expected)
+        ->and(implode("\n", $archive->warnings))->toContain('«tool-backup-dead»', '«tool-backup-dead.tar.age»');
+});
+
+it('recognises secrets in env, INI, YAML and JSON, whatever the case', function (string $text): void {
+    expect(ToolBackupContents::looksLikeSecret($text))->toBeTrue();
+})->with([
+    'env' => ["DB_PASSWORD=hunter2\n"],
+    'lowercase env' => ["db_password=hunter2\n"],
+    'export' => ["export API_KEY='abc'\n"],
+    'PASS' => ["SMTP_PASS=abc\n"],
+    'INI' => ["[db]\npassword = hunter2\n"],
+    'YAML' => ["database:\n  db_password: hunter2\n"],
+    'JSON' => ['{"user": "x", "password": "hunter2"}'],
+    'JSON token' => ['{"access_token":"sl.abc"}'],
+    'WordPress AUTH_KEY' => ["AUTH_KEY=abc\n"],
+    'AUTHKEY' => ["AUTHKEY: abc\n"],
+    'Tailscale authkey' => ["TS_AUTHKEY=tskey-auth-kAbC123CNTRL-xyz\n"],
+    'bare Tailscale key' => ["tailscale up tskey-auth-kAbC123\n"],
+    'secret' => ["client_secret: abc\n"],
+    'private' => ["private_key: abc\n"],
+    'PEM' => ["-----BEGIN RSA PRIVATE KEY-----\nabc\n"],
+    'age identity' => ["age-secret-key-1qqqq\n"],
+]);
+
+it('lets non-secret configuration through', function (string $text): void {
+    expect(ToolBackupContents::looksLikeSecret($text))->toBeFalse();
+})->with([
+    'empty password' => ["WPUP_APP_DIR=/opt/uzero-wpup\nDB_PASSWORD=\n"],
+    'null password' => ["password: null\n"],
+    'empty JSON' => ['{"password": ""}'],
+    'plain settings' => ["WPUP_WEB_PORT=8080\nWPUP_SERVICE_USER=wpup\n"],
+]);
+
+it('skips names that are not UTF-8 and subdirectories it cannot enter, but not the rest', function (): void {
+    $f = toolBackupFixture();
+    mkdir($f->dir.'/etc/reports/locked', 0700);
+    file_put_contents($f->dir.'/etc/reports/locked/inside.html', 'x');
+    chmod($f->dir.'/etc/reports/locked', 0000);
+    file_put_contents($f->dir."/etc/reports/run-\xff.html", 'x');
+
+    try {
+        [$files, $warnings] = (new ToolBackupContents)->collect([$f->dir.'/etc/reports']);
+    } finally {
+        chmod($f->dir.'/etc/reports/locked', 0700);
+    }
+
+    expect(array_map(static fn (ToolBackupFile $file): string => $file->source, $files))->toBe([$f->dir.'/etc/reports/run-12.html'])
+        ->and(implode("\n", $warnings))->toContain('reports/locked»: no s\'hi pot entrar', 'no és UTF-8')
+        ->and(mb_check_encoding(implode("\n", $warnings), 'UTF-8'))->toBeTrue();
 });

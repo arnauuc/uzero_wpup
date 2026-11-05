@@ -27,6 +27,7 @@ final readonly class ToolBackupSettings
         public int $encryptTimeoutSeconds,
         public int $dailyCopies,
         public int $monthlyCopies,
+        public int $staleAfterSeconds,
     ) {}
 
     /**

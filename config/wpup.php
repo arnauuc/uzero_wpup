@@ -297,6 +297,10 @@ return [
         'dump_timeout_seconds' => 900,
         'archive_timeout_seconds' => 300,
         'encrypt_timeout_seconds' => 900,
+        // Work directories (plaintext) and archives of the staging directory
+        // older than this are left by a run that died: the next run removes
+        // them. Longer than any run (wpup.runs.timeout_seconds).
+        'stale_after_seconds' => 7200,
         // Retention (ADR-0009): the latest copy of each of the most recent
         // `daily` days, plus the first copy of each of the most recent `monthly`
         // months (ToolBackupRetention).
