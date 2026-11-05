@@ -364,12 +364,15 @@ final class SshDriver implements SiteDriver
     public function restoreDatabase(RemoteFile $dump): void
     {
         $this->verify($dump);
-        $path = $this->path($dump->path);
-        $sql = escapeshellarg($path.'.restore.sql');
+        $path = $this->workPath($dump->path);
+        // A plain name of the work directory, never next to a stored object.
+        $plain = $this->path('restore-'.bin2hex(random_bytes(8)).'.sql');
+        $sql = escapeshellarg($plain);
         $this->ensureWpCli();
 
+        // umask 077: the decompressed dump holds the whole database.
         $this->mustExec(
-            'gunzip -c '.escapeshellarg($path)." > {$sql} && ".$this->wpCommand(['db', 'import', $path.'.restore.sql'])
+            'umask 077; gunzip -c '.escapeshellarg($path)." > {$sql} && ".$this->wpCommand(['db', 'import', $plain])
             ."; rc=\$?; rm -f {$sql}; exit \$rc",
             'La restauració de la base de dades',
             $this->settings->transferTimeoutSeconds,
@@ -384,7 +387,7 @@ final class SshDriver implements SiteDriver
         // excluded (listed inside it).
         $this->mustExec(
             'd=$(mktemp -d '.escapeshellarg($this->workDir().'/r-XXXXXX').')'
-            .' && tar -xzf '.escapeshellarg($this->path($archive->path)).' -C "$d"'
+            .' && tar -xzf '.escapeshellarg($this->workPath($archive->path)).' -C "$d"'
             .' && test -f "$d/.wpup-excludes"'
             .' && sed "s|^|/|" "$d/.wpup-excludes" > "$d.ex" && rm -f "$d/.wpup-excludes"'
             .' && rsync -a --delete --exclude-from="$d.ex" "$d/" '.escapeshellarg(rtrim($this->target->wpPath, '/').'/')
@@ -647,9 +650,14 @@ final class SshDriver implements SiteDriver
         return FileOutput::stat($result->stdout, $withChecksum, $name);
     }
 
+    /**
+     * The file (a WorkPath) still holds the expected bytes, computed on the site.
+     */
     private function verify(RemoteFile $file): void
     {
-        if ($this->fileInfo($file->path)->sha256 !== $file->sha256) {
+        $stat = $this->statFile($this->workPath($file->path), true, $file->path)
+            ?? throw new RemoteCommandFailed("El fitxer «{$file->path}» no existeix al lloc.");
+        if ($stat[2] !== $file->sha256 || $stat[0] !== $file->sizeBytes) {
             throw IntegrityCheckFailed::checksumMismatch($file->path);
         }
     }

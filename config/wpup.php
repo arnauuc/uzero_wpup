@@ -174,6 +174,12 @@ return [
         'prune_time' => '06:30',
         // The backup step of a run: dump, archive, and copies to every destination.
         'step_timeout_seconds' => 3600,
+        // `wpup backup:restore` (UZEROWPUP-46): checking the copies (SHA-256 at
+        // their destination) before anything is written, and the restore itself.
+        'restore' => [
+            'check_timeout_seconds' => 1800,
+            'step_timeout_seconds' => 3600,
+        ],
         // `wpup backup --json`, `backup:list --json` (UZEROWPUP-45) and `backup:prune --json` document version.
         'report_version' => 1,
         // `wpup backup:list` shows this many files unless --limit says otherwise, and the

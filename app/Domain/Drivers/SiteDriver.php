@@ -154,12 +154,21 @@ interface SiteDriver
     public function setMaintenanceMode(bool $enabled): void;
 
     /**
-     * @throws DriverException
+     * Replaces the site's tables with a dump made by dumpDatabase(). $dump->path
+     * is a WorkPath: a plain name, or an object of the site-local store, read in
+     * place (UZEROWPUP-46). Its size and SHA-256 are checked on the site first:
+     * a mismatch changes nothing.
+     *
+     * @throws DriverException including IntegrityCheckFailed on a mismatch
      */
     public function restoreDatabase(RemoteFile $dump): void;
 
     /**
-     * @throws DriverException
+     * Mirrors an archive made by archiveFiles() onto the WordPress root, never
+     * touching what it excluded. $archive->path is a WorkPath, checked like
+     * restoreDatabase()'s.
+     *
+     * @throws DriverException including IntegrityCheckFailed on a mismatch
      */
     public function restoreFiles(RemoteFile $archive): void;
 

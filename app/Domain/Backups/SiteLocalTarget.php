@@ -135,6 +135,16 @@ final class SiteLocalTarget implements BackupTarget
         }
     }
 
+    /**
+     * The stored object as a file of the site's work area, to restore it in
+     * place (UZEROWPUP-46): nothing is copied or transferred. The driver checks
+     * its size and SHA-256 on the site right before using it.
+     */
+    public function workFile(string $key, int $sizeBytes, string $sha256): RemoteFile
+    {
+        return new RemoteFile($this->path(BackupKey::valid($key)), $sizeBytes, $sha256);
+    }
+
     public function readStream(string $key)
     {
         BackupKey::valid($key);

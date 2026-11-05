@@ -152,6 +152,28 @@ final class SiteDriverContract
                 }
             });
 
+            it('restores the database from a nested work path, and refuses other bytes without changing anything', function () use ($factory): void {
+                $driver = $factory();
+                $original = trim($driver->wp(['option', 'get', 'blogname'])->stdout);
+                $dir = SiteDriverContract::remoteName('store');
+                $dump = $driver->dumpDatabase(SiteDriverContract::remoteName('db.sql.gz'));
+                $stored = new RemoteFile("{$dir}/site-1/r1/db.sql.gz", $dump->sizeBytes, $dump->sha256);
+                $driver->moveWorkFile($dump->path, $stored->path);
+
+                try {
+                    $driver->wp(['option', 'update', 'blogname', 'changed by the contract']);
+                    expect(fn () => $driver->restoreDatabase(new RemoteFile($stored->path, $stored->sizeBytes, str_repeat('0', 64))))->toThrow(DriverException::class)
+                        ->and(trim($driver->wp(['option', 'get', 'blogname'])->stdout))->toBe('changed by the contract');
+
+                    $driver->restoreDatabase($stored);
+
+                    expect(trim($driver->wp(['option', 'get', 'blogname'])->stdout))->toBe($original)
+                        ->and($driver->listWorkFiles($dir))->toHaveCount(1);
+                } finally {
+                    $driver->removeWorkFile($stored->path);
+                }
+            });
+
             it('installs an uploaded package idempotently and restores the files', function () use ($factory): void {
                 $driver = $factory();
                 $archive = $driver->archiveFiles(SiteDriverContract::remoteName('files.tar.gz'), ['wp-content/uploads']);
