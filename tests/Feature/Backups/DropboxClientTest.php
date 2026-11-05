@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Sleep;
 use Tests\Contracts\BackupTargetContract;
 use Tests\Support\FakeDropboxApi;
+use Tests\Support\ShortReadStream;
 
 /*
  * The Dropbox API client of the Dropbox destination (UZEROWPUP-107), against
@@ -303,4 +304,54 @@ it('logs every retried failure without secrets', function (): void {
     expect($logged)->toHaveCount(3)
         ->and($all)->toContain('files/get_metadata', 'HTTP 500', 'files/move_v2', 'already moved')
         ->and(str_contains($all, $token) || str_contains($all, $fake->appSecret) || str_contains($all, 'boom'))->toBeFalse();
+});
+
+it('resumes a cut download from what already arrived', function (bool $ignoreRange): void {
+    $fake = FakeDropboxApi::inTemp();
+    $client = dropboxClient($fake);
+    [$file, $sha] = dropboxSourceFile(9 * 1_048_576 + 3);
+    $source = fopen($file, 'rb');
+    assert(is_resource($source));
+    $client->upload('/big.tar.gz', $source);
+    fclose($source);
+    $fake->ignoreRange = $ignoreRange;
+    $fake->cutNext('files/download', 3 * 1_048_576);
+
+    expect(sha256Of($client->download('/big.tar.gz')))->toBe($sha)
+        ->and($fake->ranges)->toBe($ignoreRange ? [] : ['bytes=3145728-'])
+        ->and(array_count_values($fake->calls)['files/download'])->toBe(2);
+})->with(['with Range' => false, 'when the server ignores Range' => true]);
+
+it('fills every chunk of a stream that gives short reads', function (): void {
+    $fake = FakeDropboxApi::inTemp();
+    $client = dropboxClient($fake);
+    $contents = random_bytes(9 * 1_048_576 + 3);
+    $source = ShortReadStream::open($contents);
+
+    $client->upload('/short.gz', $source);
+    fclose($source);
+
+    expect($fake->chunkSizes)->toBe([4_194_304, 4_194_304, 1_048_579])
+        ->and(sha256Of($client->download('/short.gz')))->toBe(hash('sha256', $contents));
+});
+
+it('refuses a 200 whose body is not a JSON object, without quoting it', function (): void {
+    $fake = FakeDropboxApi::inTemp();
+    $client = dropboxClient($fake);
+    $client->metadata('/x');
+    $fake->failNext('files/get_metadata', new Response(200, [], '<html>proxy page with s3cr3t</html>'));
+
+    expect(fn () => $client->metadata('/x'))
+        ->toThrow(fn (DropboxException $e) => expect($e->getMessage())->toContain('objecte JSON')->and(str_contains($e->getMessage(), 's3cr3t'))->toBeFalse());
+});
+
+it('does not take a different file of the same size for a copy that already happened', function (): void {
+    $fake = FakeDropboxApi::inTemp();
+    $client = dropboxClient($fake);
+    $client->upload('/a.gz', BackupTargetContract::stream('aaa'));
+    $client->upload('/b.gz', BackupTargetContract::stream('bbb'));
+    $fake->failNext('files/copy_v2', new Response(500, [], 'down'));
+
+    expect(fn () => $client->copy('/a.gz', '/b.gz'))->toThrow(DropboxException::class, 'to/conflict')
+        ->and(FakeDropboxApi::contentHash($fake->dir.'/files/a.gz'))->not->toBe(FakeDropboxApi::contentHash($fake->dir.'/files/b.gz'));
 });

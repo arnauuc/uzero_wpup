@@ -70,7 +70,7 @@ final class DropboxTokenProvider
     {
         for ($retry = 1; ; $retry++) {
             try {
-                $response = $this->http->request('POST', $this->settings->tokenUrl, [
+                $response = $this->http->request('POST', $this->settings->tokenUrl, $this->settings->timeouts() + [
                     'http_errors' => false,
                     'form_params' => [
                         'grant_type' => 'refresh_token',

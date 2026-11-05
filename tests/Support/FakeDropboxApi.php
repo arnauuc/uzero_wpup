@@ -7,8 +7,10 @@ namespace Tests\Support;
 use App\Domain\Backups\Dropbox\DropboxCredential;
 use App\Domain\Backups\Dropbox\DropboxSettings;
 use App\Domain\Secrets\Secret;
+use GuzzleHttp\Exception\TransferException;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Psr7\LimitStream;
 use GuzzleHttp\Psr7\Response;
 use GuzzleHttp\Psr7\Utils;
 use Psr\Http\Message\RequestInterface;
@@ -47,6 +49,15 @@ final class FakeDropboxApi
 
     public ?string $lastToken = null;
 
+    /** @var list<string> Range headers received */
+    public array $ranges = [];
+
+    /** Answer Range requests with the whole file (200), as a server may. */
+    public bool $ignoreRange = false;
+
+    /** @var array<string, int> endpoint => bytes sent before the next transfer is cut */
+    private array $cut = [];
+
     /** @var array<string, bool> token => still valid */
     private array $tokens = [];
 
@@ -74,7 +85,7 @@ final class FakeDropboxApi
 
     public static function settings(int $chunkBytes = DropboxSettings::CHUNK_UNIT_BYTES, int $maxRetries = 2, int $maxRetryAfter = 0): DropboxSettings
     {
-        return new DropboxSettings(self::BASE.'2/', self::BASE.'content/2/', self::BASE.'oauth2/token', $chunkBytes, $maxRetries, $maxRetryAfter, 1_048_576, 1, 5, 65_536, 200, 65_536);
+        return new DropboxSettings(self::BASE.'2/', self::BASE.'content/2/', self::BASE.'oauth2/token', $chunkBytes, $maxRetries, $maxRetryAfter, 1_048_576, 1, 5, 65_536, 200, 65_536, 5);
     }
 
     public function credential(): DropboxCredential
@@ -96,6 +107,12 @@ final class FakeDropboxApi
     public function failNext(string $endpoint, ResponseInterface|Throwable $failure): void
     {
         $this->failures[$endpoint][] = $failure;
+    }
+
+    /** The next response of $endpoint is cut off after $bytes bytes reach the sink. */
+    public function cutNext(string $endpoint, int $bytes): void
+    {
+        $this->cut[$endpoint] = $bytes;
     }
 
     /** The next call to $endpoint is processed, but its response is lost (500). */
@@ -128,8 +145,14 @@ final class FakeDropboxApi
         $sink = $options['sink'] ?? null;
         if (is_resource($sink)) {
             $body = $response->getBody();
-            while (! $body->eof()) {
-                fwrite($sink, $body->read(1_048_576));
+            $limit = $this->cut[$endpoint] ?? null;
+            unset($this->cut[$endpoint]);
+            for ($sent = 0; ! $body->eof() && ($limit === null || $sent < $limit); $sent += strlen($data)) {
+                $data = $body->read($limit === null ? 1_048_576 : min(1_048_576, $limit - $sent));
+                fwrite($sink, $data);
+            }
+            if ($limit !== null) {
+                return Create::rejectionFor(new TransferException('Connection reset by peer', $request));
             }
 
             return Create::promiseFor($response->withBody(Utils::streamFor('')));
@@ -177,7 +200,7 @@ final class FakeDropboxApi
             'files/upload_session/start' => $this->startSession($request),
             'files/upload_session/append_v2' => $this->append($request, $arg),
             'files/upload_session/finish' => $this->finish($request, $arg),
-            'files/download' => is_file($this->local($p('path'))) ? new Response(200, [], Utils::tryFopen($this->local($p('path')), 'rb')) : self::error('path/not_found/'),
+            'files/download' => is_file($this->local($p('path'))) ? $this->download($this->local($p('path')), $request->getHeaderLine('Range')) : self::error('path/not_found/'),
             'files/get_metadata' => file_exists($this->local($p('path'))) ? self::json(200, $this->meta($this->local($p('path')))) : self::error('path/not_found/'),
             'files/list_folder' => is_dir($this->local($p('path'))) ? $this->page($p('path'), ($arg['recursive'] ?? false) === true, 0) : self::error('path/not_found/'),
             'files/list_folder/continue' => $this->continue($p('cursor')),
@@ -187,6 +210,18 @@ final class FakeDropboxApi
                 : (mkdir($this->local($p('path')), 0700, true) ? self::json(200, ['metadata' => $this->meta($this->local($p('path')))]) : self::error('other')),
             default => self::json(400, ['error_summary' => "unknown endpoint {$endpoint}"]),
         };
+    }
+
+    private function download(string $file, string $range): ResponseInterface
+    {
+        $body = Utils::streamFor(Utils::tryFopen($file, 'rb'));
+        if ($range === '' || $this->ignoreRange) {
+            return new Response(200, [], $body);
+        }
+        $this->ranges[] = $range;
+        $from = preg_match('/^bytes=(\d+)-$/', $range, $m) === 1 ? (int) $m[1] : 0;
+
+        return new Response(206, ['Content-Range' => "bytes {$from}-".((int) filesize($file) - 1).'/'.filesize($file)], new LimitStream($body, -1, $from));
     }
 
     private function store(RequestInterface $request, string $file): ResponseInterface
@@ -347,7 +382,21 @@ final class FakeDropboxApi
         $path = substr($file, strlen($this->files));
         $meta = ['.tag' => is_dir($file) ? 'folder' : 'file', 'name' => basename($file), 'path_display' => $path, 'path_lower' => strtolower($path), 'id' => 'id:'.md5($path)];
 
-        return is_dir($file) ? $meta : $meta + ['size' => filesize($file), 'server_modified' => gmdate('Y-m-d\TH:i:s\Z', (int) filemtime($file))];
+        return is_dir($file) ? $meta : $meta + ['size' => filesize($file), 'server_modified' => gmdate('Y-m-d\TH:i:s\Z', (int) filemtime($file)), 'content_hash' => self::contentHash($file)];
+    }
+
+    /** Dropbox's content_hash: SHA-256 of the SHA-256 of each 4 MiB block. */
+    public static function contentHash(string $file): string
+    {
+        $in = fopen($file, 'rb');
+        assert(is_resource($in));
+        $blocks = '';
+        while (($block = fread($in, DropboxSettings::CHUNK_UNIT_BYTES)) !== false && $block !== '') {
+            $blocks .= hash('sha256', $block, true);
+        }
+        fclose($in);
+
+        return hash('sha256', $blocks);
     }
 
     private static function error(string $summary): ResponseInterface
