@@ -264,7 +264,8 @@ class FakeDriver implements SiteDriver
             $args === ['config', 'path'] => $this->ok($this->configPath."\n"),
             count($args) === 2 && $args[0] === 'eval' && preg_match("/^echo realpath\\(dirname\\('(.*)'\\)\\);\$/", $args[1], $m) === 1 => $this->ok(dirname($m[1])),
             $args === ['core', 'version'] => $this->ok($this->coreVersion."\n"),
-            $args === ['maintenance-mode', 'is-active'] => $this->maintenance
+            $args === ['cache', 'flush'] => $this->ok("Success: The cache was flushed.\n"),
+            in_array($args, [['maintenance-mode', 'is-active'], ['maintenance-mode', 'is-active', '--skip-plugins', '--skip-themes']], true) => $this->maintenance
                 ? $this->ok('')
                 : new CommandResult(1, '', '', 1),
             $args === ['core', 'check-update', '--format=json'] => $this->coreCheckFails
@@ -373,8 +374,9 @@ class FakeDriver implements SiteDriver
 
     public function restoreDatabase(RemoteFile $dump): void
     {
+        $this->verifyWorkFile($dump);
         $this->writeCalls[] = 'restoreDatabase';
-        $data = json_decode($this->files[$dump->path] ?? throw new RemoteCommandFailed('No hi ha el dump.'), true);
+        $data = json_decode($this->files[$dump->path], true);
         $restored = [];
 
         foreach (is_array($data) && is_array($data['options'] ?? null) ? $data['options'] : [] as $name => $value) {
@@ -386,10 +388,22 @@ class FakeDriver implements SiteDriver
         $this->options = $restored;
     }
 
+    public function archiveExcludes(RemoteFile $archive): array
+    {
+        WorkPath::valid($archive->path);
+        $data = unserialize($this->files[$archive->path] ?? throw new RemoteCommandFailed("El fitxer «{$archive->path}» no existeix."), ['allowed_classes' => [ComponentVersion::class, ComponentType::class]]);
+        $excludes = is_array($data) && is_array($data['excludes'] ?? null) ? $data['excludes'] : throw new RemoteCommandFailed("L'arxiu no té llista d'exclusions.");
+
+        return array_values(array_filter($excludes, is_string(...)));
+    }
+
     public function restoreFiles(RemoteFile $archive): void
     {
+        $this->verifyWorkFile($archive);
         $this->writeCalls[] = 'restoreFiles';
-        $data = unserialize($this->files[$archive->path] ?? throw new RemoteCommandFailed("No hi ha l'arxiu."), ['allowed_classes' => [ComponentVersion::class, ComponentType::class]]);
+        // The mirror removes .maintenance, which no archive holds.
+        $this->maintenance = false;
+        $data = unserialize($this->files[$archive->path], ['allowed_classes' => [ComponentVersion::class, ComponentType::class]]);
 
         if (is_array($data) && is_string($data['core'] ?? null) && is_array($data['components'] ?? null)) {
             $this->coreVersion = $data['core'];
@@ -509,6 +523,18 @@ class FakeDriver implements SiteDriver
         $this->writeCalls[] = 'removeWorkFile';
         WorkPath::valid($path);
         unset($this->files[$path], $this->fileTimes[$path]);
+    }
+
+    /**
+     * A file to restore from: a WorkPath that still holds the expected bytes.
+     */
+    private function verifyWorkFile(RemoteFile $file): void
+    {
+        WorkPath::valid($file->path);
+        $content = $this->files[$file->path] ?? throw new RemoteCommandFailed("El fitxer «{$file->path}» no existeix.");
+        if (strlen($content) !== $file->sizeBytes || hash('sha256', $content) !== $file->sha256) {
+            throw IntegrityCheckFailed::checksumMismatch($file->path);
+        }
     }
 
     private function store(string $remotePath, string $content): RemoteFile

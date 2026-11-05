@@ -12,12 +12,10 @@ use App\Domain\Drivers\Exceptions\WorkFileNotFound;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\WorkPath;
 use App\Domain\Secrets\SecretRedactor;
-use App\Support\PrivateDirectory;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\HttpClientException;
 use Illuminate\Support\Facades\Log;
-use RuntimeException;
 
 /**
  * Restore points on the site's own server (ADR-0009, UZEROWPUP-40): under
@@ -135,6 +133,16 @@ final class SiteLocalTarget implements BackupTarget
         }
     }
 
+    /**
+     * The stored object as a file of the site's work area, to restore it in
+     * place (UZEROWPUP-46): nothing is copied or transferred. The driver checks
+     * its size and SHA-256 on the site right before using it.
+     */
+    public function workFile(string $key, int $sizeBytes, string $sha256): RemoteFile
+    {
+        return new RemoteFile($this->path(BackupKey::valid($key)), $sizeBytes, $sha256);
+    }
+
     public function readStream(string $key)
     {
         BackupKey::valid($key);
@@ -212,7 +220,8 @@ final class SiteLocalTarget implements BackupTarget
     /**
      * Removes this target's own temporary files older than $olderThanSeconds
      * that a crash left behind: uploads under the work directory
-     * ("store-….part") and canaries in the store. Nothing else is touched.
+     * ("store-….part"), temporary files of a restore (SiteDriver::RESTORE_TEMP_PATTERN)
+     * and canaries in the store. Nothing else is touched.
      * Returns how many were removed.
      *
      * @throws BackupTargetException
@@ -226,7 +235,8 @@ final class SiteLocalTarget implements BackupTarget
             foreach ($this->driver->listWorkFiles('') as $file) {
                 $canary = str_starts_with($file->path, $this->settings->root.'/')
                     && preg_match(self::CANARY_PATTERN, substr($file->path, strlen($this->settings->root) + 1)) === 1;
-                if (($canary || preg_match(self::TEMP_PATTERN, $file->path) === 1) && $file->modifiedAt !== null && $file->modifiedAt < $cutoff) {
+                $temporary = preg_match(self::TEMP_PATTERN, $file->path) === 1 || preg_match(SiteDriver::RESTORE_TEMP_PATTERN, $file->path) === 1;
+                if (($canary || $temporary) && $file->modifiedAt !== null && $file->modifiedAt < $cutoff) {
                     $this->driver->removeWorkFile($file->path);
                     $removed++;
                 }
@@ -465,51 +475,17 @@ final class SiteLocalTarget implements BackupTarget
     }
 
     /**
-     * The stream copied, in chunks, to a private file of the staging directory,
-     * and its SHA-256.
-     *
      * @param  resource  $stream
      * @return array{string, string}
      */
     private function localCopy($stream, string $key): array
     {
-        $path = $this->stagingFile($key);
-        $out = fopen($path, 'xb');
-        if ($out === false) {
-            throw BackupTargetException::failed("L'escriptura", $key, "no s'ha pogut crear el fitxer temporal");
-        }
-        chmod($path, 0600);
-        $hash = hash_init('sha256');
-
-        try {
-            if (stream_get_meta_data($stream)['seekable']) {
-                rewind($stream);
-            }
-            while (! feof($stream)) {
-                $chunk = fread($stream, max(1, $this->settings->copyChunkBytes));
-                if ($chunk === false || fwrite($out, $chunk) !== strlen($chunk)) {
-                    throw BackupTargetException::failed("L'escriptura", $key, 'còpia temporal interrompuda');
-                }
-                hash_update($hash, $chunk);
-            }
-        } catch (BackupTargetException $e) {
-            fclose($out);
-            @unlink($path);
-
-            throw $e;
-        }
-        fclose($out);
-
-        return [$path, hash_final($hash)];
+        return StagingCopy::copy($stream, $this->settings->stagingDir, $this->settings->copyChunkBytes, "L'escriptura", $key);
     }
 
     private function stagingFile(string $what): string
     {
-        try {
-            return PrivateDirectory::ensure($this->settings->stagingDir).'/put-'.bin2hex(random_bytes(16));
-        } catch (RuntimeException $e) {
-            throw BackupTargetException::failed("L'escriptura", $what, $e->getMessage());
-        }
+        return StagingCopy::path($this->settings->stagingDir, 'put', "L'escriptura", $what);
     }
 
     private static function tempName(): string

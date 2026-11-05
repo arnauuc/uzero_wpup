@@ -17,14 +17,16 @@ final class FilesBackup
 {
     /**
      * @param  string  $label  identifies the run in the file name (run id or timestamp)
+     * @param  list<string>|null  $excludes  instead of the configured ones (the point made before a
+     *                                       restore leaves out only what the restored archive left out)
      *
      * @throws BackupFailed
      * @throws DriverException
      */
-    public function run(SiteDriver $driver, bool $includeUploads, string $label): FilesBackupResult
+    public function run(SiteDriver $driver, bool $includeUploads, string $label, ?array $excludes = null): FilesBackupResult
     {
         $name = BackupFileName::make(config()->string('wpup.backups.files.file_name'), $label);
-        $excludes = $this->excludes($includeUploads);
+        $excludes ??= $this->excludes($includeUploads);
 
         // The tool's own work directory, when it is inside the root, never goes in.
         $workDir = $driver->workDirExclude();

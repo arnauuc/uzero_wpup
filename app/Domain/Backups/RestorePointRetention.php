@@ -38,7 +38,8 @@ use Throwable;
  *    account's lock, is held by someone else; a point protected by hand; a
  *    point of an unfinished run; of a rolled back or failed run nobody has
  *    reviewed (isIncident(), read from the run: the only source of truth);
- *    of a run an unfinished run was launched from (parent_run_id); and, on a
+ *    of a run an unfinished run was launched from (parent_run_id) or restores
+ *    from (a `backup:restore` run, flags.restore_point); and, on a
  *    site with an unfinished run, its newest point verified on the site (what
  *    a rollback restores).
  * 2. Purged when expired (every row's expires_at has passed).
@@ -300,13 +301,14 @@ final readonly class RestorePointRetention
         $unfinished = Run::query()
             ->whereNotIn('status', array_map(static fn (RunStatus $s): string => $s->value, array_filter(RunStatus::cases(), static fn (RunStatus $s): bool => $s->isTerminal())))
             ->whereIn('site_id', $rows->pluck('site_id')->unique()->values())
-            ->get(['id', 'site_id', 'parent_run_id']);
+            ->get(['id', 'site_id', 'parent_run_id', 'flags']);
         $context = new RetentionContext(
             $now,
             $localTargetIds,
             $runs,
             array_values(array_unique(array_map(static fn (Run $r): int => (int) $r->site_id, $unfinished->all()))),
             array_values(array_filter(array_map(static fn (Run $r): ?int => $r->parent_run_id, $unfinished->all()))),
+            array_values(array_filter(array_map(static fn (Run $r): ?string => is_string($r->flags[RestoreRequest::POINT_FLAG] ?? null) ? $r->flags[RestoreRequest::POINT_FLAG] : null, $unfinished->all()))),
         );
 
         $purges = $held = [];
@@ -392,7 +394,8 @@ final readonly class RestorePointRetention
             // A row whose run is gone (or not readable) is treated as unfinished: never guessed.
             $runId !== null && ($run === null || ! $run->status->isTerminal()) => RetentionHold::RunInProgress,
             $run !== null && $run->reviewed_at === null && self::isIncident($run) => RetentionHold::IncidentNotReviewed,
-            $runId !== null && in_array($runId, $context->parentRunIds, true) => RetentionHold::NeededByRun,
+            ($runId !== null && in_array($runId, $context->parentRunIds, true))
+                || in_array($point->directory, $context->neededDirectories, true) => RetentionHold::NeededByRun,
             $point->directory === $newestVerified => RetentionHold::NewestOfActiveSite,
             default => null,
         };

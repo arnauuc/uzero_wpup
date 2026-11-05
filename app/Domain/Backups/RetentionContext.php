@@ -18,6 +18,7 @@ final readonly class RetentionContext
      * @param  Collection<int, Run>  $runs  runs of the points, by id
      * @param  list<int>  $sitesWithUnfinishedRun
      * @param  list<int>  $parentRunIds  runs an unfinished run was launched from
+     * @param  list<string>  $neededDirectories  points an unfinished run restores from (flags.restore_point)
      */
     public function __construct(
         public CarbonImmutable $now,
@@ -25,5 +26,6 @@ final readonly class RetentionContext
         public Collection $runs,
         public array $sitesWithUnfinishedRun,
         public array $parentRunIds,
+        public array $neededDirectories = [],
     ) {}
 }

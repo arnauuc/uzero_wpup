@@ -45,6 +45,13 @@ final class SshDriver implements SiteDriver
 {
     private const GZIP_FAILED = '__WPUP_GZIP_FAIL__';
 
+    /**
+     * WP-CLI without plugins and themes for the backup, restore and maintenance
+     * commands: they must work on a site that a plugin or theme breaks with a
+     * fatal error (UZEROWPUP-46). Must-use plugins still load.
+     */
+    private const SAFE_MODE = ['--skip-plugins', '--skip-themes'];
+
     private const SHELL_MARKER = 'wpup-shell-ok';
 
     private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64', 'du', 'find', 'ln'];
@@ -201,8 +208,8 @@ final class SshDriver implements SiteDriver
         // password never reaches this command line: WP-CLI hands it to mysqldump
         // through the MYSQL_PWD environment variable. umask 077: the dump is 0600.
         $this->mustExec(
-            'umask 077; t=$('.$this->wpCommand(['db', 'tables', '--all-tables-with-prefix', '--format=csv']).')'
-            .' && '.$this->wpCommand(['db', 'export', $path.'.part.sql', '--single-transaction', '--quick']).' --tables="$t" >/dev/null'
+            'umask 077; t=$('.$this->wpCommand(['db', 'tables', '--all-tables-with-prefix', '--format=csv', ...self::SAFE_MODE]).')'
+            .' && '.$this->wpCommand(['db', 'export', $path.'.part.sql', '--single-transaction', '--quick', ...self::SAFE_MODE]).' --tables="$t" >/dev/null'
             ." && gzip -c {$sql} > {$gz} && mv {$gz} ".escapeshellarg($path)
             ."; rc=\$?; rm -f {$sql} {$gz}; exit \$rc",
             'El volcat de la base de dades',
@@ -220,7 +227,7 @@ final class SshDriver implements SiteDriver
             .'"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = %s AND TABLE_NAME LIKE %s ORDER BY TABLE_NAME",'
             .' "BASE TABLE", $wpdb->esc_like($wpdb->base_prefix)."%")));';
 
-        return self::names(WpCliOutput::stringList($this->wpOk(['eval', $code], 'La llista de taules de la base de dades')->stdout));
+        return self::names(WpCliOutput::stringList($this->wpOk(['eval', $code, ...self::SAFE_MODE], 'La llista de taules de la base de dades')->stdout));
     }
 
     public function dumpedTables(RemoteFile $dump): array
@@ -356,24 +363,38 @@ final class SshDriver implements SiteDriver
 
     public function setMaintenanceMode(bool $enabled): void
     {
-        if ($this->wp(['maintenance-mode', 'is-active'])->successful() !== $enabled) {
-            $this->wpOk(['maintenance-mode', $enabled ? 'activate' : 'deactivate'], 'El canvi del mode manteniment');
+        if ($this->wp(['maintenance-mode', 'is-active', ...self::SAFE_MODE])->successful() !== $enabled) {
+            $this->wpOk(['maintenance-mode', $enabled ? 'activate' : 'deactivate', ...self::SAFE_MODE], 'El canvi del mode manteniment');
         }
     }
 
     public function restoreDatabase(RemoteFile $dump): void
     {
         $this->verify($dump);
-        $path = $this->path($dump->path);
-        $sql = escapeshellarg($path.'.restore.sql');
+        $path = $this->workPath($dump->path);
+        // A plain name of the work directory, never next to a stored object.
+        $plain = $this->path('restore-'.bin2hex(random_bytes(8)).'.sql');
+        $sql = escapeshellarg($plain);
         $this->ensureWpCli();
 
+        // umask 077: the decompressed dump holds the whole database.
         $this->mustExec(
-            'gunzip -c '.escapeshellarg($path)." > {$sql} && ".$this->wpCommand(['db', 'import', $path.'.restore.sql'])
+            'umask 077; gunzip -c '.escapeshellarg($path)." > {$sql} && ".$this->wpCommand(['db', 'import', $plain, ...self::SAFE_MODE])
             ."; rc=\$?; rm -f {$sql}; exit \$rc",
             'La restauració de la base de dades',
             $this->settings->transferTimeoutSeconds,
         );
+    }
+
+    public function archiveExcludes(RemoteFile $archive): array
+    {
+        $out = $this->mustExec(
+            'tar -xzOf '.escapeshellarg($this->workPath($archive->path)).' .wpup-excludes',
+            "La lectura de les exclusions de l'arxiu",
+            $this->settings->transferTimeoutSeconds,
+        )->stdout;
+
+        return array_values(array_filter(array_map(trim(...), explode("\n", $out)), static fn (string $l): bool => $l !== ''));
     }
 
     public function restoreFiles(RemoteFile $archive): void
@@ -384,7 +405,7 @@ final class SshDriver implements SiteDriver
         // excluded (listed inside it).
         $this->mustExec(
             'd=$(mktemp -d '.escapeshellarg($this->workDir().'/r-XXXXXX').')'
-            .' && tar -xzf '.escapeshellarg($this->path($archive->path)).' -C "$d"'
+            .' && tar -xzf '.escapeshellarg($this->workPath($archive->path)).' -C "$d"'
             .' && test -f "$d/.wpup-excludes"'
             .' && sed "s|^|/|" "$d/.wpup-excludes" > "$d.ex" && rm -f "$d/.wpup-excludes"'
             .' && rsync -a --delete --exclude-from="$d.ex" "$d/" '.escapeshellarg(rtrim($this->target->wpPath, '/').'/')
@@ -647,9 +668,14 @@ final class SshDriver implements SiteDriver
         return FileOutput::stat($result->stdout, $withChecksum, $name);
     }
 
+    /**
+     * The file (a WorkPath) still holds the expected bytes, computed on the site.
+     */
     private function verify(RemoteFile $file): void
     {
-        if ($this->fileInfo($file->path)->sha256 !== $file->sha256) {
+        $stat = $this->statFile($this->workPath($file->path), true, $file->path)
+            ?? throw new RemoteCommandFailed("El fitxer «{$file->path}» no existeix al lloc.");
+        if ($stat[2] !== $file->sha256 || $stat[0] !== $file->sizeBytes) {
             throw IntegrityCheckFailed::checksumMismatch($file->path);
         }
     }

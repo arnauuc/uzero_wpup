@@ -42,6 +42,8 @@ final readonly class InventoryStep implements ReadOnlyStep
         private ?SiteBlocking $blocking = null,
         /** Never writes to the site nor changes its block, with or without --dry-run (plan runs, UZEROWPUP-36). */
         private bool $readOnlySite = false,
+        /** A failed inventory is a warning and the run goes on without a snapshot (restore of a broken site, UZEROWPUP-46). */
+        private bool $advisory = false,
     ) {}
 
     public function name(): string
@@ -77,7 +79,7 @@ final readonly class InventoryStep implements ReadOnlyStep
         try {
             $driver = ($this->driverFor)($site, $actor);
         } catch (DriverException $e) {
-            return StepOutcome::failed("No s'ha pogut fer l'inventari: {$e->getMessage()}");
+            return $this->failure("No s'ha pogut fer l'inventari: {$e->getMessage()}");
         }
 
         try {
@@ -85,14 +87,14 @@ final readonly class InventoryStep implements ReadOnlyStep
             $result = $this->inventory->takeWithPrerequisites($site, $driver, $context->run, probeWeb: ! $this->leavesSiteAlone($context));
         } catch (ConnectionFailed $e) {
             // Transient: the site is not blocked for a network failure.
-            return StepOutcome::failed("No s'ha pogut fer l'inventari: {$e->getMessage()}");
+            return $this->failure("No s'ha pogut fer l'inventari: {$e->getMessage()}");
         } catch (DriverException $e) {
             // WP-CLI does not work on the site: it cannot be updated either.
             if ($this->blocking !== null && ! $this->leavesSiteAlone($context)) {
                 $this->blocking->blockForWpCli($site, $actor);
             }
 
-            return StepOutcome::failed("No s'ha pogut fer l'inventari: {$e->getMessage()}");
+            return $this->failure("No s'ha pogut fer l'inventari: {$e->getMessage()}");
         }
         $snapshot = $result->snapshot;
 
@@ -114,6 +116,13 @@ final readonly class InventoryStep implements ReadOnlyStep
             'snapshot_id' => $snapshot->id,
             ...($block === null ? [] : ['block' => ['outcome' => $block->outcome->value, 'reason' => $block->reason]]),
         ]);
+    }
+
+    private function failure(string $reason): StepOutcome
+    {
+        return $this->advisory
+            ? StepOutcome::succeeded("{$reason} Es continua sense inventari.", $reason, ['failed' => true])
+            : StepOutcome::failed($reason);
     }
 
     /**
