@@ -8,6 +8,7 @@ use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
 use App\Domain\Backups\Dropbox\DropboxAdapter;
 use App\Domain\Backups\Dropbox\DropboxClient;
+use App\Domain\Backups\Dropbox\DropboxRetryPolicy;
 use App\Domain\Backups\Dropbox\DropboxSettings;
 use App\Domain\Backups\Dropbox\DropboxTargetFactory;
 use App\Domain\Backups\Dropbox\DropboxTokenProvider;
@@ -22,6 +23,8 @@ use GuzzleHttp\Client;
 use GuzzleHttp\HandlerStack;
 use League\Flysystem\Config;
 use League\Flysystem\UnableToCreateDirectory;
+use League\Flysystem\UnableToDeleteDirectory;
+use League\Flysystem\UnableToDeleteFile;
 use Tests\Contracts\BackupTargetContract;
 use Tests\Support\FakeDropboxApi;
 
@@ -119,7 +122,9 @@ function dropboxAdapter(FakeDropboxApi $fake): DropboxAdapter
     $redactor = app(SecretRedactor::class);
     $settings = FakeDropboxApi::settings();
 
-    return new DropboxAdapter(new DropboxClient($http, new DropboxTokenProvider($http, $fake->credential(), $redactor, $settings), $redactor, $settings), 'wpup');
+    $retry = new DropboxRetryPolicy($settings, $redactor);
+
+    return new DropboxAdapter(new DropboxClient($http, new DropboxTokenProvider($http, $fake->credential(), $redactor, $settings, $retry), $redactor, $settings, $retry), 'wpup');
 }
 
 it('creates folders idempotently but not over a file', function (): void {
@@ -157,4 +162,32 @@ it('refuses capital letters and lists keys in lowercase', function (): void {
 
     expect(fn () => $target->put('Site-1/r2/db.sql.gz', BackupTargetContract::stream('x')))->toThrow(BackupTargetException::class, 'majúscules')
         ->and(array_map(static fn ($o): string => $o->key, $target->list()))->toBe(['site-1/r1/db.sql.gz']);
+});
+
+it('deletes files and folders only as what they are', function (): void {
+    $adapter = dropboxAdapter(FakeDropboxApi::inTemp());
+    $adapter->write('d/a.gz', 'x', new Config);
+
+    $adapter->delete('missing.gz');
+    $adapter->deleteDirectory('missing');
+
+    expect(fn () => $adapter->delete('d'))->toThrow(UnableToDeleteFile::class, 'folder')
+        ->and(fn () => $adapter->deleteDirectory('d/a.gz'))->toThrow(UnableToDeleteDirectory::class, 'file')
+        ->and($adapter->fileExists('d/a.gz'))->toBeTrue();
+
+    $adapter->delete('d/a.gz');
+    $adapter->deleteDirectory('d');
+
+    expect($adapter->fileExists('d/a.gz'))->toBeFalse()
+        ->and($adapter->directoryExists('d'))->toBeFalse();
+});
+
+it('answers the size and date of what it just stored without asking again', function (): void {
+    $fake = FakeDropboxApi::inTemp();
+    $stored = dropboxTarget($fake)->put('site-1/r1/db.sql.gz', BackupTargetContract::stream('rows'));
+
+    // Two existence checks and the destination check of the move; no more.
+    expect($stored->sizeBytes)->toBe(4)
+        ->and($stored->modifiedAt)->not->toBeNull()
+        ->and(array_count_values($fake->calls)['files/get_metadata'])->toBe(3);
 });

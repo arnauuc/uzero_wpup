@@ -256,8 +256,11 @@ return [
             // Retries of a call answered 429/5xx or cut off, and the longest pause.
             'max_retries' => 3,
             'max_retry_after_seconds' => 60,
-            // Chunks and downloads are buffered on disk beyond this.
-            'buffer_memory_bytes' => 1_048_576,
+            // Downloads and chunks of non-seekable sources are buffered in
+            // unlinked files of staging_dir (never /tmp), read this much at a
+            // time; a source that gives nothing this many reads in a row is stuck.
+            'read_chunk_bytes' => 1_048_576,
+            'max_idle_reads' => 1000,
             // Per request (an upload chunk, an API call). A download is one
             // request however big: it only has the idle timeout and resumes
             // with Range when cut.

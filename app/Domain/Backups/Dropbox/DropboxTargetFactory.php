@@ -64,7 +64,8 @@ final readonly class DropboxTargetFactory
 
         // Timeouts are set per request (DropboxSettings::timeouts()).
         $http = new Client($this->handler === null ? [] : ['handler' => HandlerStack::create($this->handler)]);
-        $client = new DropboxClient($http, new DropboxTokenProvider($http, $credential, $this->redactor, $this->settings), $this->redactor, $this->settings);
+        $retry = new DropboxRetryPolicy($this->settings, $this->redactor);
+        $client = new DropboxClient($http, new DropboxTokenProvider($http, $credential, $this->redactor, $this->settings, $retry), $this->redactor, $this->settings, $retry);
 
         return new FlysystemTarget(new Filesystem(new DropboxAdapter($client, $root)), $this->redactor, $this->hashChunkBytes);
     }

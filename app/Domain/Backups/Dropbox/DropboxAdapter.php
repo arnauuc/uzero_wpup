@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace App\Domain\Backups\Dropbox;
 
+use Closure;
 use League\Flysystem\Config;
 use League\Flysystem\DirectoryAttributes;
 use League\Flysystem\FileAttributes;
 use League\Flysystem\FilesystemAdapter;
+use League\Flysystem\FilesystemException;
 use League\Flysystem\UnableToCheckDirectoryExistence;
 use League\Flysystem\UnableToCheckFileExistence;
 use League\Flysystem\UnableToCopyFile;
@@ -29,16 +31,24 @@ use League\Flysystem\Visibility;
  * redaction. Dropbox has no visibility (everything is private to the app)
  * nor MIME types.
  *
- * Dropbox paths are case-insensitive and path_display is not reliable above
- * the last component, so paths with capital letters are refused (backup keys
- * are generated in lowercase) and listings use path_lower. Like other
- * adapters, move() and copy() replace what is at the destination.
+ * Case (a deliberate decision): Dropbox paths are case-insensitive and
+ * path_display is not reliable above the last component, so paths with
+ * capital letters are refused (every key the tool generates is lowercase:
+ * "site-{id}/run{id}/db.sql.gz", FlysystemTarget's temporary names) and
+ * listings use path_lower. BackupKey itself is not changed.
+ *
+ * Like other adapters, move() and copy() replace what is at the destination.
+ * The metadata of what this adapter just wrote or moved answers fileSize()
+ * and lastModified() without another call.
  */
-final readonly class DropboxAdapter implements FilesystemAdapter
+final class DropboxAdapter implements FilesystemAdapter
 {
-    private string $root;
+    private readonly string $root;
 
-    public function __construct(private DropboxClient $client, string $root)
+    /** @var array<string, array<mixed>> Dropbox path => metadata of what this adapter just stored there */
+    private array $stored = [];
+
+    public function __construct(private readonly DropboxClient $client, string $root)
     {
         $this->root = '/'.trim($root, '/');
     }
@@ -80,7 +90,9 @@ final readonly class DropboxAdapter implements FilesystemAdapter
     public function writeStream(string $path, $contents, Config $config): void
     {
         try {
-            $this->client->upload($this->path($path), $contents);
+            $full = $this->path($path);
+            unset($this->stored[$full]);
+            $this->stored[$full] = $this->client->upload($full, $contents);
         } catch (DropboxException $e) {
             throw UnableToWriteFile::atLocation($path, $e->getMessage(), $e);
         }
@@ -107,24 +119,12 @@ final readonly class DropboxAdapter implements FilesystemAdapter
 
     public function delete(string $path): void
     {
-        try {
-            $this->client->delete($this->path($path));
-        } catch (DropboxException $e) {
-            if (! $e->isNotFound()) {
-                throw UnableToDeleteFile::atLocation($path, $e->getMessage(), $e);
-            }
-        }
+        $this->remove($path, 'file', static fn (string $reason, ?DropboxException $e): UnableToDeleteFile => UnableToDeleteFile::atLocation($path, $reason, $e));
     }
 
     public function deleteDirectory(string $path): void
     {
-        try {
-            $this->client->delete($this->path($path));
-        } catch (DropboxException $e) {
-            if (! $e->isNotFound()) {
-                throw UnableToDeleteDirectory::atLocation($path, $e->getMessage(), $e);
-            }
-        }
+        $this->remove($path, 'folder', static fn (string $reason, ?DropboxException $e): UnableToDeleteDirectory => UnableToDeleteDirectory::atLocation($path, $reason, $e));
     }
 
     public function createDirectory(string $path, Config $config): void
@@ -183,8 +183,13 @@ final readonly class DropboxAdapter implements FilesystemAdapter
     public function move(string $source, string $destination, Config $config): void
     {
         try {
-            $this->clear($this->path($destination));
-            $this->client->move($this->path($source), $this->path($destination));
+            [$from, $to] = [$this->path($source), $this->path($destination)];
+            unset($this->stored[$from], $this->stored[$to]);
+            $this->clear($to);
+            $moved = $this->client->move($from, $to);
+            if ($moved !== null) {
+                $this->stored[$to] = $moved;
+            }
         } catch (DropboxException $e) {
             throw UnableToMoveFile::because($e->getMessage(), $source, $destination);
         }
@@ -193,8 +198,10 @@ final readonly class DropboxAdapter implements FilesystemAdapter
     public function copy(string $source, string $destination, Config $config): void
     {
         try {
-            $this->clear($this->path($destination));
-            $this->client->copy($this->path($source), $this->path($destination));
+            $to = $this->path($destination);
+            unset($this->stored[$to]);
+            $this->clear($to);
+            $this->client->copy($this->path($source), $to);
         } catch (DropboxException $e) {
             throw UnableToCopyFile::because($e->getMessage(), $source, $destination);
         }
@@ -202,8 +209,40 @@ final readonly class DropboxAdapter implements FilesystemAdapter
 
     private function clear(string $path): void
     {
-        if ($this->client->metadata($path) !== null) {
-            $this->client->delete($path);
+        try {
+            if ($this->client->metadata($path) !== null) {
+                $this->client->delete($path);
+            }
+        } catch (DropboxException $e) {
+            // Gone in between: nothing to clear.
+            if (! $e->isNotFound()) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * Deletes $path if it is a $tag ("file" or "folder"); nothing if it is not there.
+     *
+     * @param  Closure(string, DropboxException|null): FilesystemException  $failure
+     */
+    private function remove(string $path, string $tag, Closure $failure): void
+    {
+        try {
+            $full = $this->path($path);
+            unset($this->stored[$full]);
+            $meta = $this->client->metadata($full);
+            if ($meta === null) {
+                return;
+            }
+            if (($meta['.tag'] ?? null) !== $tag) {
+                throw $failure($tag === 'file' ? 'it is a folder' : 'it is a file', null);
+            }
+            $this->client->delete($full);
+        } catch (DropboxException $e) {
+            if (! $e->isNotFound()) {
+                throw $failure($e->getMessage(), $e);
+            }
         }
     }
 
@@ -223,7 +262,8 @@ final readonly class DropboxAdapter implements FilesystemAdapter
     private function attributes(string $path, string $type): FileAttributes
     {
         try {
-            $meta = $this->client->metadata($this->path($path));
+            $full = $this->path($path);
+            $meta = $this->stored[$full] ?? $this->client->metadata($full);
         } catch (DropboxException $e) {
             throw UnableToRetrieveMetadata::create($path, $type, $e->getMessage(), $e);
         }
