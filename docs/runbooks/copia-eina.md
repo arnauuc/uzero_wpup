@@ -56,7 +56,7 @@ La còpia va a la fila de `backup_targets` que es diu `tool` (`WPUP_TOOL_BACKUP_
 - amb un `config.root` que no és el mateix, ni a dins ni a sobre, que el de cap altra destinació de Dropbox (les credencials no es poden comparar, així que es rebutja encara que siguin apps diferents);
 - amb la credencial al `SecretStore` (`credential_ref`).
 
-Es crea amb `wpup backup-target:dropbox` (UZEROWPUP-107, en un PR a part), per exemple amb `config.root` = `eina`. Les còpies queden a `Aplicacions/<app>/eina/tool/` del Dropbox.
+Es crea amb `sudo -u wpup /opt/uzero-wpup/wpup backup-target:dropbox tool --root=eina` (vegeu [dropbox.md](dropbox.md)), que no l'enllaça a cap lloc. Les còpies queden a `Aplicacions/<app>/eina/tool/` del Dropbox.
 
 ### 3. Comprovar-ho
 
