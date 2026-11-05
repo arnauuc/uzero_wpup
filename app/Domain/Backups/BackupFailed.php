@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Domain\Backups;
 
 use RuntimeException;
+use Throwable;
 
 /**
  * A restore-point backup could not be made or did not pass validation. Messages
@@ -37,5 +38,18 @@ final class BackupFailed extends RuntimeException
     public static function invalidFileName(string $name): self
     {
         return new self("El nom de fitxer remot de la còpia no és vàlid: «{$name}».");
+    }
+
+    public static function notVerified(string $destination, string $key): self
+    {
+        return new self("La còpia «{$key}» no supera la verificació a la destinació «{$destination}» (la mida o el SHA-256 no coincideixen amb l'origen): no hi ha punt de restauració.");
+    }
+
+    /**
+     * @param  string  $reason  already redacted
+     */
+    public static function incomplete(string $reason, ?Throwable $previous = null): self
+    {
+        return new self("No s'ha pogut fer el punt de restauració: {$reason}", 0, $previous);
     }
 }
