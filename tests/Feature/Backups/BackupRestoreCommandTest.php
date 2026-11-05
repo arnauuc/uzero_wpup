@@ -13,6 +13,7 @@ use App\Enums\UserRole;
 use App\Models\Backup;
 use App\Models\Run;
 use App\Models\Site;
+use App\Models\SiteSnapshot;
 use App\Models\User;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Redis;
@@ -56,10 +57,10 @@ it('queues a restore run with the chosen copies once the site name is typed', fu
     $site = Site::factory()->create(['name' => 'botiga']);
     $rows = restoreCommandPoint($site);
 
-    command('backup:restore', ['site' => 'botiga', '--point' => 'manual-1', '--files' => true, '--db' => true])
+    command('backup:restore', ['site' => 'botiga', '--point' => 'manual-1', '--files' => true, '--db' => true, '--accept-data-loss' => true])
         ->expectsOutputToContain("es restauraran els fitxers i la base de dades des del punt «site-{$site->id}/manual-1»")
-        ->expectsOutputToContain('cal --accept-data-loss')
-        ->expectsQuestion("Això sobreescriu els fitxers i la base de dades del lloc botiga i no es pot desfer des d'aquí. Escriu el nom del lloc per confirmar-ho", 'botiga')
+        ->expectsOutputToContain('activa el mode manteniment')
+        ->expectsQuestion('Això sobreescriu els fitxers i la base de dades del lloc botiga, amb les comandes, els clients i els usuaris entrats des de la còpia. Escriu el nom del lloc per confirmar-ho', 'botiga')
         ->expectsOutputToContain('encuada (restore, botiga)')
         ->assertSuccessful();
 
@@ -68,8 +69,10 @@ it('queues a restore run with the chosen copies once the site name is typed', fu
         ->and($run->flags)->toMatchArray([
             'dry_run' => false,
             RestoreRequest::POINT_FLAG => "site-{$site->id}/manual-1",
-            RestoreRequest::BACKUPS_FLAG => ['files' => $rows['files']->id, 'database' => $rows['database']->id],
-            RestoreRequest::ACCEPT_DATA_LOSS_FLAG => false,
+            RestoreRequest::BACKUPS_FLAG => ['files' => [$rows['files']->id], 'database' => [$rows['database']->id]],
+            RestoreRequest::ACCEPT_DATA_LOSS_FLAG => true,
+            RestoreRequest::DATA_LOSS_CONFIRMED_FLAG => true,
+            RestoreRequest::WITHOUT_PRE_BACKUP_FLAG => false,
         ]);
 });
 
@@ -78,7 +81,7 @@ it('does nothing when the typed name is not the site', function (): void {
     restoreCommandPoint($site);
 
     command('backup:restore', ['site' => 'botiga', '--point' => 'manual-1', '--files' => true])
-        ->expectsQuestion("Això sobreescriu els fitxers del lloc botiga i no es pot desfer des d'aquí. Escriu el nom del lloc per confirmar-ho", 'sí')
+        ->expectsQuestion('Això sobreescriu els fitxers del lloc botiga. Escriu el nom del lloc per confirmar-ho', 'sí')
         ->expectsOutputToContain("No s'ha restaurat res.")
         ->assertExitCode(1);
 
@@ -98,17 +101,45 @@ it('needs --force or --dry-run without a terminal or with --json', function (arr
     'json' => [['--json' => true]],
 ]);
 
-it('queues without asking with --force, and carries --accept-data-loss and explicit rows', function (): void {
-    $site = Site::factory()->create(['name' => 'botiga']);
+it('queues without asking with --force when no shop data is at stake, with explicit rows', function (): void {
+    $site = Site::factory()->create(['name' => 'blog']);
+    SiteSnapshot::factory()->create(['site_id' => $site->id, 'plugins' => [['slug' => 'classic-editor', 'type' => 'plugin', 'version' => '1.6.3', 'active' => true, 'title' => null]]]);
     $rows = restoreCommandPoint($site);
 
-    $exit = Artisan::call('backup:restore', ['site' => 'botiga', '--backup' => [(string) $rows['database']->id], '--db' => true, '--accept-data-loss' => true, '--force' => true, '--wait' => true]);
+    $exit = Artisan::call('backup:restore', ['site' => 'blog', '--backup' => [(string) $rows['database']->id], '--db' => true, '--force' => true, '--wait' => true]);
 
-    expect($exit)->toBe(0)->and(Artisan::output())->toContain('Ho acceptes amb --accept-data-loss.')
+    expect($exit)->toBe(0)
         ->and(Run::query()->sole()->flags)->toMatchArray([
-            RestoreRequest::BACKUPS_FLAG => ['database' => $rows['database']->id],
-            RestoreRequest::ACCEPT_DATA_LOSS_FLAG => true,
+            RestoreRequest::BACKUPS_FLAG => ['database' => [$rows['database']->id]],
+            RestoreRequest::DATA_LOSS_CONFIRMED_FLAG => false,
         ]);
+});
+
+it('never lets --force restore a shop database, or restore without the point of the current state', function (array $options, string $message): void {
+    $site = Site::factory()->create(['name' => 'botiga']);
+    SiteSnapshot::factory()->create(['site_id' => $site->id, 'plugins' => [['slug' => 'woocommerce', 'type' => 'woocommerce', 'version' => '10.1.0', 'active' => false, 'title' => null]]]);
+    restoreCommandPoint($site);
+
+    $exit = Artisan::call('backup:restore', ['site' => 'botiga', '--point' => 'manual-1', '--force' => true, '--no-interaction' => true] + $options);
+
+    expect($exit)->toBe(1)->and(Artisan::output())->toContain($message)
+        ->and(Run::query()->count())->toBe(0);
+})->with([
+    'shop without --accept-data-loss' => [['--db' => true], 'Cal --accept-data-loss'],
+    'shop with --accept-data-loss' => [['--db' => true, '--accept-data-loss' => true], "esborra dades d'una botiga: cal confirmar-la en un terminal interactiu, també amb --force"],
+    'without the point' => [['--files' => true, '--without-pre-backup' => true], "sense punt de l'estat actual: cal confirmar-la en un terminal interactiu"],
+]);
+
+it('queues --without-pre-backup only after the site name is typed', function (): void {
+    $site = Site::factory()->create(['name' => 'botiga']);
+    restoreCommandPoint($site);
+
+    command('backup:restore', ['site' => 'botiga', '--point' => 'manual-1', '--files' => true, '--without-pre-backup' => true, '--force' => true])
+        ->expectsOutputToContain('restaura igualment (--without-pre-backup)')
+        ->expectsQuestion("Això sobreescriu els fitxers del lloc botiga, i si no es pot fer el punt de l'estat actual no hi haurà manera de tornar enrere. Escriu el nom del lloc per confirmar-ho", 'botiga')
+        ->assertSuccessful();
+
+    expect(Run::query()->sole()->flags[RestoreRequest::WITHOUT_PRE_BACKUP_FLAG] ?? null)->toBeTrue();
 });
 
 it('queues a dry run without asking', function (): void {

@@ -123,16 +123,25 @@ El planificador fa la mateixa neteja cada dia a les `backups.prune_time` (per de
 Restaura un lloc, al mateix lloc, des d'una còpia registrada (`backup:list`): els fitxers (`--files`), la base de dades (`--db`) o tots dos.
 
 ```bash
-sudo -u wpup wpup backup:restore botiga --point=run12 --files --db --dry-run
-sudo -u wpup wpup backup:restore botiga --backup=41 --backup=42 --files --db --accept-data-loss
+sudo -u wpup wpup backup:restore botiga --point=run12 --files --db --accept-data-loss --dry-run
+sudo -u wpup wpup backup:restore blog --backup=41 --files --force
 ```
 
-- **Què es restaura:** `--point` indica el punt de restauració (el directori `site-3/run12`, el seu nom `run12` o `manual-…`, o l'id de l'execució); de cada tipus es fa servir la còpia verificada al servidor del lloc o, si no n'hi ha, la d'una destinació externa. `--backup=<id>` (repetible) tria les còpies exactes, sempre d'un mateix punt. Es refusa qualsevol còpia d'un altre lloc, esborrada o no verificada.
-- **Com:** s'encua una execució del tipus `restore` amb el bloqueig del lloc. Fa un inventari nou; comprova que cada còpia encara té el SHA-256 registrat a la seva destinació; fa un punt de restauració verificat de l'estat actual (si no el pot fer, no restaura res); torna a comprovar el SHA-256 de cada còpia, a la destinació i al lloc, just abans de restaurar; restaura els fitxers i després la base de dades; i comprova que WP-CLI respon i buida la memòria cau d'objectes.
-- **Si alguna cosa falla**, no es desfà res automàticament: el resultat diu què s'ha restaurat i la comanda per tornar al punt de l'estat d'abans (`--point=run<execució de la restauració> --files --db`).
-- **Confirmació:** cal escriure el nom del lloc. Sense terminal interactiu, o amb `--json`, cal `--force` (o `--dry-run`). Amb `--dry-run` només fa l'inventari i la comprovació de les còpies, sense tocar res.
-- **Botigues (regla de seguretat 4):** la base de dades es reemplaça sencera, i es perd tot el que s'hi ha escrit des de la còpia. En un lloc amb WooCommerce, l'execució s'atura abans de tocar res si no s'indica `--accept-data-loss`. Mentre la marca d'aigua de comandes i usuaris (UZEROWPUP-58) no es pugui comparar, l'eina no sap quines comandes es perdrien i ho considera sempre possible.
-- **Auditoria:** cada intent queda a `backup.restore` amb l'execució, el punt d'origen, les còpies, què s'ha restaurat, el punt de l'estat d'abans i si s'ha acceptat perdre dades.
+- **Què es restaura:** `--point` indica el punt de restauració (el directori `site-3/run12`, el seu nom `run12` o `manual-…`, o l'id de l'execució). De cada tipus es fa servir la còpia verificada al servidor del lloc; si no hi és o ja no té el SHA-256 registrat, una còpia externa verificada del mateix punt, amb un avís. `--backup=<id>` (repetible) tria les còpies exactes, sempre d'un mateix punt, sense alternativa. Es refusa qualsevol còpia d'un altre lloc, esborrada o no verificada.
+- **Ordre de l'execució** (tipus `restore`, amb el bloqueig del lloc):
+  1. Inventari nou, de només lectura i orientatiu: si falla (un lloc trencat), es continua sense, i mai bloqueja el lloc.
+  2. Comprovació de les còpies abans d'escriure res: SHA-256 a la seva destinació i, de l'arxiu de fitxers, què va excloure.
+  3. Mode manteniment (si no ho estava), abans del punt de l'estat actual, perquè no entri cap comanda entre aquest punt i la restauració.
+  4. Punt de restauració verificat de l'estat actual. L'arxiu de codi exclou només el que l'arxiu restaurat va excloure, de manera que cobreix tot el que la restauració pot sobreescriure o esborrar (també `uploads` si l'arxiu restaurat els inclou). Si no es pot fer, no es restaura res.
+  5. Restauració dels fitxers, un altre cop el mode manteniment (el mirall de fitxers esborra `.maintenance`) i la base de dades. Al servidor del lloc es restaura des del magatzem mateix, i el driver en torna a comprovar la mida i el SHA-256 just abans. Una còpia externa es verifica mentre es descarrega i es puja al lloc amb el checksum comprovat.
+  6. Comprovació que WP-CLI respon, buidatge de la memòria cau d'objectes i el mode manteniment com estava abans, també si alguna cosa ha fallat.
+- Les ordres de WP-CLI de còpia, restauració i manteniment s'executen amb `--skip-plugins --skip-themes`, perquè un lloc que un plugin o un tema fa caure amb un error fatal es pugui copiar i restaurar. Un mu-plugin trencat continua impedint-ho.
+- **Si alguna cosa falla**, no es desfà res automàticament: el resultat diu què s'ha restaurat i, si s'ha restaurat alguna cosa, la comanda per tornar al punt de l'estat d'abans (`--point=run<execució de la restauració> --files --db`, més `--accept-data-loss` en una botiga).
+- **Confirmació:** cal escriure el nom del lloc. Sense terminal interactiu, o amb `--json`, cal `--force` (o `--dry-run`), excepte en els dos casos de sota, que sempre demanen una persona al terminal. Amb `--dry-run` només fa l'inventari i la comprovació de les còpies, sense tocar res.
+- **Botigues (regla de seguretat 4):** la base de dades es reemplaça sencera, i es perd tot el que s'hi ha escrit des de la còpia. Mentre la marca d'aigua de comandes i usuaris (UZEROWPUP-58) no es pugui comparar, l'eina no sap quines comandes es perdrien. Per això, restaurar la base de dades d'una botiga (WooCommerce instal·lat segons l'últim inventari, o un lloc sense cap inventari conegut) demana `--accept-data-loss` **i** escriure el nom del lloc en un terminal interactiu: `--force` no ho salta. L'execució ho torna a comprovar amb el seu propi inventari i s'atura abans de tocar res si no hi ha totes dues coses.
+- **Lloc trencat:** si el punt de l'estat actual no es pot fer ni amb el mode sense plugins, `--without-pre-backup` permet restaurar igualment. Només de manera interactiva (mai amb `--force`), i l'execució ho diu: no hi haurà manera de tornar a l'estat d'abans.
+- **Temporals:** els fitxers temporals d'una restauració al directori de treball del lloc (`restore-<hex>.…`) s'esborren en acabar, els que hagi deixat una restauració interrompuda s'esborren a l'inici de la següent, i la neteja del magatzem esborra els antics.
+- **Auditoria:** cada intent queda a `backup.restore` amb l'execució, el punt d'origen, les còpies, què s'ha restaurat, el punt de l'estat d'abans, si el lloc és una botiga, si s'ha acceptat i confirmat de manera interactiva perdre'n les dades i si s'ha demanat `--without-pre-backup`.
 
 ## Claus i secrets (només `admin`, mai pel web)
 
