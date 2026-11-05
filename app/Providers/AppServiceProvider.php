@@ -64,6 +64,8 @@ use App\Domain\Secrets\SecretStore;
 use App\Domain\Secrets\SecretStoreException;
 use App\Domain\Sites\SiteBlocking;
 use App\Domain\Sites\SiteTestStep;
+use App\Domain\ToolBackup\ToolBackupSettings;
+use App\Domain\ToolBackup\ToolDatabase;
 use App\Enums\BackupTargetType;
 use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
@@ -74,6 +76,7 @@ use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Database\DatabaseManager;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Redis\Connections\PhpRedisConnection;
 use Illuminate\Support\Facades\Event;
@@ -194,6 +197,19 @@ class AppServiceProvider extends ServiceProvider
             $app->make(DropboxSettings::class),
             self::configInt('wpup.backups.hash_chunk_bytes'),
         ));
+        // The tool's own backup (UZEROWPUP-47, ADR-0009 §3).
+        $this->app->bind(ToolBackupSettings::class, static fn (): ToolBackupSettings => new ToolBackupSettings(
+            self::configStrings('wpup.tool_backup.age_recipients'),
+            self::configStrings('wpup.tool_backup.config_paths'),
+            self::configStrings('wpup.tool_backup.report_paths'),
+            self::configString('wpup.backups.staging_dir'),
+            self::configInt('wpup.tool_backup.dump_timeout_seconds'),
+            self::configInt('wpup.tool_backup.archive_timeout_seconds'),
+            self::configInt('wpup.tool_backup.encrypt_timeout_seconds'),
+            self::configInt('wpup.tool_backup.retention.daily'),
+            self::configInt('wpup.tool_backup.retention.monthly'),
+        ));
+        $this->app->bind(ToolDatabase::class, static fn (Application $app): ToolDatabase => ToolDatabase::fromConnection($app->make(DatabaseManager::class)->connection()));
         $this->app->bind(HttpProbe::class, static fn (Application $app): HttpProbe => new HttpProbe(
             $app->make(HttpFactory::class),
             $app->make(SecretRedactor::class),
@@ -438,6 +454,16 @@ class AppServiceProvider extends ServiceProvider
         $value = config($key);
 
         return is_int($value) || is_float($value) ? (float) $value : throw new \UnexpectedValueException($key.' must be a number.');
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function configStrings(string $key): array
+    {
+        $value = config($key);
+
+        return is_array($value) ? array_values(array_filter($value, is_string(...))) : throw new \UnexpectedValueException($key.' must be a list of strings.');
     }
 
     private static function configInt(string $key): int

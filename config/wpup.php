@@ -275,6 +275,37 @@ return [
         ],
     ],
 
+    /*
+     * The tool's own daily backup (ADR-0009 §3, UZEROWPUP-47,
+     * docs/runbooks/copia-eina.md): pg_dump of the tool database, the
+     * non-secret configuration and the reports, encrypted with age on the VM
+     * before it is uploaded. Never the package artifacts nor the screenshots.
+     */
+    'tool_backup' => [
+        // age recipients (public keys, "age1…"), comma-separated in the env. The
+        // private key is in Arnau's KeePassXC, never on the VM. Without at
+        // least one valid recipient the backup refuses to run.
+        'age_recipients' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('WPUP_TOOL_BACKUP_AGE_RECIPIENTS', ''))))),
+        // Non-secret configuration files or directories (absolute paths,
+        // comma-separated in the env). Missing paths are skipped with a warning;
+        // anything matching ToolBackupContents' denylist (.env*, keys, secrets…)
+        // is never included, whatever is listed here.
+        'config_paths' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('WPUP_TOOL_BACKUP_CONFIG_PATHS', base_path('deploy/config.env')))))),
+        // Report files, if any (the run reports themselves live in the database).
+        'report_paths' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('WPUP_TOOL_BACKUP_REPORT_PATHS', storage_path('app/reports')))))),
+        // Timeouts of the local commands (seconds).
+        'dump_timeout_seconds' => 900,
+        'archive_timeout_seconds' => 300,
+        'encrypt_timeout_seconds' => 900,
+        // Retention (ADR-0009): the latest copy of each of the most recent
+        // `daily` days, plus the first copy of each of the most recent `monthly`
+        // months (ToolBackupRetention).
+        'retention' => [
+            'daily' => 30,
+            'monthly' => 12,
+        ],
+    ],
+
     'inventory' => [
         'step_timeout_seconds' => 600,
         // `wpup inventory --json` document version, bumped on incompatible changes.
