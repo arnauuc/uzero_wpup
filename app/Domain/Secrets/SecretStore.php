@@ -26,4 +26,10 @@ interface SecretStore
      * Decrypts a secret. Every call is written to the audit log with the reason.
      */
     public function reveal(string $id, AuditActor $actor, string $reason): Secret;
+
+    /**
+     * What the secret was stored for (the `purpose` of `put()`), or null when
+     * there is no such secret. Never reads the value.
+     */
+    public function purpose(string $id): ?string;
 }

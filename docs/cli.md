@@ -150,6 +150,7 @@ sudo -u wpup wpup backup:restore blog --backup=41 --files --force
 | `ssh-key:generate <servidor> <compte>` | Genera la clau Ed25519 del compte, la desa xifrada i mostra **només** la línia per a `~/.ssh/authorized_keys`, restringida a l'IP de sortida (`from="…",no-port-forwarding,no-agent-forwarding,no-X11-forwarding`). Cal `WPUP_EGRESS_IP` |
 | `ssh-key:rotate <servidor> <compte>` | Instal·la una clau nova amb l'actual, la prova, la fa vigent i retira l'antiga de `~/.ssh/authorized_keys`. Si s'interromp, es torna a executar i continua; sempre queda una clau que funciona. Avisa si l'antiga encara dona accés (p. ex. si la va instal·lar el proveïdor fora de `~/.ssh`) |
 | `secrets:set-password <servidor> <compte>` | Contrasenya SFTP d'un compte amb driver d'agent. S'escriu dues vegades sense eco, mai com a argument |
+| `backup-target:dropbox <nom> --root=<carpeta>` | Crea o actualitza una destinació de còpia a Dropbox. Demana App key, App secret i refresh token sense eco (cal terminal interactiu, mai com a arguments), els comprova amb Dropbox i els desa xifrats; no desa res si Dropbox els rebutja. No deixa canviar `--root` si la destinació ja té còpies. No l'enllaça a cap lloc. Vegeu [runbooks/dropbox.md](runbooks/dropbox.md) |
 | `secrets:rekey` | Torna a xifrar totes les claus de dades amb la KEK vigent. És idempotent. Vegeu [runbooks/rotacio-kek.md](runbooks/rotacio-kek.md) |
 
-Totes tenen `--dry-run` i queden a l'auditoria. La clau privada no surt mai a la sortida, als logs ni al disc.
+Totes tenen `--dry-run` (el de `backup-target:dropbox` no contacta amb Dropbox) i queden a l'auditoria. La clau privada no surt mai a la sortida, als logs ni al disc.

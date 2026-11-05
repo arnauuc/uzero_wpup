@@ -38,13 +38,20 @@ final readonly class DropboxTargetFactory
     ) {}
 
     /**
+     * The same rules as the keys under it, in lowercase (DropboxAdapter).
+     */
+    public static function isValidRoot(string $root): bool
+    {
+        return BackupKey::isValid($root) && strtolower($root) === $root;
+    }
+
+    /**
      * @throws BackupTargetException
      */
     public function make(BackupTargetRecord $record, AuditActor $actor): FlysystemTarget
     {
         $root = $record->config['root'] ?? null;
-        // The same rules as the keys under it, in lowercase (DropboxAdapter).
-        if (! is_string($root) || ! BackupKey::isValid($root) || strtolower($root) !== $root) {
+        if (! is_string($root) || ! self::isValidRoot($root)) {
             throw new BackupTargetException("La destinació de Dropbox «{$record->name}» necessita a config.root una carpeta relativa en minúscules dins de la carpeta de l'app.");
         }
         if ($record->credential_ref === null || $record->credential_ref === '') {

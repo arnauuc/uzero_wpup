@@ -10,6 +10,7 @@ use App\Domain\Backups\BackupStep;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\Dropbox\DropboxCredentialVerifier;
 use App\Domain\Backups\Dropbox\DropboxSettings;
 use App\Domain\Backups\Dropbox\DropboxTargetFactory;
 use App\Domain\Backups\FilesBackup;
@@ -68,6 +69,8 @@ use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Site;
 use App\Support\Logging\RedactSecretsTap;
+use Closure;
+use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
 use Illuminate\Contracts\Foundation\Application;
@@ -76,6 +79,8 @@ use Illuminate\Redis\Connections\PhpRedisConnection;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\ServiceProvider;
+use LogicException;
+use Psr\Http\Message\RequestInterface;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -176,6 +181,12 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.backups.dropbox.read_timeout_seconds'),
             self::configString('wpup.backups.staging_dir'),
             self::configInt('wpup.backups.dropbox.max_idle_reads'),
+        ));
+        // Tests bind 'wpup.dropbox.handler' to a fake Dropbox API (a Guzzle handler).
+        $this->app->bind(DropboxCredentialVerifier::class, static fn (Application $app): DropboxCredentialVerifier => new DropboxCredentialVerifier(
+            $app->make(SecretRedactor::class),
+            $app->make(DropboxSettings::class),
+            $app->bound('wpup.dropbox.handler') ? self::dropboxHandler($app->make('wpup.dropbox.handler')) : null,
         ));
         $this->app->bind(DropboxTargetFactory::class, static fn (Application $app): DropboxTargetFactory => new DropboxTargetFactory(
             $app->make(SecretStore::class),
@@ -326,6 +337,22 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->redactAllLogChannels();
+    }
+
+    /**
+     * @return Closure(RequestInterface, array<mixed>): PromiseInterface
+     */
+    private static function dropboxHandler(mixed $handler): Closure
+    {
+        if (! is_callable($handler)) {
+            throw new LogicException('wpup.dropbox.handler must be a Guzzle handler.');
+        }
+
+        return static function (RequestInterface $request, array $options) use ($handler): PromiseInterface {
+            $promise = $handler($request, $options);
+
+            return $promise instanceof PromiseInterface ? $promise : throw new LogicException('wpup.dropbox.handler must return a promise.');
+        };
     }
 
     /**
