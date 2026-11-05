@@ -23,10 +23,13 @@ final class BackupKey
      */
     public static function valid(string $key): string
     {
+        return self::isValid($key) ? $key : throw BackupTargetException::invalidKey($key);
+    }
+
+    public static function isValid(string $key): bool
+    {
         // A segment never starts with ".", so "." and ".." (and hidden files) are out.
-        return strlen($key) <= self::MAX_LENGTH && preg_match('#^'.self::SEGMENT.'(/'.self::SEGMENT.')*$#D', $key) === 1
-            ? $key
-            : throw BackupTargetException::invalidKey($key);
+        return strlen($key) <= self::MAX_LENGTH && preg_match('#^'.self::SEGMENT.'(/'.self::SEGMENT.')*$#D', $key) === 1;
     }
 
     /**

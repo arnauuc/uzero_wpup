@@ -6,12 +6,17 @@ namespace App\Providers;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
+use App\Domain\Backups\BackupTarget;
+use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\SiteLocalSettings;
+use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Credentials\KeyRotationStep;
 use App\Domain\Credentials\SecretsRekey;
 use App\Domain\Credentials\SecretsRekeyStep;
 use App\Domain\Credentials\SshKeyManager;
 use App\Domain\Drivers\DriverFactory;
+use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\Ssh\SshSettings;
 use App\Domain\Identity\CliCommandGate;
@@ -46,7 +51,9 @@ use App\Domain\Secrets\SecretStore;
 use App\Domain\Secrets\SecretStoreException;
 use App\Domain\Sites\SiteBlocking;
 use App\Domain\Sites\SiteTestStep;
+use App\Enums\BackupTargetType;
 use App\Enums\RunType;
+use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Site;
 use App\Support\Logging\RedactSecretsTap;
 use Illuminate\Console\Events\CommandStarting;
@@ -114,8 +121,30 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.concurrency.lease_seconds'),
         ));
         $this->app->singleton(PipelineResolver::class);
+        $this->app->bind(SiteLocalSettings::class, static fn (): SiteLocalSettings => new SiteLocalSettings(
+            self::configString('wpup.backups.site_local.root'),
+            self::configInt('wpup.backups.site_local.copy_chunk_bytes'),
+            self::configString('wpup.backups.staging_dir'),
+            self::configInt('wpup.backups.site_local.canary_timeout_seconds'),
+            config('wpup.inventory.http_probe.verify_tls') !== false,
+            self::configInt('wpup.backups.site_local.stale_after_seconds'),
+        ));
         // Backup destinations register their factory here (UZEROWPUP-37).
-        $this->app->singleton(BackupTargetRegistry::class);
+        $this->app->singleton(BackupTargetRegistry::class, static function (Application $app): BackupTargetRegistry {
+            $registry = new BackupTargetRegistry;
+            // The site's own server, through its driver (UZEROWPUP-40).
+            $registry->register(BackupTargetType::SiteLocal, static function (BackupTargetRecord $record, Site $site, AuditActor $actor) use ($app): BackupTarget {
+                try {
+                    $driver = $app->make(DriverFactory::class)->forSite($site, $actor);
+                } catch (DriverException $e) {
+                    throw new BackupTargetException($app->make(SecretRedactor::class)->redact($e->getMessage()));
+                }
+
+                return new SiteLocalTarget($driver, $app->make(SecretRedactor::class), $app->make(HttpFactory::class), $app->make(SiteLocalSettings::class), $site->url);
+            });
+
+            return $registry;
+        });
         $this->app->bind(HttpProbe::class, static fn (Application $app): HttpProbe => new HttpProbe(
             $app->make(HttpFactory::class),
             $app->make(SecretRedactor::class),
