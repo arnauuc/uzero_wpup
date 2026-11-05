@@ -7,8 +7,9 @@ namespace App\Domain\Backups\Dropbox;
 use App\Domain\Secrets\Secret;
 use App\Domain\Secrets\SecretRedactor;
 use GuzzleHttp\ClientInterface;
-use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Exception\TransferException;
 use GuzzleHttp\Psr7\Utils;
+use Psr\Http\Message\ResponseInterface;
 
 /**
  * Short-lived access tokens obtained with the refresh token of the
@@ -17,18 +18,21 @@ use GuzzleHttp\Psr7\Utils;
  */
 final class DropboxTokenProvider
 {
-    private const int MAX_RESPONSE_BYTES = 65_536;
+    private const string ENDPOINT = 'oauth2/token';
 
     private ?Secret $accessToken = null;
+
+    private readonly DropboxRetryPolicy $retry;
 
     public function __construct(
         private readonly ClientInterface $http,
         private readonly DropboxCredential $credential,
         private readonly SecretRedactor $redactor,
-        private readonly string $tokenUrl,
+        private readonly DropboxSettings $settings,
     ) {
         $redactor->register($credential->appSecret);
         $redactor->register($credential->refreshToken);
+        $this->retry = new DropboxRetryPolicy($settings, $redactor);
     }
 
     public function token(): string
@@ -46,21 +50,8 @@ final class DropboxTokenProvider
         $this->accessToken?->wipe();
         $this->accessToken = null;
 
-        try {
-            $response = $this->http->request('POST', $this->tokenUrl, [
-                'http_errors' => false,
-                'form_params' => [
-                    'grant_type' => 'refresh_token',
-                    'refresh_token' => $this->credential->refreshToken->reveal(),
-                    'client_id' => $this->credential->appKey,
-                    'client_secret' => $this->credential->appSecret->reveal(),
-                ],
-            ]);
-        } catch (GuzzleException $e) {
-            throw DropboxException::transport('oauth2/token', $this->redactor->redact($e->getMessage()));
-        }
-
-        $data = json_decode(Utils::copyToString($response->getBody(), self::MAX_RESPONSE_BYTES), true);
+        $response = $this->request();
+        $data = json_decode(Utils::copyToString($response->getBody(), $this->settings->maxTokenResponseBytes), true);
         $token = is_array($data) ? ($data['access_token'] ?? null) : null;
         if ($response->getStatusCode() !== 200 || ! is_string($token) || $token === '') {
             $error = is_array($data) && is_string($data['error'] ?? null) ? $data['error'] : 'resposta inesperada';
@@ -73,5 +64,33 @@ final class DropboxTokenProvider
         $this->redactor->register($token);
 
         return $this->accessToken = new Secret($token);
+    }
+
+    private function request(): ResponseInterface
+    {
+        for ($retry = 1; ; $retry++) {
+            try {
+                $response = $this->http->request('POST', $this->settings->tokenUrl, [
+                    'http_errors' => false,
+                    'form_params' => [
+                        'grant_type' => 'refresh_token',
+                        'refresh_token' => $this->credential->refreshToken->reveal(),
+                        'client_id' => $this->credential->appKey,
+                        'client_secret' => $this->credential->appSecret->reveal(),
+                    ],
+                ]);
+            } catch (TransferException $e) {
+                if ($this->retry->allows($retry, self::ENDPOINT, $e->getMessage())) {
+                    continue;
+                }
+
+                throw DropboxException::transport(self::ENDPOINT, $this->redactor->redact($e->getMessage()));
+            }
+
+            if (! DropboxRetryPolicy::retryableStatus($response->getStatusCode())
+                || ! $this->retry->allows($retry, self::ENDPOINT, 'HTTP '.$response->getStatusCode(), $response->getHeaderLine('Retry-After'))) {
+                return $response;
+            }
+        }
     }
 }

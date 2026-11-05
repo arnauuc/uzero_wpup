@@ -16,6 +16,7 @@ use Psr\Http\Message\ResponseInterface;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use SplFileInfo;
+use Throwable;
 
 /**
  * An in-process Dropbox API v2 for tests, used as a Guzzle handler: the
@@ -49,12 +50,15 @@ final class FakeDropboxApi
     /** @var array<string, bool> token => still valid */
     private array $tokens = [];
 
-    /** @var array<string, list<ResponseInterface>> */
+    /** @var array<string, list<ResponseInterface|Throwable>> */
     private array $failures = [];
+
+    /** @var array<string, int> endpoint => calls to process and then answer 500 (a lost response) */
+    private array $lose = [];
 
     private readonly string $files;
 
-    public function __construct(private readonly string $dir)
+    public function __construct(public readonly string $dir)
     {
         $this->files = $dir.'/files';
         mkdir($this->files, 0700, true);
@@ -63,9 +67,14 @@ final class FakeDropboxApi
         $this->refreshToken = 'fake-refresh-'.bin2hex(random_bytes(8));
     }
 
+    public static function inTemp(): self
+    {
+        return new self(sys_get_temp_dir().'/wpup-dropbox-'.bin2hex(random_bytes(6)));
+    }
+
     public static function settings(int $chunkBytes = DropboxSettings::CHUNK_UNIT_BYTES, int $maxRetries = 2, int $maxRetryAfter = 0): DropboxSettings
     {
-        return new DropboxSettings(self::BASE.'2/', self::BASE.'content/2/', self::BASE.'oauth2/token', $chunkBytes, $maxRetries, $maxRetryAfter, 1_048_576, 1, 5);
+        return new DropboxSettings(self::BASE.'2/', self::BASE.'content/2/', self::BASE.'oauth2/token', $chunkBytes, $maxRetries, $maxRetryAfter, 1_048_576, 1, 5, 65_536, 200, 65_536);
     }
 
     public function credential(): DropboxCredential
@@ -83,9 +92,16 @@ final class FakeDropboxApi
         return count($this->tokens);
     }
 
-    public function failNext(string $endpoint, ResponseInterface $response): void
+    /** The next call to $endpoint gets $failure instead of being processed. */
+    public function failNext(string $endpoint, ResponseInterface|Throwable $failure): void
     {
-        $this->failures[$endpoint][] = $response;
+        $this->failures[$endpoint][] = $failure;
+    }
+
+    /** The next call to $endpoint is processed, but its response is lost (500). */
+    public function loseNext(string $endpoint): void
+    {
+        $this->lose[$endpoint] = ($this->lose[$endpoint] ?? 0) + 1;
     }
 
     /**
@@ -96,8 +112,19 @@ final class FakeDropboxApi
         $path = $request->getUri()->getPath();
         $endpoint = (string) preg_replace('#^/((content/)?2/)?#', '', $path);
         $this->calls[] = $endpoint;
-        $response = ($this->failures[$endpoint] ?? []) !== [] ? array_shift($this->failures[$endpoint])
-            : ($endpoint === 'oauth2/token' ? $this->token($request) : $this->api($endpoint, $request));
+        if (($this->failures[$endpoint] ?? []) !== []) {
+            $failure = array_shift($this->failures[$endpoint]);
+            if ($failure instanceof Throwable) {
+                return Create::rejectionFor($failure);
+            }
+            $response = $failure;
+        } else {
+            $response = $endpoint === 'oauth2/token' ? $this->token($request) : $this->api($endpoint, $request);
+        }
+        if (($this->lose[$endpoint] ?? 0) > 0) {
+            $this->lose[$endpoint]--;
+            $response = self::json(500, ['error_summary' => 'internal_error/']);
+        }
         $sink = $options['sink'] ?? null;
         if (is_resource($sink)) {
             $body = $response->getBody();
@@ -156,7 +183,7 @@ final class FakeDropboxApi
             'files/list_folder/continue' => $this->continue($p('cursor')),
             'files/move_v2', 'files/copy_v2' => $this->relocate($endpoint === 'files/move_v2', $this->local($p('from_path')), $this->local($p('to_path'))),
             'files/delete_v2' => $this->remove($this->local($p('path'))),
-            'files/create_folder_v2' => file_exists($this->local($p('path'))) ? self::error('path/conflict/folder/')
+            'files/create_folder_v2' => file_exists($this->local($p('path'))) ? self::error(is_dir($this->local($p('path'))) ? 'path/conflict/folder/' : 'path/conflict/file/')
                 : (mkdir($this->local($p('path')), 0700, true) ? self::json(200, ['metadata' => $this->meta($this->local($p('path')))]) : self::error('other')),
             default => self::json(400, ['error_summary' => "unknown endpoint {$endpoint}"]),
         };
@@ -223,7 +250,10 @@ final class FakeDropboxApi
         }
         clearstatcache();
 
-        return ($cursor['offset'] ?? null) === filesize($file) ? $file : self::error('lookup_failed/incorrect_offset/');
+        $size = filesize($file);
+
+        return ($cursor['offset'] ?? null) === $size ? $file
+            : self::json(409, ['error_summary' => 'lookup_failed/incorrect_offset/', 'error' => ['.tag' => 'lookup_failed', 'lookup_failed' => ['.tag' => 'incorrect_offset', 'correct_offset' => $size]]]);
     }
 
     private function page(string $path, bool $recursive, int $offset): ResponseInterface

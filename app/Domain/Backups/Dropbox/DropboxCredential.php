@@ -9,7 +9,7 @@ use App\Domain\Secrets\Secret;
 /**
  * The credential of a Dropbox destination, as stored in the SecretStore:
  * {"app_key": ..., "app_secret": ..., "refresh_token": ...} of a Dropbox app
- * with "App folder" access. Errors never quote the values.
+ * with "App folder" access. Values are trimmed; errors never quote them.
  */
 final readonly class DropboxCredential
 {
@@ -33,9 +33,12 @@ final readonly class DropboxCredential
 
         $values = [];
         foreach (self::FIELDS as $field) {
-            $value = $data[$field] ?? null;
-            if (! is_string($value) || trim($value) === '') {
+            $value = is_string($data[$field] ?? null) ? trim($data[$field]) : '';
+            if ($value === '') {
                 throw new DropboxException("A la credencial de Dropbox hi falta el camp «{$field}».");
+            }
+            if (preg_match('/\s/', $value) === 1) {
+                throw new DropboxException("El camp «{$field}» de la credencial de Dropbox conté espais o salts de línia.");
             }
             $values[$field] = $value;
         }
