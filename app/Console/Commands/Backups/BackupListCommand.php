@@ -23,6 +23,7 @@ final class BackupListCommand extends WpupCommand
         {--since= : Creades a partir d\'aquesta data (AAAA-MM-DD)}
         {--until= : Creades fins a aquesta data inclosa (AAAA-MM-DD)}
         {--kind= : Només aquest tipus de fitxer (database o files)}
+        {--limit= : Màxim de còpies a mostrar (per defecte, el de la configuració)}
         {--all : Inclou també les còpies esborrades}
         '.self::JSON;
 
@@ -50,11 +51,18 @@ final class BackupListCommand extends WpupCommand
             return self::FAILURE;
         }
 
+        $limit = $this->limit();
+        if ($limit === null) {
+            return self::FAILURE;
+        }
+
         $listing = app(BackupListing::class);
-        $backups = $listing->list($filter);
+        $backups = $listing->list($filter, $limit);
+        $truncated = $backups->count() > $limit;
+        $backups = $backups->take($limit);
 
         if ($this->wantsJson()) {
-            $this->emitJson($listing->document($backups));
+            $this->emitJson($listing->document($backups, $truncated));
 
             return self::SUCCESS;
         }
@@ -75,11 +83,27 @@ final class BackupListCommand extends WpupCommand
             ByteSize::human($b->size_bytes),
             substr($b->sha256, 0, 12),
             $b->verified_at === null ? 'no' : 'sí',
-            $b->deleted_at !== null ? 'esborrada' : ($b->expires_at?->format('Y-m-d H:i') ?? '—'),
+            $b->deleted_at !== null ? 'esborrada' : ($b->expires_at?->format(BackupListing::dateFormat()) ?? '—'),
             $b->protected ? 'sí' : 'no',
         ])->all());
+        if ($truncated) {
+            $this->warn("N'hi ha més de {$limit}: afina els filtres o puja --limit.");
+        }
 
         return self::SUCCESS;
+    }
+
+    private function limit(): ?int
+    {
+        $value = $this->stringOption('limit') ?? config('wpup.backups.list_limit');
+        $value = is_int($value) ? (string) $value : $value;
+        if (! is_string($value) || ! ctype_digit($value) || (int) $value < 1) {
+            $this->error('--limit ha de ser un enter positiu.');
+
+            return null;
+        }
+
+        return (int) $value;
     }
 
     /**

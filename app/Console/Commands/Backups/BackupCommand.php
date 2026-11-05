@@ -9,13 +9,14 @@ use App\Console\Concerns\LaunchesRuns;
 use App\Console\Concerns\PrintsRunHeader;
 use App\Console\Concerns\SelectsSites;
 use App\Console\WpupCommand;
+use App\Domain\Backups\BackupListing;
 use App\Domain\Backups\BackupReport;
 use App\Domain\Backups\BackupRow;
 use App\Domain\Backups\ByteSize;
 use App\Domain\Identity\Ability;
 use App\Enums\RunType;
 use App\Models\Run;
-use App\Models\Site;
+use Carbon\CarbonImmutable;
 
 /**
  * Manual restore point of one or more sites as queued runs (UZEROWPUP-45). It
@@ -42,17 +43,8 @@ final class BackupCommand extends WpupCommand implements ChangesState
 
     protected function perform(): int
     {
-        $sites = $this->selectedSites();
-        if ($sites === null) {
-            return self::FAILURE;
-        }
-
-        // Only a site named explicitly can be inactive (--tag and --all select active ones).
-        $active = $sites->filter(static fn (Site $site): bool => $site->active)->values();
-        foreach ($sites->reject(static fn (Site $site): bool => $site->active) as $inactive) {
-            $this->error("{$inactive->name}: inactiu, no se'n fa còpia.");
-        }
-        if ($active->isEmpty()) {
+        $active = $this->activeSelectedSites("no se'n fa còpia");
+        if ($active === null) {
             return self::FAILURE;
         }
 
@@ -71,7 +63,7 @@ final class BackupCommand extends WpupCommand implements ChangesState
             return array_filter($rows, static fn (BackupRow $row): bool => ! $row->hasPoint() && $row->note === null) === [] ? 0 : self::FAILURE;
         };
 
-        return $this->launchRuns(RunType::Backup, array_values($active->all()), ['dry_run' => $this->isDryRun()], null, $present);
+        return $this->exitCodeWithSkipped($this->launchRuns(RunType::Backup, $active, ['dry_run' => $this->isDryRun()], null, $present));
     }
 
     private function printRow(BackupRow $row): void
@@ -87,11 +79,11 @@ final class BackupCommand extends WpupCommand implements ChangesState
 
         $this->table(['Tipus', 'Destinació', 'Mida', 'SHA-256', 'Verificat', 'Caduca'], array_map(static fn (array $f): array => [
             $f['kind'],
-            $row->targetNames[$f['backup_target_id']] ?? "#{$f['backup_target_id']}",
+            $f['target'],
             ByteSize::human($f['size_bytes']),
             substr($f['sha256'], 0, 12),
             $f['verified'] ? 'sí' : 'no',
-            $f['expires_at'] ?? '—',
+            $f['expires_at'] === null ? '—' : CarbonImmutable::parse($f['expires_at'])->format(BackupListing::dateFormat()),
         ], $row->files));
         foreach ($row->warnings as $warning) {
             $this->warn($warning);

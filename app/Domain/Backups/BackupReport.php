@@ -61,12 +61,17 @@ final class BackupReport
             }
         }
 
-        /** @var list<array{id: int, backup_target_id: int, kind: string, key: string, size_bytes: int, sha256: string, verified: bool, expires_at: ?string}> $files */
-        $files = is_array($result['backups'] ?? null) ? array_values($result['backups']) : [];
+        /** @var list<array{id: int, backup_target_id: int, kind: string, key: string, size_bytes: int, sha256: string, verified: bool, expires_at: ?string}> $stored */
+        $stored = is_array($result['backups'] ?? null) ? array_values($result['backups']) : [];
+        /** @var list<array{id: int, backup_target_id: int, target: string, kind: string, key: string, size_bytes: int, sha256: string, verified: bool, expires_at: ?string}> $files */
+        $files = array_map(static fn (array $f): array => [...$f, 'target' => $names[$f['backup_target_id']] ?? "#{$f['backup_target_id']}"], $stored);
         /** @var list<string> $warnings */
         $warnings = is_array($result['warnings'] ?? null) ? array_values($result['warnings']) : [];
+        if ($result !== null && $files === []) {
+            $failure ??= "L'execució no ha deixat cap fitxer de còpia.";
+        }
         $directory = is_string($result['directory'] ?? null) ? $result['directory'] : null;
 
-        return new BackupRow($run->targetLabel(), $run->site->url ?? '', $run->id, $run->status, $failure, $directory, $files, $warnings, $names, $note);
+        return new BackupRow($run->targetLabel(), $run->site->url ?? '', $run->id, $run->status, $failure, $directory, $files, $warnings, $note);
     }
 }

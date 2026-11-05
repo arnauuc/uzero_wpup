@@ -13,7 +13,8 @@ use InvalidArgumentException;
 
 /**
  * Filters of the backup listing (`wpup backup:list`, and the web panel later).
- * Dates filter on the creation of the file; `until` is inclusive (whole day).
+ * Dates filter on the creation of the file; `until` is the day after, exclusive (the whole
+ * day is included).
  */
 final readonly class BackupListingFilter
 {
@@ -57,8 +58,8 @@ final readonly class BackupListingFilter
         }
 
         $from = self::date($since, '--since')?->startOfDay();
-        $to = self::date($until, '--until')?->endOfDay();
-        if ($from !== null && $to !== null && $from->greaterThan($to)) {
+        $to = self::date($until, '--until')?->addDay();
+        if ($from !== null && $to !== null && $from->greaterThanOrEqualTo($to)) {
             throw new InvalidArgumentException('--since no pot ser posterior a --until.');
         }
 

@@ -142,9 +142,15 @@ it('reports blocked from the site row, not from the plan, and null without a sit
 it('does not plan inactive sites named explicitly and says so', function (): void {
     $exit = Artisan::call('plan', ['sites' => ['antic', 'botiga-a']]);
 
-    expect($exit)->toBe(0)
+    expect($exit)->toBe(1)
         ->and(Artisan::output())->toContain('antic: inactiu, no es planifica.')->toContain('(plan, botiga-a)')
         ->and(Run::query()->count())->toBe(1);
+});
+
+it('does not exit 0 when a named site was skipped, even if the others went well', function (): void {
+    $exit = Artisan::call('plan', ['sites' => ['antic', 'botiga-a'], '--wait' => true]);
+
+    expect($exit)->toBe(1)->and(Artisan::output())->toContain('antic: inactiu')->toContain('botiga-a');
 });
 
 it('fails when every named site is inactive', function (): void {

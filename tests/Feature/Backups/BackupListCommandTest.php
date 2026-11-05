@@ -14,13 +14,13 @@ use Illuminate\Support\Facades\Artisan;
 
 /**
  * @param  array<string, mixed>  $parameters
- * @return array{version: int, backups: list<array<string, mixed>>}
+ * @return array{version: int, truncated: bool, backups: list<array<string, mixed>>}
  */
 function backupListJson(array $parameters = []): array
 {
     Artisan::call('backup:list', [...$parameters, '--json' => true]);
 
-    /** @var array{version: int, backups: list<array<string, mixed>>} */
+    /** @var array{version: int, truncated: bool, backups: list<array<string, mixed>>} */
     return json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
 }
 
@@ -70,7 +70,7 @@ it('lists the backups that are not deleted, newest first', function (): void {
 });
 
 it('includes the deleted ones with --all', function (): void {
-    expect(backupListIds(['--all' => true]))->toBe([backupIds()['deleted'], backupIds()['recent'], backupIds()['old']]);
+    expect(backupListIds(['--all' => true]))->toBe([backupIds()['recent'], backupIds()['deleted'], backupIds()['old']]);
 });
 
 it('filters by site, destination and kind', function (): void {
@@ -84,6 +84,37 @@ it('filters by date, with the until day included', function (): void {
     expect(backupListIds(['--since' => '2026-03-01']))->toBe([backupIds()['recent']])
         ->and(backupListIds(['--until' => '2026-01-10']))->toBe([backupIds()['old']])
         ->and(backupListIds(['--since' => '2026-01-11', '--until' => '2026-03-19', '--all' => true]))->toBe([backupIds()['deleted']]);
+});
+
+it('orders by creation date, then id', function (): void {
+    $newer = Backup::factory()->create(['site_id' => Site::query()->firstOrFail()->id, 'backup_target_id' => BackupTarget::query()->firstOrFail()->id, 'created_at' => '2025-01-01 00:00:00']);
+
+    expect(backupListIds())->toBe([backupIds()['recent'], backupIds()['old'], $newer->id]);
+});
+
+it('includes the whole until day and nothing after it', function (): void {
+    $edge = Backup::factory()->create(['site_id' => Site::query()->firstOrFail()->id, 'backup_target_id' => BackupTarget::query()->firstOrFail()->id, 'created_at' => '2026-03-20 23:59:59']);
+    $after = Backup::factory()->create(['site_id' => Site::query()->firstOrFail()->id, 'backup_target_id' => BackupTarget::query()->firstOrFail()->id, 'created_at' => '2026-03-21 00:00:00']);
+
+    $ids = backupListIds(['--until' => '2026-03-20']);
+
+    expect($ids)->toContain($edge->id)
+        ->and(in_array($after->id, $ids, true))->toBeFalse();
+});
+
+it('limits the listing and warns when it cuts', function (): void {
+    $json = backupListJson(['--limit' => '1']);
+    expect($json['backups'])->toHaveCount(1)->and($json['truncated'])->toBeTrue()
+        ->and(backupListJson()['truncated'])->toBeFalse();
+
+    command('backup:list', ['--limit' => '1'])->expectsOutputToContain('afina els filtres o puja --limit')->assertSuccessful();
+
+    config(['wpup.backups.list_limit' => 1]);
+    expect(backupListJson()['backups'])->toHaveCount(1);
+});
+
+it('rejects a limit that is not a positive integer', function (): void {
+    command('backup:list', ['--limit' => '0'])->expectsOutputToContain('--limit ha de ser un enter positiu.')->assertExitCode(1);
 });
 
 it('prints a table with size, short checksum and expiry', function (): void {

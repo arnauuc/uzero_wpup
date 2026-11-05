@@ -68,6 +68,12 @@ it('skips an inactive site named explicitly', function (): void {
     expect(Run::query()->count())->toBe(0);
 });
 
+it('does not exit 0 when a named site was skipped, even if the others went well', function (): void {
+    $exit = Artisan::call('backup', ['sites' => ['antic', 'botiga-a'], '--wait' => true]);
+
+    expect($exit)->toBe(1)->and(Artisan::output())->toContain('antic: inactiu')->toContain('local-site');
+});
+
 it('passes --dry-run to the run as a flag', function (): void {
     command('backup', ['sites' => ['botiga-a'], '--dry-run' => true])->assertSuccessful();
 
@@ -127,6 +133,31 @@ it('does not count a succeeded run without a restore point as a success', functi
     $exit = Artisan::call('backup', ['sites' => ['botiga-a'], '--wait' => true]);
 
     expect($exit)->toBe(1)->and(Artisan::output())->toContain("L'execució no ha deixat cap punt de restauració.");
+});
+
+it('fails a succeeded run that left no files', function (): void {
+    app(PipelineResolver::class)->register(RunType::Backup, static fn (): Pipeline => new Pipeline([
+        new ScriptedReadOnlyStep('backup', static fn (): StepOutcome => StepOutcome::succeeded('ok', '', ['directory' => 'k', 'reused' => false, 'backups' => [], 'warnings' => []])),
+    ]));
+
+    $exit = Artisan::call('backup', ['sites' => ['botiga-a'], '--wait' => true]);
+
+    expect($exit)->toBe(1)->and(Artisan::output())->toContain("L'execució no ha deixat cap fitxer de còpia.");
+});
+
+it('falls back to the destination id in terminal and JSON when the destination is gone', function (): void {
+    $file = ['id' => 1, 'backup_target_id' => 999_999, 'kind' => 'database', 'key' => 'k/db', 'size_bytes' => 10, 'sha256' => str_repeat('ef', 32), 'verified' => true, 'expires_at' => '2026-03-27T08:00:00+00:00'];
+    app(PipelineResolver::class)->register(RunType::Backup, static fn (): Pipeline => new Pipeline([
+        new ScriptedReadOnlyStep('backup', static fn (): StepOutcome => StepOutcome::succeeded('ok', '', ['directory' => 'k', 'reused' => false, 'backups' => [$file], 'warnings' => []])),
+    ]));
+
+    Artisan::call('backup', ['sites' => ['botiga-a'], '--wait' => true]);
+    expect(Artisan::output())->toContain('#999999')->toContain('2026-03-27 08:00');
+
+    Artisan::call('backup', ['sites' => ['botiga-a'], '--wait' => true, '--json' => true]);
+    /** @var array{sites: list<array{files: list<array{target: string}>}>} $json */
+    $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+    expect($json['sites'][0]['files'][0]['target'])->toBe('#999999');
 });
 
 it('refuses a report version that is not an integer', function (): void {
