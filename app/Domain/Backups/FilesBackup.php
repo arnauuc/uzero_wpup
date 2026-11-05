@@ -53,9 +53,11 @@ final class FilesBackup
      * WordPress accepts wp-config.php one level above its root; the archive
      * never goes outside the root, so that file would not be in it.
      *
+     * Read-only: a retried step that reuses an archive recomputes them.
+     *
      * @return list<string>
      */
-    private function warnings(SiteDriver $driver): array
+    public function warnings(SiteDriver $driver): array
     {
         $unknown = ['No s\'ha pogut comprovar on és wp-config.php: verifica que l\'arxiu el conté.'];
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\BackupTargetType;
 use App\Enums\SiteBlockSource;
 use App\Enums\UpdateStrategy;
 use Carbon\CarbonImmutable;
@@ -97,6 +98,20 @@ class Site extends Model
     public function backupTargets(): BelongsToMany
     {
         return $this->belongsToMany(BackupTarget::class, 'site_backup_targets')->withTimestamps();
+    }
+
+    /**
+     * The active destinations other than the site's own server, which every
+     * restore point is also copied to (UZEROWPUP-43).
+     *
+     * @return BelongsToMany<BackupTarget, $this>
+     */
+    public function externalBackupTargets(): BelongsToMany
+    {
+        return $this->backupTargets()
+            ->where('backup_targets.type', '!=', BackupTargetType::SiteLocal->value)
+            ->where('backup_targets.active', true)
+            ->orderBy('backup_targets.id');
     }
 
     /**

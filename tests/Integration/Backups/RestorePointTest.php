@@ -10,12 +10,15 @@ use App\Domain\Backups\RestorePointGate;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\SiteLocalDestination;
 use App\Domain\Backups\SiteLocalSettings;
+use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Drivers\DriverFactory;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\BackupTargetType;
 use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Run;
+use App\Models\Site;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Facades\File;
 use League\Flysystem\Filesystem;
 use League\Flysystem\Local\LocalFilesystemAdapter;
@@ -52,7 +55,11 @@ foreach (['wp83', 'wp74'] as $fixture) {
         app(BackupTargetRegistry::class)->register(BackupTargetType::Sftp, static fn (): BackupTarget => new FlysystemTarget(new Filesystem(new LocalFilesystemAdapter($external)), app(SecretRedactor::class), 1_048_576));
         $run = Run::factory()->create(['type' => RunType::Backup, 'site_id' => $site->id]);
         $actor = AuditActor::system('tests');
-        $service = app()->make(RestorePointService::class, ['settings' => app(SiteLocalSettings::class)->withRoot($root)]);
+        // The site-local destination of the registry, with this test's own store root.
+        app(BackupTargetRegistry::class)->register(BackupTargetType::SiteLocal, static fn (BackupTargetRecord $r, Site $s, AuditActor $a): BackupTarget => new SiteLocalTarget(
+            app(DriverFactory::class)->forSite($s, $a), app(SecretRedactor::class), app(HttpFactory::class), app(SiteLocalSettings::class)->withRoot($root), $s->url,
+        ));
+        $service = app(RestorePointService::class);
 
         try {
             $point = $service->create($site, app(DriverFactory::class)->forSite($site, $actor), $run, $actor);

@@ -9,15 +9,21 @@ use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
 use App\Domain\Backups\FlysystemTarget;
+use App\Domain\Backups\RestorePoint;
 use App\Domain\Backups\RestorePointGate;
 use App\Domain\Backups\RestorePointNotVerified;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\SiteLocalDestination;
+use App\Domain\Backups\SiteLocalSettings;
+use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\StoredObject;
+use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\WorkFile;
+use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\SiteInventory;
+use App\Domain\Runs\Exceptions\StepTimedOut;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunAuthorization;
@@ -35,6 +41,8 @@ use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Run;
 use App\Models\Site;
 use App\Models\SiteProfile;
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
@@ -47,16 +55,107 @@ use Tests\Support\FakeDriver;
  * Flysystem directory of the tool server standing for an external destination.
  */
 
-/** A FakeDriver whose store returns another checksum than the bytes it holds. */
-final class TamperedStoreDriver extends FakeDriver
+/** A FakeDriver whose store and work files can be altered or broken. */
+final class RestorePointDriver extends FakeDriver
 {
+    /** The store ("restore-points/…") reports another checksum than its bytes. */
+    public bool $tamperStore = false;
+
+    /** Work files outside the store report another checksum than their bytes. */
+    public bool $tamperSource = false;
+
+    public ?Throwable $storeChecksumFailure = null;
+
+    public ?Throwable $moveFailure = null;
+
+    public ?Throwable $archiveFailure = null;
+
+    /** Added to the size moveWorkFile() reports. */
+    public int $moveSizeDelta = 0;
+
+    /** Checksums computed on objects of the store. */
+    public int $storeChecksums = 0;
+
     public function statWorkFile(string $path, bool $withChecksum = false): ?WorkFile
     {
         $file = parent::statWorkFile($path, $withChecksum);
+        if ($file === null || ! $withChecksum) {
+            return $file;
+        }
+        $inStore = str_starts_with($path, 'restore-points/');
+        if ($inStore) {
+            $this->storeChecksums++;
+            if ($this->storeChecksumFailure !== null) {
+                throw $this->storeChecksumFailure;
+            }
+        }
 
-        return $file !== null && $withChecksum && str_starts_with($path, 'restore-points/')
+        return ($inStore && $this->tamperStore) || (! $inStore && $this->tamperSource)
             ? new WorkFile($file->path, $file->sizeBytes, $file->modifiedAt, str_repeat('0', 64))
             : $file;
+    }
+
+    public function moveWorkFile(string $from, string $to): WorkFile
+    {
+        if ($this->moveFailure !== null) {
+            throw $this->moveFailure;
+        }
+        $file = parent::moveWorkFile($from, $to);
+
+        return new WorkFile($file->path, $file->sizeBytes + $this->moveSizeDelta, $file->modifiedAt);
+    }
+
+    public function archiveFiles(string $remotePath, array $excludes): RemoteFile
+    {
+        if ($this->archiveFailure !== null) {
+            throw $this->archiveFailure;
+        }
+
+        return parent::archiveFiles($remotePath, $excludes);
+    }
+}
+
+/** An external destination that stores other bytes than it is given, or breaks. */
+final class LyingTarget implements BackupTarget
+{
+    /** @var array<string, string> */
+    public array $objects = [];
+
+    public ?Throwable $putFailure = null;
+
+    public function put(string $key, $stream): StoredObject
+    {
+        if ($this->putFailure !== null) {
+            throw $this->putFailure;
+        }
+        $this->objects[$key] = 'corrupt';
+
+        return new StoredObject($key, 7);
+    }
+
+    public function readStream(string $key)
+    {
+        throw BackupTargetException::notFound($key);
+    }
+
+    public function exists(string $key): bool
+    {
+        return isset($this->objects[$key]);
+    }
+
+    public function checksum(string $key): string
+    {
+        return hash('sha256', $this->objects[$key] ?? throw BackupTargetException::notFound($key));
+    }
+
+    public function delete(string $key): void
+    {
+        unset($this->objects[$key]);
+    }
+
+    public function list(string $prefix = ''): array
+    {
+        return [];
     }
 }
 
@@ -66,6 +165,7 @@ beforeEach(function (): void {
 });
 
 afterEach(function (): void {
+    Carbon::setTestNow();
     File::deleteDirectory(externalDir());
 });
 
@@ -81,6 +181,18 @@ function externalDir(?string $set = null): string
     return $dir;
 }
 
+/**
+ * The service, with the site-local destination of the registry served by $driver.
+ */
+function restorePoints(FakeDriver $driver): RestorePointService
+{
+    app(BackupTargetRegistry::class)->register(BackupTargetType::SiteLocal, static fn (): BackupTarget => new SiteLocalTarget(
+        $driver, app(SecretRedactor::class), app(HttpFactory::class), app(SiteLocalSettings::class), 'https://fake.test',
+    ));
+
+    return app(RestorePointService::class);
+}
+
 function restorePointSite(bool $includeUploads = false): Site
 {
     $site = Site::factory()->create();
@@ -91,14 +203,14 @@ function restorePointSite(bool $includeUploads = false): Site
 }
 
 /**
- * Links an external destination (type sftp) to $site, served by $target or a
- * Flysystem directory.
+ * Links an external destination (type sftp) to $site, served by $target or the
+ * Flysystem directory of the test.
  */
-function externalDestination(Site $site, string $dir, ?BackupTarget $target = null): BackupTargetRecord
+function externalDestination(Site $site, ?BackupTarget $target = null): BackupTargetRecord
 {
     $record = BackupTargetRecord::factory()->create(['type' => BackupTargetType::Sftp, 'name' => 'extern-'.bin2hex(random_bytes(3))]);
     $site->backupTargets()->attach($record->id);
-    $target ??= new FlysystemTarget(new Filesystem(new LocalFilesystemAdapter($dir)), app(SecretRedactor::class), 1_048_576);
+    $target ??= new FlysystemTarget(new Filesystem(new LocalFilesystemAdapter(externalDir())), app(SecretRedactor::class), 1_048_576);
     app(BackupTargetRegistry::class)->register(BackupTargetType::Sftp, static fn (): BackupTarget => $target);
 
     return $record;
@@ -112,22 +224,26 @@ function backupRun(Site $site, array $flags = []): Run
     return Run::factory()->create(['type' => RunType::Backup, 'site_id' => $site->id, 'flags' => $flags]);
 }
 
+function testActor(): AuditActor
+{
+    return AuditActor::system('tests');
+}
+
 it('records a verified row per file at the site-local destination, with size, checksum and expiry', function (): void {
     $site = restorePointSite();
     $run = backupRun($site);
-    $driver = new FakeDriver;
+    $driver = new RestorePointDriver;
 
-    $point = app(RestorePointService::class)->create($site, $driver, $run, AuditActor::system('tests'));
-    $rows = Backup::query()->where('run_id', $run->id)->orderBy('id')->get();
+    $point = restorePoints($driver)->create($site, $driver, $run, testActor());
     $local = app(SiteLocalDestination::class)->record();
 
     expect($point->directory)->toBe("site-{$site->id}/run{$run->id}")
         ->and($point->warnings)->toBe([])
-        ->and($rows->map(fn (Backup $b): string => "{$b->kind->value}:{$b->path}")->all())->toBe([
-            "database:site-{$site->id}/run{$run->id}/db.sql.gz",
-            "files:site-{$site->id}/run{$run->id}/files.tar.gz",
-        ]);
-    foreach ($rows as $row) {
+        ->and($point->local(BackupKind::Database)?->path)->toBe("site-{$site->id}/run{$run->id}/db.sql.gz")
+        ->and($point->local(BackupKind::Files)?->path)->toBe("site-{$site->id}/run{$run->id}/files.tar.gz")
+        ->and(Backup::query()->where('run_id', $run->id)->count())->toBe(2);
+    foreach (BackupKind::cases() as $kind) {
+        $row = Backup::query()->where('run_id', $run->id)->where('kind', $kind)->sole();
         $stored = $driver->files["restore-points/{$row->path}"];
         expect($row->backup_target_id)->toBe($local->id)
             ->and($row->sha256)->toBe(hash('sha256', $stored))
@@ -136,8 +252,9 @@ it('records a verified row per file at the site-local destination, with size, ch
             ->and($row->deleted_at)->toBeNull()
             ->and(abs($row->expires_at?->diffInSeconds(now()->addDays(7)) ?? 999))->toBeLessThan(60);
     }
-    // The dump and the archive left the work directory: they live in the store only.
+    // The dump and the archive left the work directory, and the store was not hashed again after adopting them.
     expect(array_keys($driver->files))->each->toStartWith('restore-points/')
+        ->and($driver->storeChecksums)->toBe(0)
         ->and(app(RestorePointGate::class)->isVerified($run))->toBeTrue();
 
     $audit = AuditLogEntry::query()->where('action', 'backup.created')->sole();
@@ -149,27 +266,53 @@ it('takes uploads into the archive when the profile includes them', function ():
     $site = restorePointSite(includeUploads: true);
     $driver = new FakeDriver;
 
-    $point = app(RestorePointService::class)->create($site, $driver, null, AuditActor::system('tests'));
+    $point = restorePoints($driver)->create($site, $driver, null, testActor());
     /** @var array{excludes: list<string>} $archive */
-    $archive = unserialize($driver->files['restore-points/'.$point->backups[1]->path]);
+    $archive = unserialize($driver->files['restore-points/'.$point->local(BackupKind::Files)?->path]);
 
     expect($point->directory)->toMatch("#^site-{$site->id}/manual-\\d{14}-[0-9a-f]{6}$#")
         ->and($archive['excludes'])->not->toContain('wp-content/uploads');
 });
 
-it('does not verify a copy whose checksum at the destination differs, and fails without a restore point', function (): void {
+it('refuses before dumping anything when the web could serve the store', function (): void {
+    $site = restorePointSite();
+    $driver = new FakeDriver;
+    $driver->workDirInRoot = '.wpup';
+
+    expect(fn () => restorePoints($driver)->create($site, $driver, backupRun($site), testActor()))
+        ->toThrow(BackupFailed::class, 'accessibles pel web')
+        ->and($driver->writeCalls)->not->toContain('dumpDatabase')
+        ->and($driver->files)->toBe([])
+        ->and(AuditLogEntry::query()->where('action', 'backup.created')->sole()->result)->toBe(AuditResult::Failure);
+});
+
+it('fails without a restore point when the file changed on the site before entering the store', function (): void {
     $site = restorePointSite();
     $run = backupRun($site);
-    $driver = new TamperedStoreDriver;
+    $driver = new RestorePointDriver;
+    $driver->tamperSource = true;
 
-    expect(fn () => app(RestorePointService::class)->create($site, $driver, $run, AuditActor::system('tests')))
+    expect(fn () => restorePoints($driver)->create($site, $driver, $run, testActor()))
+        ->toThrow(BackupFailed::class, 'no coincideix amb el checksum esperat')
+        ->and(Backup::query()->count())->toBe(0)
+        ->and($driver->files)->toBe([])
+        ->and(app(RestorePointGate::class)->isVerified($run))->toBeFalse();
+});
+
+it('does not verify a copy the destination holds with another size, and fails without a restore point', function (): void {
+    $site = restorePointSite();
+    $run = backupRun($site);
+    $driver = new RestorePointDriver;
+    $driver->moveSizeDelta = 1;
+
+    expect(fn () => restorePoints($driver)->create($site, $driver, $run, testActor()))
         ->toThrow(BackupFailed::class, 'no supera la verificació');
 
     $row = Backup::query()->where('run_id', $run->id)->sole();
     expect($row->kind)->toBe(BackupKind::Database)
         ->and($row->verified_at)->toBeNull()
         ->and($row->deleted_at)->not->toBeNull()
-        // Nothing is left: neither the corrupt object nor the archive still in the work directory.
+        // Nothing is left: neither the object nor the archive still in the work directory.
         ->and($driver->files)->toBe([])
         ->and(app(RestorePointGate::class)->isVerified($run))->toBeFalse()
         ->and(AuditLogEntry::query()->where('action', 'backup.created')->sole()->result)->toBe(AuditResult::Failure);
@@ -181,102 +324,169 @@ it('fails without any row when the dump misses tables', function (): void {
     $driver = new FakeDriver;
     $driver->dumpOmits = ['wp_posts'];
 
-    expect(fn () => app(RestorePointService::class)->create($site, $driver, $run, AuditActor::system('tests')))
+    expect(fn () => restorePoints($driver)->create($site, $driver, $run, testActor()))
         ->toThrow(BackupFailed::class, 'falten 1')
         ->and(Backup::query()->count())->toBe(0)
         ->and($driver->files)->toBe([])
         ->and(AuditLogEntry::query()->where('action', 'backup.created')->sole()->context)->toMatchArray(['run_id' => $run->id]);
 });
 
+it('cleans up and audits on any failure, not only the domain ones', function (string $where, Throwable $failure): void {
+    $site = restorePointSite();
+    $driver = new RestorePointDriver;
+    $driver->{$where} = $failure;
+
+    expect(fn () => restorePoints($driver)->create($site, $driver, backupRun($site), testActor()))->toThrow($failure::class);
+
+    $audit = AuditLogEntry::query()->where('action', 'backup.created')->sole();
+    expect($driver->files)->toBe([])
+        ->and(Backup::query()->whereNotNull('verified_at')->whereNull('deleted_at')->count())->toBe(0)
+        ->and($audit->result)->toBe(AuditResult::Failure)
+        ->and($audit->context['exception'] ?? null)->toBe($failure::class);
+})->with([
+    'archive crashes' => ['archiveFailure', new RuntimeException('boom')],
+    'step timed out while storing' => ['moveFailure', new StepTimedOut('timeout')],
+]);
+
 it('copies each file to the external destinations and verifies it there', function (): void {
     $site = restorePointSite();
     $run = backupRun($site);
-    $record = externalDestination($site, externalDir());
+    $record = externalDestination($site);
+    $driver = new FakeDriver;
 
-    $point = app(RestorePointService::class)->create($site, new FakeDriver, $run, AuditActor::system('tests'));
-    $external = Backup::query()->where('backup_target_id', $record->id)->orderBy('id')->get();
+    $point = restorePoints($driver)->create($site, $driver, $run, testActor());
+    $external = Backup::query()->where('backup_target_id', $record->id)->get();
 
     expect($point->backups)->toHaveCount(4)
-        ->and($external)->toHaveCount(2)
-        ->and($external->every(fn (Backup $b): bool => $b->verified_at !== null && $b->run_id === $run->id))->toBeTrue();
+        ->and($external)->toHaveCount(2);
     foreach ($external as $row) {
-        expect(hash_file('sha256', externalDir().'/'.$row->path))->toBe($row->sha256);
+        $source = $point->local($row->kind);
+        expect($row->verified_at)->not->toBeNull()
+            ->and($row->run_id)->toBe($run->id)
+            ->and($row->sha256)->toBe($source?->sha256)
+            ->and($row->expires_at?->toIso8601String())->toBe($source?->expires_at?->toIso8601String())
+            ->and(hash_file('sha256', externalDir().'/'.$row->path))->toBe($row->sha256);
     }
 });
 
-it('keeps the restore point valid locally when an external destination fails, with a warning', function (): void {
+it('keeps the restore point valid locally when an external destination fails, with a warning', function (?Throwable $failure, string $reason): void {
     $site = restorePointSite();
     $run = backupRun($site);
-    // A destination that stores other bytes than it was given.
-    $lying = new class implements BackupTarget
-    {
-        /** @var array<string, string> */
-        public array $objects = [];
+    $lying = new LyingTarget;
+    $lying->putFailure = $failure;
+    $record = externalDestination($site, $lying);
+    $driver = new FakeDriver;
 
-        public function put(string $key, $stream): StoredObject
-        {
-            $this->objects[$key] = 'corrupt';
-
-            return new StoredObject($key, 7);
-        }
-
-        public function readStream(string $key)
-        {
-            throw BackupTargetException::notFound($key);
-        }
-
-        public function exists(string $key): bool
-        {
-            return isset($this->objects[$key]);
-        }
-
-        public function checksum(string $key): string
-        {
-            return hash('sha256', $this->objects[$key] ?? throw BackupTargetException::notFound($key));
-        }
-
-        public function delete(string $key): void
-        {
-            unset($this->objects[$key]);
-        }
-
-        public function list(string $prefix = ''): array
-        {
-            return [];
-        }
-    };
-    $record = externalDestination($site, externalDir(), $lying);
-
-    $point = app(RestorePointService::class)->create($site, new FakeDriver, $run, AuditActor::system('tests'));
+    $point = restorePoints($driver)->create($site, $driver, $run, testActor());
 
     expect($point->warnings)->toHaveCount(2)
-        ->and($point->warnings[0])->toContain($record->name)->toContain('SHA-256')
+        ->and($point->warnings[0])->toContain($record->name)->toContain($reason)
         ->and(Backup::query()->where('backup_target_id', $record->id)->whereNull('verified_at')->count())->toBe(2)
         ->and($lying->objects)->toBe([])
         ->and(app(RestorePointGate::class)->isVerified($run))->toBeTrue();
-});
+})->with([
+    'other bytes stored' => [null, 'SHA-256'],
+    'unexpected error' => [new RuntimeException('connexió perduda'), 'error inesperat'],
+]);
 
-it('reuses a complete restore point when the step is retried, and redoes an incomplete one', function (): void {
+it('reuses a complete restore point when the step is retried, with the warnings of its archive', function (): void {
     $site = restorePointSite();
     $run = backupRun($site);
-    $driver = new FakeDriver;
-    $service = app(RestorePointService::class);
+    $driver = new RestorePointDriver;
+    $driver->configPath = '/var/www/wp-config.php';
+    $service = restorePoints($driver);
 
-    $first = $service->create($site, $driver, $run, AuditActor::system('tests'));
-    $again = $service->create($site, $driver, $run, AuditActor::system('tests'));
+    $first = $service->create($site, $driver, $run, testActor());
+    $again = $service->create($site, $driver, $run, testActor());
 
-    expect($again->reused)->toBeTrue()
+    expect($first->warnings)->toHaveCount(1)
+        ->and($again->reused)->toBeTrue()
+        ->and($again->warnings)->toBe($first->warnings)
         ->and(array_map(fn (Backup $b): int => $b->id, $again->backups))->toBe(array_map(fn (Backup $b): int => $b->id, $first->backups))
         ->and(Backup::query()->count())->toBe(2);
+});
 
-    // A crash after the dump was stored: the archive row is missing.
-    $first->backups[1]->delete();
-    $redone = $service->create($site, $driver, $run, AuditActor::system('tests'));
+it('redoes a restore point that is incomplete or whose stored bytes changed', function (Closure $break): void {
+    $site = restorePointSite();
+    $run = backupRun($site);
+    $driver = new RestorePointDriver;
+    $service = restorePoints($driver);
+    $first = $service->create($site, $driver, $run, testActor());
+    $break($first, $driver);
+
+    $redone = $service->create($site, $driver, $run, testActor());
 
     expect($redone->reused)->toBeFalse()
         ->and(Backup::query()->whereNull('deleted_at')->whereNotNull('verified_at')->count())->toBe(2)
-        ->and(Backup::query()->whereNotNull('deleted_at')->pluck('id')->all())->toBe([$first->backups[0]->id])
+        ->and(Backup::query()->whereNull('deleted_at')->pluck('id')->intersect(array_map(fn (Backup $b): int => $b->id, $first->backups))->all())->toBe([])
         ->and(app(RestorePointGate::class)->isVerified($run))->toBeTrue();
+})->with([
+    'archive row missing' => [function (RestorePoint $point): void {
+        $point->local(BackupKind::Files)?->delete();
+    }],
+    'stored bytes changed' => [function (RestorePoint $point, RestorePointDriver $driver): void {
+        $driver->tamperStore = true;
+    }],
+]);
+
+it('fails the step without discarding a good restore point when the store cannot be checked', function (): void {
+    $site = restorePointSite();
+    $run = backupRun($site);
+    $driver = new RestorePointDriver;
+    $service = restorePoints($driver);
+    $service->create($site, $driver, $run, testActor());
+    $files = $driver->files;
+    $driver->storeChecksumFailure = new RemoteCommandFailed('timeout');
+
+    expect(fn () => $service->create($site, $driver, $run, testActor()))->toThrow(BackupFailed::class, 'timeout')
+        ->and($driver->files)->toBe($files)
+        ->and(Backup::query()->whereNull('deleted_at')->whereNotNull('verified_at')->count())->toBe(2);
+});
+
+it('copies again an external file whose row or bytes do not match the current restore point', function (Closure $stale): void {
+    $site = restorePointSite();
+    $run = backupRun($site);
+    $record = externalDestination($site);
+    $driver = new FakeDriver;
+    $service = restorePoints($driver);
+    $service->create($site, $driver, $run, testActor());
+    $row = Backup::query()->where('backup_target_id', $record->id)->where('kind', BackupKind::Database)->sole();
+    $stale($row, externalDir().'/'.$row->path);
+
+    $point = $service->create($site, $driver, $run, testActor());
+    $row->refresh();
+    $source = $point->local(BackupKind::Database);
+
+    expect($point->reused)->toBeTrue()
+        ->and($point->warnings)->toBe([])
+        ->and($row->sha256)->toBe($source?->sha256)
+        ->and($row->size_bytes)->toBe($source?->size_bytes)
+        ->and($row->verified_at)->not->toBeNull()
+        ->and(hash_file('sha256', externalDir().'/'.$row->path))->toBe($source?->sha256);
+})->with([
+    'row of an earlier attempt' => [function (Backup $row, string $file): void {
+        $row->update(['sha256' => hash('sha256', 'old'), 'size_bytes' => 3, 'verified_at' => now()]);
+        file_put_contents($file, 'old');
+    }],
+    'verified row, altered bytes' => [function (Backup $row, string $file): void {
+        file_put_contents($file, 'altered');
+    }],
+]);
+
+it('gives external rows added later the expiry of the restore point', function (): void {
+    $site = restorePointSite();
+    $run = backupRun($site);
+    $driver = new FakeDriver;
+    $service = restorePoints($driver);
+    $first = $service->create($site, $driver, $run, testActor());
+    Carbon::setTestNow(now()->addHours(2));
+    $record = externalDestination($site);
+
+    $service->create($site, $driver, $run, testActor());
+
+    foreach (Backup::query()->where('backup_target_id', $record->id)->get() as $row) {
+        expect($row->expires_at?->toIso8601String())->toBe($first->local($row->kind)?->expires_at?->toIso8601String());
+    }
 });
 
 describe('gate', function (): void {
@@ -290,7 +500,7 @@ describe('gate', function (): void {
             'run_id' => $run->id,
             'backup_target_id' => app(SiteLocalDestination::class)->record()->id,
             'kind' => $kind,
-            'path' => "site-{$run->site_id}/run{$run->id}/".($kind === BackupKind::Database ? 'db.sql.gz' : 'files.tar.gz'),
+            'path' => "site-{$run->site_id}/run{$run->id}/".RestorePointService::objectName($kind),
             'verified_at' => now(),
             'expires_at' => now()->addDays(7),
         ]);
@@ -353,9 +563,10 @@ describe('run', function (): void {
     function backupPipeline(FakeDriver $driver): void
     {
         $driverFor = static fn (Site $s, AuditActor $a): SiteDriver => $driver;
+        $service = restorePoints($driver);
         app(PipelineResolver::class)->register(RunType::Backup, static fn (): Pipeline => new Pipeline([
             new InventoryStep(app(SiteInventory::class), $driverFor, app(RunAuthorization::class), 60),
-            new BackupStep(app(RestorePointService::class), $driverFor, app(RunAuthorization::class), 60),
+            new BackupStep($service, $driverFor, app(RunAuthorization::class), 60),
         ]));
     }
 
@@ -377,7 +588,7 @@ describe('run', function (): void {
         $result = $step->result;
 
         expect($run->status)->toBe(RunStatus::Succeeded)
-            ->and($step->summary)->toStartWith('Punt de restauració verificat: BD ')
+            ->and($step->summary)->toStartWith('Punt de restauració verificat: BD ')->toContain(', codi ')
             ->and($result['directory'])->toBe("site-{$site->id}/run{$run->id}")
             ->and(array_column($result['backups'], 'verified'))->toBe([true, true])
             ->and(app(RestorePointGate::class)->isVerified($run))->toBeTrue();
@@ -385,7 +596,9 @@ describe('run', function (): void {
 
     it('fails the run when the restore point cannot be verified', function (): void {
         $site = restorePointSite();
-        backupPipeline(new TamperedStoreDriver);
+        $driver = new RestorePointDriver;
+        $driver->moveSizeDelta = 1;
+        backupPipeline($driver);
 
         $run = app(RunEngine::class)->execute(backupRun($site));
 

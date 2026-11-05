@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Backups;
 
+use App\Enums\BackupKind;
 use App\Models\Backup;
 
 /**
@@ -15,6 +16,7 @@ use App\Models\Backup;
 final readonly class RestorePoint
 {
     /**
+     * @param  int  $localTargetId  the site-local destination (backup_targets.id)
      * @param  string  $directory  key prefix of its objects at every destination
      * @param  list<Backup>  $backups
      * @param  list<string>  $warnings
@@ -23,11 +25,26 @@ final readonly class RestorePoint
     public function __construct(
         public int $siteId,
         public ?int $runId,
+        public int $localTargetId,
         public string $directory,
         public array $backups,
         public array $warnings = [],
         public bool $reused = false,
     ) {}
+
+    /**
+     * The verified file of $kind at the site-local destination.
+     */
+    public function local(BackupKind $kind): ?Backup
+    {
+        foreach ($this->backups as $backup) {
+            if ($backup->backup_target_id === $this->localTargetId && $backup->kind === $kind) {
+                return $backup;
+            }
+        }
+
+        return null;
+    }
 
     /**
      * For run step data and reports: no paths beyond the keys, no secrets.

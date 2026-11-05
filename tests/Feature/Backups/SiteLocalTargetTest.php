@@ -79,6 +79,8 @@ it('adopts a file of the work directory without transferring it, after checking 
 
     expect($stored->key)->toBe('site-1/run-1/db.sql.gz')
         ->and($stored->sizeBytes)->toBe($dump->sizeBytes)
+        // The checksum it verified before linking the file into place.
+        ->and($stored->sha256)->toBe($dump->sha256)
         ->and($target->checksum('site-1/run-1/db.sql.gz'))->toBe($dump->sha256)
         ->and($driver->files)->not->toHaveKey('db-run1-abcd.sql.gz')
         ->and($driver->writeCalls)->toBe(['moveWorkFile']);
@@ -109,7 +111,8 @@ it('never writes when the work directory is inside the WordPress root', function
     $dump = $driver->dumpDatabase('db-run1-abcd.sql.gz');
     $target = fakeLocalTarget($driver);
 
-    expect(fn () => $target->put('site-1/r1/db.sql.gz', BackupTargetContract::stream('x')))->toThrow(BackupTargetException::class, 'accessibles pel web')
+    expect(fn () => $target->assertWritable())->toThrow(BackupTargetException::class, 'accessibles pel web')
+        ->and(fn () => $target->put('site-1/r1/db.sql.gz', BackupTargetContract::stream('x')))->toThrow(BackupTargetException::class, 'accessibles pel web')
         ->and(fn () => $target->adopt($dump, 'site-1/r1/db.sql.gz'))->toThrow(BackupTargetException::class, 'accessibles pel web')
         ->and(array_keys($driver->files))->toBe(['db-run1-abcd.sql.gz']);
 });

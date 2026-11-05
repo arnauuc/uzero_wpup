@@ -120,7 +120,7 @@ final class SiteLocalTarget implements BackupTarget
                 $stored = $this->same($key, $existing, $file->sha256);
                 $this->removeIfSame($file->path, $file->sha256);
 
-                return $stored;
+                return $this->withSha($stored, $file->sha256);
             }
 
             $actual = $this->driver->statWorkFile($file->path, true)
@@ -129,7 +129,7 @@ final class SiteLocalTarget implements BackupTarget
                 throw new BackupTargetException("El fitxer «{$file->path}» no coincideix amb el checksum esperat: no es desa com a «{$key}».");
             }
 
-            return $this->publish($file->path, $key, $file->sha256);
+            return $this->withSha($this->publish($file->path, $key, $file->sha256), $file->sha256);
         } catch (DriverException $e) {
             throw BackupTargetException::failed('El desament', $key, $this->reason($e));
         }
@@ -236,6 +236,21 @@ final class SiteLocalTarget implements BackupTarget
         }
 
         return $removed;
+    }
+
+    /**
+     * Fails unless this target may write: the web must not serve the store.
+     * Callers check it before generating anything big for it (a dump, an archive).
+     *
+     * @throws BackupTargetException
+     */
+    public function assertWritable(): void
+    {
+        try {
+            $this->prepareWrite();
+        } catch (DriverException $e) {
+            throw BackupTargetException::failed('La preparació', $this->settings->root.'/', $this->reason($e));
+        }
     }
 
     /**
@@ -506,6 +521,11 @@ final class SiteLocalTarget implements BackupTarget
     private function path(string $key): string
     {
         return $this->settings->root.'/'.$key;
+    }
+
+    private function withSha(StoredObject $object, string $sha256): StoredObject
+    {
+        return new StoredObject($object->key, $object->sizeBytes, $object->modifiedAt, $sha256);
     }
 
     private function object(string $key, WorkFile $file): StoredObject

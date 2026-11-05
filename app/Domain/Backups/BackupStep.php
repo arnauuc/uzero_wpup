@@ -12,7 +12,7 @@ use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\Step;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
-use App\Enums\BackupTargetType;
+use App\Enums\BackupKind;
 use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Site;
 use Closure;
@@ -55,8 +55,7 @@ final readonly class BackupStep implements Step
             return "No farà cap punt de restauració: l'execució no té cap lloc.";
         }
         $uploads = ($site->profile->include_uploads ?? false) ? 'amb uploads' : 'sense uploads';
-        $external = $site->backupTargets()->where('backup_targets.type', '!=', BackupTargetType::SiteLocal->value)
-            ->where('backup_targets.active', true)->orderBy('backup_targets.id')->get()->map(static fn (BackupTargetRecord $t): string => $t->name)->all();
+        $external = $site->externalBackupTargets()->get()->map(static fn (BackupTargetRecord $t): string => $t->name)->all();
 
         return "Farà un punt de restauració del lloc {$site->name}: volcat complet de la base de dades i arxiu del codi ({$uploads}), desats al servidor del lloc amb el SHA-256 comprovat"
             .($external === [] ? '.' : ', i en copiarà els fitxers a '.implode(', ', $external).'.');
@@ -81,12 +80,11 @@ final readonly class BackupStep implements Step
             return StepOutcome::failed($e->getMessage());
         }
 
-        // The site-local rows come first: database, then files.
-        $local = array_slice($point->summary()['backups'], 0, 2);
         $summary = sprintf(
-            'Punt de restauració verificat%s: %s',
+            'Punt de restauració verificat%s: BD %s, codi %s',
             $point->reused ? ' (ja fet)' : '',
-            implode(', ', array_map(static fn (array $b): string => sprintf('%s %s', $b['kind'] === 'database' ? 'BD' : 'codi', self::size($b['size_bytes'])), $local)),
+            self::size($point->local(BackupKind::Database)->size_bytes ?? 0),
+            self::size($point->local(BackupKind::Files)->size_bytes ?? 0),
         ).($point->warnings === [] ? '' : sprintf('; %d avisos', count($point->warnings)));
 
         return StepOutcome::succeeded($summary, implode("\n", $point->warnings), $point->summary());
