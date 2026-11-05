@@ -6,8 +6,11 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\Dropbox\DropboxAdapter;
+use App\Domain\Backups\Dropbox\DropboxClient;
 use App\Domain\Backups\Dropbox\DropboxSettings;
 use App\Domain\Backups\Dropbox\DropboxTargetFactory;
+use App\Domain\Backups\Dropbox\DropboxTokenProvider;
 use App\Domain\Backups\FlysystemTarget;
 use App\Domain\Secrets\Secret;
 use App\Domain\Secrets\SecretRedactor;
@@ -15,6 +18,10 @@ use App\Domain\Secrets\SecretStore;
 use App\Enums\BackupTargetType;
 use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Site;
+use GuzzleHttp\Client;
+use GuzzleHttp\HandlerStack;
+use League\Flysystem\Config;
+use League\Flysystem\UnableToCreateDirectory;
 use Tests\Contracts\BackupTargetContract;
 use Tests\Support\FakeDropboxApi;
 
@@ -102,4 +109,19 @@ it('is resolved by the registry for a dropbox row', function (): void {
     expect($target)->toBeInstanceOf(FlysystemTarget::class)
         ->and(app(DropboxSettings::class)->chunkBytes % DropboxSettings::CHUNK_UNIT_BYTES)->toBe(0)
         ->and($target->checksum('site-1/r1/files.tar.gz'))->toBe(hash('sha256', 'files'));
+});
+
+it('creates folders idempotently but not over a file', function (): void {
+    $fake = FakeDropboxApi::inTemp();
+    $http = new Client(['handler' => HandlerStack::create($fake(...))]);
+    $redactor = app(SecretRedactor::class);
+    $settings = FakeDropboxApi::settings();
+    $adapter = new DropboxAdapter(new DropboxClient($http, new DropboxTokenProvider($http, $fake->credential(), $redactor, $settings), $redactor, $settings), 'wpup');
+    $adapter->write('file.gz', 'x', new Config);
+
+    $adapter->createDirectory('d', new Config);
+    $adapter->createDirectory('d', new Config);
+
+    expect($adapter->directoryExists('d'))->toBeTrue()
+        ->and(fn () => $adapter->createDirectory('file.gz', new Config))->toThrow(UnableToCreateDirectory::class, 'conflict/file');
 });

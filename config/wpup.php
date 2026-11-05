@@ -261,6 +261,11 @@ return [
             // Per request; a download of a whole archive is one request.
             'connect_timeout_seconds' => 10,
             'timeout_seconds' => 3600,
+            // What is read of an error or token response, and how much of a
+            // non-JSON error is quoted in the message.
+            'max_error_bytes' => 65_536,
+            'error_summary_chars' => 200,
+            'max_token_response_bytes' => 65_536,
         ],
     ],
 

@@ -170,6 +170,9 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.backups.dropbox.buffer_memory_bytes'),
             self::configInt('wpup.backups.dropbox.connect_timeout_seconds'),
             self::configInt('wpup.backups.dropbox.timeout_seconds'),
+            self::configInt('wpup.backups.dropbox.max_error_bytes'),
+            self::configInt('wpup.backups.dropbox.error_summary_chars'),
+            self::configInt('wpup.backups.dropbox.max_token_response_bytes'),
         ));
         $this->app->bind(DropboxTargetFactory::class, static fn (Application $app): DropboxTargetFactory => new DropboxTargetFactory(
             $app->make(SecretStore::class),

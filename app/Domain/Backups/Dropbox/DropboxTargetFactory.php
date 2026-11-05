@@ -68,7 +68,7 @@ final readonly class DropboxTargetFactory
             $options['handler'] = HandlerStack::create($this->handler);
         }
         $http = new Client($options);
-        $client = new DropboxClient($http, new DropboxTokenProvider($http, $credential, $this->redactor, $this->settings->tokenUrl), $this->redactor, $this->settings);
+        $client = new DropboxClient($http, new DropboxTokenProvider($http, $credential, $this->redactor, $this->settings), $this->redactor, $this->settings);
 
         return new FlysystemTarget(new Filesystem(new DropboxAdapter($client, $root)), $this->redactor, $this->hashChunkBytes);
     }

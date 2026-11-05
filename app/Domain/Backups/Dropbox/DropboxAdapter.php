@@ -127,7 +127,7 @@ final readonly class DropboxAdapter implements FilesystemAdapter
         try {
             $this->client->createFolder($this->path($path));
         } catch (DropboxException $e) {
-            if (! $e->isConflict()) {
+            if (! $e->isFolderConflict()) {
                 throw UnableToCreateDirectory::atLocation($path, $e->getMessage(), $e);
             }
         }
