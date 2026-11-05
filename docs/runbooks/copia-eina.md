@@ -22,6 +22,10 @@ El xifratge es fa a la VM abans de pujar res. El text en clar (dump, còpies i `
 
 **Retenció:** l'última còpia de cadascun dels 30 dies més recents que en tenen, i la primera de cadascun dels 12 mesos més recents que en tenen (`wpup.tool_backup.retention`). Una còpia manual el mateix dia substitueix la d'aquell dia, i si la VM ha estat aturada uns dies, no es perd història. Les claus que no segueixen el format (`tool/notes.txt`…) no s'esborren mai. Cada esborrat queda a `audit_log` com a `tool_backup.deleted`.
 
+**Pujada verificada:** la còpia es puja primer a `tool/pending/…` i només passa a la clau definitiva (`tool/wpup-….tar.age`) quan el SHA-256 calculat per Dropbox coincideix amb el local. Una clau definitiva és, doncs, sempre una còpia verificada, i la retenció només compta aquestes. Si una pujada falla, s'esborra; si no es pot esborrar, queda a `audit_log` com a `tool_backup.cleanup_failed` i l'esborra la còpia següent. Cada còpia també esborra del directori de staging el que hagi deixat una còpia anterior que no va acabar (`tool_backup.stale_after_seconds`).
+
+**Una sola alhora:** mentre una execució de la còpia de l'eina no ha acabat (en cua, en curs, interrompuda…), no se n'encua cap altra. La programada se salta aquell dia i ho deixa al log; `wpup tool:backup` respon «ja n'hi ha una en curs».
+
 ## Configuració
 
 ### 1. Clau d'age
@@ -49,6 +53,7 @@ La còpia va a la fila de `backup_targets` que es diu `tool` (`WPUP_TOOL_BACKUP_
 
 - de tipus `dropbox` (una app de Dropbox amb accés només a la seva *App folder*);
 - activa i **no vinculada a cap lloc**: les còpies de l'eina contenen les dades de tots els llocs i no comparteixen carpeta amb cap punt de restauració;
+- amb un `config.root` que no és el mateix, ni a dins ni a sobre, que el de cap altra destinació de Dropbox (les credencials no es poden comparar, així que es rebutja encara que siguin apps diferents);
 - amb la credencial al `SecretStore` (`credential_ref`).
 
 Es crea amb `wpup backup-target:dropbox` (UZEROWPUP-107, en un PR a part), per exemple amb `config.root` = `eina`. Les còpies queden a `Aplicacions/<app>/eina/tool/` del Dropbox.
@@ -61,7 +66,7 @@ sudo -u wpup /opt/uzero-wpup/wpup tool:backup --dry-run
 
 Necessita els workers en marxa (obrir la destinació revela la credencial, [ADR-0011](../adr/0011-cli-sense-clau-mestra.md)). Mostra la clau que es faria servir, quants fitxers s'inclourien, els destinataris, les còpies que hi ha i les que esborraria la retenció. No fa cap dump ni puja ni esborra res.
 
-`wpup tool:backup` sense `--dry-run` fa la còpia en aquell moment. Cada execució deixa un `tool_backup.completed` (o `tool_backup.failed`) a `audit_log`, amb la clau, la mida, el SHA-256 i els avisos.
+`wpup tool:backup` sense `--dry-run` fa la còpia en aquell moment. Com que la retenció esborra còpies antigues, primer fa la mateixa comprovació, mostra què s'esborraria i demana confirmació; `--force` no la demana. L'execució diària del planificador no és interactiva i no demana res: queda auditada. Cada execució deixa un `tool_backup.completed` (o `tool_backup.failed`) a `audit_log`, amb la clau, la mida, el SHA-256 i els avisos.
 
 ## Restaurar
 

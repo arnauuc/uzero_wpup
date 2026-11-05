@@ -25,7 +25,7 @@ final class BackupTargetRegistry
     private array $factories = [];
 
     /**
-     * @var array<string, Closure(BackupTargetRecord, AuditActor): BackupTarget>
+     * @var array<string, Closure(BackupTargetRecord, AuditActor): RenamableBackupTarget>
      */
     private array $toolFactories = [];
 
@@ -38,7 +38,7 @@ final class BackupTargetRegistry
     }
 
     /**
-     * @param  Closure(BackupTargetRecord, AuditActor): BackupTarget  $factory  credentials it reveals are audited as the actor
+     * @param  Closure(BackupTargetRecord, AuditActor): RenamableBackupTarget  $factory  credentials it reveals are audited as the actor
      */
     public function registerForTool(BackupTargetType $type, Closure $factory): void
     {
@@ -75,7 +75,7 @@ final class BackupTargetRegistry
      *
      * @throws BackupTargetException when the type cannot hold the tool's backup, or the destination is inactive or a site's
      */
-    public function forTool(BackupTargetRecord $record, AuditActor $actor): BackupTarget
+    public function forTool(BackupTargetRecord $record, AuditActor $actor): RenamableBackupTarget
     {
         if ($record->sites()->exists()) {
             throw new BackupTargetException("La destinació de còpia «{$record->name}» la fan servir llocs: la còpia de l'eina en necessita una de pròpia.");
@@ -83,11 +83,44 @@ final class BackupTargetRegistry
         if (! $record->active) {
             throw new BackupTargetException("La destinació de còpia «{$record->name}» està desactivada.");
         }
+        $overlapping = self::overlapping($record);
+        if ($overlapping !== null) {
+            throw new BackupTargetException("La destinació de còpia «{$record->name}» comparteix carpeta amb «{$overlapping}»: la còpia de l'eina en necessita una de pròpia.");
+        }
 
         $factory = $this->toolFactories[$record->type->value]
             ?? throw new BackupTargetException("Les destinacions de tipus {$record->type->value} no poden guardar la còpia de l'eina.");
 
         return $factory($record, $actor);
+    }
+
+    /**
+     * Another destination of the same type whose config.root is the tool's,
+     * or contains it, or is inside it. Credentials cannot be compared (each
+     * row has its own secret), so two different Dropbox apps with the same
+     * root are refused too: in doubt, never share.
+     */
+    private static function overlapping(BackupTargetRecord $record): ?string
+    {
+        $root = self::root($record);
+        if ($root === null) {
+            return null;
+        }
+        foreach (BackupTargetRecord::query()->where('type', $record->type)->whereKeyNot($record->id)->get() as $other) {
+            $theirs = self::root($other);
+            if ($theirs !== null && ($root === '' || $theirs === '' || str_starts_with($root.'/', $theirs.'/') || str_starts_with($theirs.'/', $root.'/'))) {
+                return $other->name;
+            }
+        }
+
+        return null;
+    }
+
+    private static function root(BackupTargetRecord $record): ?string
+    {
+        $root = $record->config['root'] ?? null;
+
+        return is_string($root) ? strtolower(trim($root, '/')) : null;
     }
 
     /**

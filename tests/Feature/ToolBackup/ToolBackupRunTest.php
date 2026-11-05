@@ -3,19 +3,21 @@
 declare(strict_types=1);
 
 use App\Domain\Audit\AuditActor;
-use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
 use App\Domain\Backups\Dropbox\DropboxTargetFactory;
 use App\Domain\Backups\FlysystemTarget;
+use App\Domain\Backups\RenamableBackupTarget;
 use App\Domain\Backups\StoredObject;
 use App\Domain\Secrets\Secret;
 use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Secrets\SecretStore;
 use App\Domain\ToolBackup\ToolBackupCheckStep;
+use App\Domain\ToolBackup\ToolBackupException;
 use App\Domain\ToolBackup\ToolBackupKey;
 use App\Domain\ToolBackup\ToolBackupLauncher;
 use App\Domain\ToolBackup\ToolBackupRetention;
+use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Enums\BackupTargetType;
 use App\Enums\RunStatus;
@@ -30,6 +32,8 @@ use App\Models\RunStep;
 use App\Models\Site;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Illuminate\Console\Scheduling\Event as ScheduledEvent;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Redis;
@@ -214,51 +218,126 @@ it('refuses to run without age recipients, before dumping anything', function ()
         ->and($f->staged())->toBe([]);
 });
 
-it('deletes the upload and fails when the SHA-256 at the destination differs', function (): void {
-    $f = toolBackupRunFixture();
-    $inner = app(DropboxTargetFactory::class)->make($f->record, AuditActor::system('tests'));
-    app(BackupTargetRegistry::class)->registerForTool(BackupTargetType::Dropbox, static fn (): BackupTarget => new readonly class($inner) implements BackupTarget
+/**
+ * The real Dropbox target with scripted faults, registered for the tool.
+ */
+final class FaultyToolTarget implements RenamableBackupTarget
+{
+    public bool $lieChecksum = false;
+
+    public bool $throwChecksum = false;
+
+    public bool $failDelete = false;
+
+    public function __construct(private readonly FlysystemTarget $inner) {}
+
+    public static function install(ToolBackupRunFixture $f): self
     {
-        public function __construct(private FlysystemTarget $inner) {}
+        $target = new self(app(DropboxTargetFactory::class)->make($f->record, AuditActor::system('tests')));
+        app(BackupTargetRegistry::class)->registerForTool(BackupTargetType::Dropbox, static fn (): RenamableBackupTarget => $target);
 
-        public function put(string $key, $stream): StoredObject
-        {
-            return $this->inner->put($key, $stream);
+        return $target;
+    }
+
+    public function put(string $key, $stream): StoredObject
+    {
+        return $this->inner->put($key, $stream);
+    }
+
+    public function readStream(string $key)
+    {
+        return $this->inner->readStream($key);
+    }
+
+    public function exists(string $key): bool
+    {
+        return $this->inner->exists($key);
+    }
+
+    public function checksum(string $key): string
+    {
+        if ($this->throwChecksum) {
+            throw BackupTargetException::failed('El càlcul del checksum', $key, 'connexió tallada');
         }
 
-        public function readStream(string $key)
-        {
-            return $this->inner->readStream($key);
-        }
+        return $this->lieChecksum ? str_repeat('0', 64) : $this->inner->checksum($key);
+    }
 
-        public function exists(string $key): bool
-        {
-            return $this->inner->exists($key);
+    public function delete(string $key): void
+    {
+        if ($this->failDelete) {
+            throw BackupTargetException::failed("L'esborrat", $key, 'connexió tallada');
         }
+        $this->inner->delete($key);
+    }
 
-        public function checksum(string $key): string
-        {
-            return str_repeat('0', 64);
-        }
+    public function list(string $prefix = ''): array
+    {
+        return $this->inner->list($prefix);
+    }
 
-        public function delete(string $key): void
-        {
-            $this->inner->delete($key);
-        }
+    public function rename(string $from, string $to): void
+    {
+        $this->inner->rename($from, $to);
+    }
+}
 
-        public function list(string $prefix = ''): array
-        {
-            return $this->inner->list($prefix);
-        }
-    });
+it('never leaves a final key when the SHA-256 at the destination differs or cannot be computed', function (string $fault): void {
+    $f = toolBackupRunFixture();
+    $target = FaultyToolTarget::install($f);
+    $target->{$fault} = true;
 
     $run = toolBackupExecute();
 
     expect($run->status)->toBe(RunStatus::Failed)
-        ->and($run->failureReason())->toContain('SHA-256')
+        ->and($run->failureReason())->toContain($fault === 'lieChecksum' ? 'SHA-256' : 'checksum')
         ->and($f->storedKeys())->toBe([])
-        ->and(AuditLogEntry::query()->where('action', 'tool_backup.failed')->exists())->toBeTrue();
+        ->and(AuditLogEntry::query()->where('action', 'tool_backup.failed')->sole()->context['phase'] ?? null)->toBe('backup');
     $f->assertNoSecretsStored();
+})->with(['lieChecksum', 'throwChecksum']);
+
+it('audits a failed upload it cannot remove, keeps it out of the retention and removes it next time', function (): void {
+    $f = toolBackupRunFixture();
+    $target = FaultyToolTarget::install($f);
+    $target->lieChecksum = true;
+    $target->failDelete = true;
+
+    $failed = toolBackupExecute();
+    $left = $f->storedKeys();
+    $cleanup = AuditLogEntry::query()->where('action', 'tool_backup.cleanup_failed')->sole();
+
+    expect($failed->status)->toBe(RunStatus::Failed)
+        ->and($left)->toHaveCount(1)
+        ->and($left[0])->toStartWith('tool/pending/wpup-20261105-070000-')
+        ->and(ToolBackupKey::timeOf($left[0]))->toBeNull()
+        ->and($cleanup->context['key'] ?? null)->toBe($left[0]);
+
+    $target->lieChecksum = false;
+    $target->failDelete = false;
+    CarbonImmutable::setTestNow('2026-11-05 07:05:00');
+    $next = toolBackupExecute();
+
+    expect($next->status)->toBe(RunStatus::Succeeded)
+        ->and($f->storedKeys())->toBe(['tool/wpup-20261105-070500.tar.age'])
+        ->and(AuditLogEntry::query()->where('action', 'tool_backup.deleted')->sole()->context['key'] ?? null)->toBe($left[0]);
+});
+
+it('audits every failure of the check, and unexpected errors too', function (): void {
+    $f = toolBackupRunFixture();
+    Site::factory()->create()->backupTargets()->attach($f->record->id);
+
+    $run = toolBackupExecute(dryRun: true);
+    $audit = AuditLogEntry::query()->where('action', 'tool_backup.failed')->sole();
+
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and($run->failureReason())->toContain('la fan servir llocs')
+        ->and($audit->context['phase'] ?? null)->toBe('check');
+
+    $f->record->sites()->detach();
+    app(BackupTargetRegistry::class)->registerForTool(BackupTargetType::Dropbox, static fn (): RenamableBackupTarget => throw new RuntimeException('boom'));
+
+    expect(fn () => app(ToolBackupService::class)->run(AuditActor::system('tests'), CarbonImmutable::now()))->toThrow(RuntimeException::class, 'boom')
+        ->and(AuditLogEntry::query()->where('action', 'tool_backup.failed')->orderByDesc('id')->firstOrFail()->context['reason'] ?? null)->toContain('Error inesperat', 'boom');
 });
 
 it('opens for the tool only an active destination that no site uses', function (array $change, string $message): void {
@@ -276,6 +355,23 @@ it('opens for the tool only an active destination that no site uses', function (
     'linked to a site' => [['site' => true], 'la fan servir llocs'],
     'inactive' => [['active' => false], 'desactivada'],
     'site-local type' => [['type' => BackupTargetType::SiteLocal], 'no poden guardar la còpia de l\'eina'],
+]);
+
+it('refuses a tool destination that shares its folder with another Dropbox destination', function (string $root, bool $refused): void {
+    $f = toolBackupRunFixture();
+    BackupTargetRecord::factory()->create(['name' => 'altres', 'type' => BackupTargetType::Dropbox, 'config' => ['root' => $root]]);
+
+    $open = fn () => app(BackupTargetRegistry::class)->forTool($f->record, AuditActor::system('tests'));
+
+    $refused
+        ? expect($open)->toThrow(BackupTargetException::class, 'comparteix carpeta amb «altres»')
+        : expect($open())->toBeInstanceOf(RenamableBackupTarget::class);
+})->with([
+    'same root' => ['wpup', true],
+    'inside it' => ['wpup/sites', true],
+    'containing it' => ['', true],
+    'a sibling with a common prefix' => ['wpup-sites', false],
+    'elsewhere' => ['sites', false],
 ]);
 
 it('fails clearly when the tool destination is missing', function (): void {
@@ -298,6 +394,53 @@ it('queues it from the CLI and prints what the dry run found', function (): void
         ->assertExitCode(0);
 
     expect(Run::query()->where('type', RunType::ToolBackup)->sole()->actor)->toBe('oper1');
+});
+
+it('asks before applying the retention, unless --force', function (): void {
+    $f = toolBackupRunFixture();
+    $f->seed('tool/wpup-20260101-070000.tar.age');
+    $f->seed('tool/wpup-20260102-070000.tar.age');
+    config(['wpup.tool_backup.retention.daily' => 1, 'wpup.tool_backup.retention.monthly' => 0]);
+    User::factory()->create(['unix_username' => 'oper1', 'role' => UserRole::Operator]);
+    actingAsOperator('oper1');
+    $question = "Fer ara la còpia de l'eina i esborrar-ne 2 de les antigues per la retenció?";
+
+    command('tool:backup')
+        ->expectsOutputToContain('esborraria tool/wpup-20260101-070000.tar.age')
+        ->expectsConfirmation($question, 'no')
+        ->assertExitCode(1);
+    expect($f->storedKeys())->toBe(['tool/wpup-20260101-070000.tar.age', 'tool/wpup-20260102-070000.tar.age'])
+        ->and(Run::query()->where('type', RunType::ToolBackup)->sole()->flags)->toBe(['dry_run' => true]);
+
+    command('tool:backup')->expectsConfirmation($question, 'yes')->assertExitCode(0);
+    expect($f->storedKeys())->toBe(['tool/wpup-20261105-070000.tar.age']);
+
+    CarbonImmutable::setTestNow('2026-11-06 07:00:00');
+    command('tool:backup', ['--force' => true])->assertExitCode(0);
+    expect($f->storedKeys())->toBe(['tool/wpup-20261106-070000.tar.age']);
+});
+
+it('runs one at a time, whatever the state of the unfinished one', function (RunStatus $status): void {
+    Queue::fake();
+    $busy = Run::factory()->create(['type' => RunType::ToolBackup, 'site_id' => null, 'status' => $status]);
+
+    expect(fn () => app(ToolBackupLauncher::class)->launch(AuditActor::system('tests')))->toThrow(ToolBackupException::class, "Ja n'hi ha una en curs: l'execució #{$busy->id}")
+        ->and(app(ToolBackupLauncher::class)->scheduled())->toBeNull();
+    Queue::assertNothingPushed();
+})->with([RunStatus::Queued, RunStatus::Running, RunStatus::RollingBack, RunStatus::Interrupted]);
+
+it('schedules it daily, and a deliberate skip is not a failed scheduled task', function (): void {
+    Queue::fake();
+    Run::factory()->create(['type' => RunType::ToolBackup, 'site_id' => null, 'status' => RunStatus::Running]);
+    $events = array_values(array_filter(app(Schedule::class)->events(), static fn (ScheduledEvent $e): bool => $e->description === 'tool-backup'));
+
+    expect($events)->toHaveCount(1)
+        ->and($events[0]->expression)->toBe('0 7 * * *');
+
+    $events[0]->run(app());
+
+    expect($events[0]->exitCode)->toBe(0);
+    Queue::assertNothingPushed();
 });
 
 it('queues the daily run once, without waiting for it', function (): void {

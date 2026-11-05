@@ -29,7 +29,11 @@ Schedule::command('engine:prune-restore-points')
 
 // The tool's own backup (ADR-0009 §3, UZEROWPUP-47): queued for the workers,
 // which hold the KEK private key the Dropbox credential needs; not awaited.
-Schedule::call(static fn (): bool => app(ToolBackupLauncher::class)->scheduled() !== null)
+// Non-interactive: the retention it applies needs no confirmation here (the
+// run is audited); skipping while another one is unfinished is not a failure.
+Schedule::call(static function (): void {
+    app(ToolBackupLauncher::class)->scheduled();
+})
     ->name('tool-backup')
     ->dailyAt(config()->string('wpup.tool_backup.time'))
     ->withoutOverlapping();

@@ -122,7 +122,7 @@ El planificador fa la mateixa neteja cada dia a les `backups.prune_time` (per de
 
 | Comanda | Què fa |
 | --- | --- |
-| `tool:backup [--dry-run]` | Encua per als workers la còpia de l'eina (BD, configuració no secreta i informes, xifrada amb `age`) cap a la destinació de Dropbox `tool`, i n'espera el resultat. Amb `--dry-run` només mostra què s'inclouria i què esborraria la retenció. Vegeu [runbooks/copia-eina.md](runbooks/copia-eina.md) |
+| `tool:backup [--dry-run] [--force]` | Encua per als workers la còpia de l'eina (BD, configuració no secreta i informes, xifrada amb `age`) cap a la destinació de Dropbox `tool`, i n'espera el resultat. Amb `--dry-run` només mostra què s'inclouria i què esborraria la retenció. Sense `--force`, abans de fer-la mostra què esborraria la retenció i demana confirmació. Només n'hi pot haver una alhora. Vegeu [runbooks/copia-eina.md](runbooks/copia-eina.md) |
 
 El planificador l'encua cada dia a les `tool_backup.time` (per defecte, 07:00) sense esperar-la, si no n'hi ha cap altra en cua o en curs.
 

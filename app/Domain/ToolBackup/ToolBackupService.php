@@ -6,23 +6,32 @@ namespace App\Domain\ToolBackup;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
-use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\RenamableBackupTarget;
+use App\Domain\Backups\StoredObject;
 use App\Enums\AuditResult;
 use App\Enums\BackupTargetType;
 use App\Models\BackupTarget as BackupTargetRecord;
 use DateTimeInterface;
+use Throwable;
 
 /**
  * The tool's own daily backup (ADR-0009 §3, UZEROWPUP-47): the encrypted
- * archive (ToolArchiveBuilder) uploaded to the tool's Dropbox destination,
- * its SHA-256 checked there, then the retention applied. Runs on the workers
- * only: opening the destination reveals its credential (ADR-0011).
+ * archive (ToolArchiveBuilder) uploaded to the tool's Dropbox destination
+ * under a pending key, promoted to its final key only once its SHA-256 at the
+ * destination matches, then the retention applied. Runs on the workers only:
+ * opening the destination reveals its credential (ADR-0011).
  *
- * Audit trail (insert-only): one `tool_backup.deleted` per copy the retention
- * removes, and a `tool_backup.completed` or `tool_backup.failed` summary per
- * run. Never any secret: only keys, sizes, checksums and paths.
+ * A final key (ToolBackupKey::for()) is therefore always a verified copy, and
+ * retention only ever counts final keys. Pending uploads a failed run could
+ * not remove are removed by the next run.
+ *
+ * Audit trail (insert-only): one `tool_backup.deleted` per object removed,
+ * `tool_backup.cleanup_failed` when a failed upload could not be removed, and
+ * a `tool_backup.completed` or `tool_backup.failed` summary for every check
+ * and every run, whatever went wrong. Never any secret: only keys, sizes,
+ * checksums and paths.
  */
 final readonly class ToolBackupService
 {
@@ -37,28 +46,32 @@ final readonly class ToolBackupService
 
     /**
      * What a backup made at $at would hold, where it would go and which copies
-     * the retention would then delete. Changes nothing.
+     * the retention would then delete. Changes nothing but the audit trail
+     * when it fails.
      *
      * @throws ToolBackupException
+     * @throws Throwable unexpected failures, audited and rethrown
      */
     public function preview(AuditActor $actor, DateTimeInterface $at): ToolBackupPreview
     {
-        $recipients = $this->settings->validRecipients();
-        [$files, $warnings] = $this->contents->collect([...$this->settings->configPaths, ...$this->settings->reportPaths]);
-        [$record, $target] = $this->target($actor);
-        $key = ToolBackupKey::for($at);
+        $record = null;
 
         try {
-            $existing = $this->keys($target);
-        } catch (BackupTargetException $e) {
-            throw new ToolBackupException($e->getMessage());
-        }
+            $recipients = $this->settings->validRecipients();
+            [$files, $warnings] = $this->contents->collect([...$this->settings->configPaths, ...$this->settings->reportPaths]);
+            [$record, $target] = $this->target($actor);
+            $key = ToolBackupKey::for($at);
+            $existing = $this->finalKeys($target->list(ToolBackupKey::PREFIX));
 
-        return new ToolBackupPreview($record->name, $key, $recipients, $files, $warnings, count($existing), $this->retention()->plan([...$existing, $key])->delete);
+            return new ToolBackupPreview($record->name, $key, $recipients, $files, $warnings, count($existing), $this->retention()->plan([...$existing, $key])->delete);
+        } catch (Throwable $e) {
+            throw $this->failed($actor, $record, 'check', $e);
+        }
     }
 
     /**
      * @throws ToolBackupException
+     * @throws Throwable unexpected failures, audited and rethrown
      */
     public function run(AuditActor $actor, DateTimeInterface $at): ToolBackupResult
     {
@@ -70,19 +83,14 @@ final readonly class ToolBackupService
             $archive = $this->builder->build($at);
 
             try {
-                $this->upload($target, $key, $archive);
+                $this->upload($target, $record, $key, ToolBackupKey::pendingFor($at), $archive, $actor);
             } finally {
                 $archive->discard();
             }
 
             [$deleted, $kept, $warnings] = $this->applyRetention($target, $record, $key, $actor);
-        } catch (ToolBackupException|BackupTargetException $e) {
-            $this->audit->record($actor, 'tool_backup.failed', AuditResult::Failure, 'backup_target', $record?->id, [
-                'target' => $record->name ?? $this->targetName,
-                'reason' => $e->getMessage(),
-            ]);
-
-            throw $e instanceof ToolBackupException ? $e : new ToolBackupException($e->getMessage(), previous: $e);
+        } catch (Throwable $e) {
+            throw $this->failed($actor, $record, 'backup', $e);
         }
 
         $result = new ToolBackupResult($record->name, $key, $archive->sizeBytes, $archive->sha256, $archive->dumpBytes,
@@ -93,7 +101,27 @@ final readonly class ToolBackupService
     }
 
     /**
-     * @return array{BackupTargetRecord, BackupTarget}
+     * Audits the failure and returns what to throw: domain failures as
+     * ToolBackupException, anything else as it was.
+     */
+    private function failed(AuditActor $actor, ?BackupTargetRecord $record, string $phase, Throwable $e): Throwable
+    {
+        $known = $e instanceof ToolBackupException || $e instanceof BackupTargetException;
+        $this->audit->record($actor, 'tool_backup.failed', AuditResult::Failure, 'backup_target', $record?->id, [
+            'target' => $record->name ?? $this->targetName,
+            'phase' => $phase,
+            'reason' => $known ? $e->getMessage() : 'Error inesperat ('.$e::class.'): '.$e->getMessage(),
+        ]);
+
+        return match (true) {
+            $e instanceof ToolBackupException => $e,
+            $e instanceof BackupTargetException => new ToolBackupException($e->getMessage(), previous: $e),
+            default => $e,
+        };
+    }
+
+    /**
+     * @return array{BackupTargetRecord, RenamableBackupTarget}
      *
      * @throws ToolBackupException|BackupTargetException
      */
@@ -111,9 +139,13 @@ final readonly class ToolBackupService
     }
 
     /**
+     * Uploads under $pending, checks the SHA-256 the destination computes from
+     * its own bytes, and only then renames it to $key. On any failure the
+     * pending object is removed (best effort, audited when it cannot be).
+     *
      * @throws ToolBackupException|BackupTargetException
      */
-    private function upload(BackupTarget $target, string $key, ToolArchive $archive): void
+    private function upload(RenamableBackupTarget $target, BackupTargetRecord $record, string $key, string $pending, ToolArchive $archive, AuditActor $actor): void
     {
         $stream = fopen($archive->path, 'rb');
         if ($stream === false) {
@@ -121,31 +153,54 @@ final readonly class ToolBackupService
         }
 
         try {
-            $target->put($key, $stream);
-        } finally {
-            fclose($stream);
+            try {
+                $target->put($pending, $stream);
+            } finally {
+                fclose($stream);
+            }
+            if (! hash_equals($archive->sha256, $target->checksum($pending))) {
+                throw new ToolBackupException("El SHA-256 de la còpia pujada no coincideix amb el local: no s'ha desat com a «{$key}».");
+            }
+            $target->rename($pending, $key);
+        } catch (Throwable $e) {
+            $this->discardPending($target, $record, $pending, $actor);
+
+            throw $e;
         }
+    }
 
-        // What the destination holds, from its own bytes (BackupTarget::checksum()).
-        if (! hash_equals($archive->sha256, $target->checksum($key))) {
-            $target->delete($key);
-
-            throw new ToolBackupException("El SHA-256 de «{$key}» a la destinació no coincideix amb el local: s'ha esborrat la còpia pujada.");
+    private function discardPending(RenamableBackupTarget $target, BackupTargetRecord $record, string $pending, AuditActor $actor): void
+    {
+        try {
+            $target->delete($pending);
+        } catch (Throwable $e) {
+            // The next run removes it (applyRetention); it is never a final key.
+            $this->audit->record($actor, 'tool_backup.cleanup_failed', AuditResult::Failure, 'backup_target', $record->id, [
+                'target' => $record->name,
+                'key' => $pending,
+                'reason' => $e->getMessage(),
+            ]);
         }
     }
 
     /**
+     * Deletes what the retention does not keep, and the pending uploads of
+     * earlier runs that failed (there is one run at a time: the current one
+     * is already promoted).
+     *
      * @return array{list<string>, int, list<string>} deleted keys, copies kept, warnings
      *
      * @throws BackupTargetException when the destination cannot be listed
      */
-    private function applyRetention(BackupTarget $target, BackupTargetRecord $record, string $newKey, AuditActor $actor): array
+    private function applyRetention(RenamableBackupTarget $target, BackupTargetRecord $record, string $newKey, AuditActor $actor): array
     {
-        $plan = $this->retention()->plan($this->keys($target));
+        $objects = $target->list(ToolBackupKey::PREFIX);
+        $plan = $this->retention()->plan($this->finalKeys($objects));
+        $pending = array_values(array_filter(array_map(static fn (StoredObject $o): string => $o->key, $objects), static fn (string $k): bool => str_starts_with($k, ToolBackupKey::PENDING_PREFIX)));
         $deleted = [];
         $warnings = [];
 
-        foreach ($plan->delete as $key) {
+        foreach ([...$pending, ...$plan->delete] as $key) {
             // The copy just made is always the most recent: never deleted.
             if ($key === $newKey) {
                 continue;
@@ -167,13 +222,17 @@ final readonly class ToolBackupService
     }
 
     /**
-     * @return list<string>
+     * The keys of verified copies: final keys only, never pending uploads.
      *
-     * @throws BackupTargetException
+     * @param  list<StoredObject>  $objects
+     * @return list<string>
      */
-    private function keys(BackupTarget $target): array
+    private function finalKeys(array $objects): array
     {
-        return array_map(static fn ($object): string => $object->key, $target->list(ToolBackupKey::PREFIX));
+        return array_values(array_filter(
+            array_map(static fn (StoredObject $o): string => $o->key, $objects),
+            static fn (string $key): bool => ToolBackupKey::timeOf($key) !== null,
+        ));
     }
 
     private function retention(): ToolBackupRetention
