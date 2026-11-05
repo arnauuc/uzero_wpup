@@ -13,5 +13,7 @@ final readonly class SshSettings
         public string $workDir,
         public string $wpCliPhar,
         public string $wpCliSha256,
+        // Private directory of the tool server for temporary copies (never /tmp).
+        public string $stagingDir,
     ) {}
 }

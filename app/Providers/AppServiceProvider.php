@@ -212,6 +212,7 @@ class AppServiceProvider extends ServiceProvider
             workDir: self::configString('wpup.ssh.work_dir'),
             wpCliPhar: self::configString('wpup.ssh.wp_cli.phar'),
             wpCliSha256: self::configString('wpup.ssh.wp_cli.sha256'),
+            stagingDir: self::configString('wpup.backups.staging_dir'),
         ));
         $this->app->bind(SshKeyManager::class, static fn (Application $app): SshKeyManager => new SshKeyManager(
             $app->make(SecretStore::class),

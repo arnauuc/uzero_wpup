@@ -13,16 +13,23 @@ use App\Domain\Drivers\Data\ProbeCheck;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\UpdatePackage;
+use App\Domain\Drivers\Data\WorkArea;
+use App\Domain\Drivers\Data\WorkFile;
 use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
+use App\Domain\Drivers\Exceptions\WorkFileNotFound;
 use App\Domain\Drivers\RemoteFileName;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\WebFileName;
+use App\Domain\Drivers\WorkPath;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
+use App\Support\PrivateDirectory;
+use Illuminate\Support\Facades\File;
+use RuntimeException;
 
 /**
  * SiteDriver over SSH (UZEROWPUP-23): commands through phpseclib, files through
@@ -40,7 +47,7 @@ final class SshDriver implements SiteDriver
 
     private const SHELL_MARKER = 'wpup-shell-ok';
 
-    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64', 'du'];
+    private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64', 'du', 'find', 'ln'];
 
     private ?string $home = null;
 
@@ -433,6 +440,105 @@ final class SshDriver implements SiteDriver
         $this->mustExec('rm -f -- '.escapeshellarg($this->path($remotePath)), "L'esborrat de «{$remotePath}»");
     }
 
+    public function workArea(): WorkArea
+    {
+        $workDir = $this->physicalPath($this->workDir(), 'El directori de treball');
+
+        return new WorkArea($this->physicalPath((string) $this->home, 'El directori personal'), $workDir);
+    }
+
+    public function statWorkFile(string $path, bool $withChecksum = false): ?WorkFile
+    {
+        $stat = $this->statFile($this->workPath($path), $withChecksum, $path);
+
+        return $stat === null ? null : new WorkFile($path, ...$stat);
+    }
+
+    public function listWorkFiles(string $directory): array
+    {
+        $dir = $directory === '' ? $this->workDir() : $this->workPath($directory);
+
+        return FileOutput::listing($directory, $this->mustExec(
+            FileOutput::listCommand(escapeshellarg($dir)),
+            'El llistat de «'.($directory === '' ? '.' : $directory).'»',
+        )->stdout);
+    }
+
+    public function moveWorkFile(string $from, string $to): WorkFile
+    {
+        $source = escapeshellarg($this->workPath($from));
+        $target = escapeshellarg($this->workPath($to));
+        $parent = str_contains($to, '/') ? escapeshellarg($this->workPath(substr($to, 0, (int) strrpos($to, '/')))) : null;
+
+        // `ln -T` fails if the target exists (also a directory) and creates it
+        // atomically: never an overwrite, never a partial object under $to.
+        $out = trim($this->mustExec(
+            "umask 077; [ -f {$source} ] && [ ! -L {$source} ]"
+            .($parent === null ? '' : " && mkdir -p -- {$parent} && chmod 700 -- {$parent}")
+            ." && ln -T -- {$source} {$target} && rm -f -- {$source} && chmod 600 -- {$target} && stat -c '%s %Y' -- {$target}",
+            "El trasllat de «{$from}» a «{$to}»",
+        )->stdout);
+
+        [$size, $mtime] = array_pad(explode(' ', $out, 2), 2, '');
+        if (! ctype_digit($size) || ! ctype_digit($mtime)) {
+            throw new RemoteCommandFailed("No s'ha pogut llegir la mida de «{$to}».");
+        }
+
+        return new WorkFile($to, (int) $size, (int) $mtime);
+    }
+
+    /**
+     * Copies the file with rsync (resumable, checksummed transfer) to a private
+     * 0700 directory under the staging directory of the tool server (never
+     * /tmp), opens it and deletes it right away: the open handle keeps the
+     * bytes readable and nothing stays on disk afterwards.
+     */
+    public function openWorkFile(string $path)
+    {
+        $remote = $this->workPath($path);
+        if (! $this->exec('test -f '.escapeshellarg($remote).' && test ! -L '.escapeshellarg($remote))->successful()) {
+            throw WorkFileNotFound::at($path);
+        }
+
+        try {
+            $dir = PrivateDirectory::ensure(PrivateDirectory::ensure($this->settings->stagingDir).'/read-'.bin2hex(random_bytes(8)));
+        } catch (RuntimeException $e) {
+            throw new DriverException($e->getMessage());
+        }
+
+        try {
+            $this->transfer->download($remote, $dir.'/object');
+            $stream = fopen($dir.'/object', 'rb');
+
+            return $stream !== false ? $stream : throw new DriverException("No s'ha pogut obrir la còpia local de «{$path}».");
+        } finally {
+            File::deleteDirectory($dir);
+        }
+    }
+
+    public function removeWorkFile(string $path): void
+    {
+        $command = 'rm -f -- '.escapeshellarg($this->workPath($path));
+        // Then the directories it leaves empty, deepest first (rmdir never removes a non-empty one).
+        $prune = [];
+        for ($dir = dirname($path); $dir !== '.'; $dir = dirname($dir)) {
+            $prune[] = 'rmdir -- '.escapeshellarg($this->workPath($dir)).' 2>/dev/null';
+        }
+        if ($prune !== []) {
+            $command .= ' && { '.implode(' && ', $prune).'; true; }';
+        }
+
+        $this->mustExec($command, "L'esborrat de «{$path}»");
+    }
+
+    /**
+     * Resolves a WorkPath to its absolute path in the work directory.
+     */
+    private function workPath(string $path): string
+    {
+        return $this->workDir().'/'.WorkPath::valid($path);
+    }
+
     /**
      * Resolves a remote file name to its absolute path in the work directory.
      */
@@ -519,15 +625,26 @@ final class SshDriver implements SiteDriver
 
     private function fileInfo(string $name): RemoteFile
     {
-        $path = escapeshellarg($this->path($name));
-        $lines = explode("\n", trim($this->mustExec("stat -c %s {$path} && sha256sum {$path}", "La lectura de «{$name}»")->stdout));
-        $sha256 = substr($lines[1] ?? '', 0, 64);
+        [$size, , $sha256] = $this->statFile($this->path($name), true, $name)
+            ?? throw new RemoteCommandFailed("El fitxer «{$name}» no existeix al lloc.");
 
-        if (! ctype_digit($lines[0]) || preg_match('/^[0-9a-f]{64}$/', $sha256) !== 1) {
-            throw new RemoteCommandFailed("No s'ha pogut llegir la mida i el checksum de «{$name}».");
-        }
+        return new RemoteFile($name, $size, (string) $sha256);
+    }
 
-        return new RemoteFile($name, (int) $lines[0], $sha256);
+    /**
+     * Size, mtime and (when asked) SHA-256 of a regular file, computed on the site.
+     *
+     * @return array{int, int, string|null}|null
+     */
+    private function statFile(string $absolute, bool $withChecksum, string $name): ?array
+    {
+        $result = $this->mustExec(
+            FileOutput::statCommand(escapeshellarg($absolute), $withChecksum),
+            "La lectura de «{$name}»",
+            $withChecksum ? $this->settings->transferTimeoutSeconds : null,
+        );
+
+        return FileOutput::stat($result->stdout, $withChecksum, $name);
     }
 
     private function verify(RemoteFile $file): void

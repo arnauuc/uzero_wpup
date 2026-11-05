@@ -7,6 +7,7 @@ namespace Tests\Contracts;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\UpdatePackage;
 use App\Domain\Drivers\Exceptions\DriverException;
+use App\Domain\Drivers\Exceptions\WorkFileNotFound;
 use App\Domain\Drivers\SiteDriver;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
@@ -236,6 +237,90 @@ final class SiteDriverContract
                     ->and($first)->toHaveKeys(['Name', 'Size'])
                     ->and((int) (is_string($first['Size'] ?? null) ? $first['Size'] : 0))->toBeGreaterThan(0);
             });
+
+            it('moves a file into a nested work path without ever overwriting', function () use ($factory): void {
+                $driver = $factory();
+                $dir = SiteDriverContract::remoteName('store');
+                $local = SiteDriverContract::localTemp();
+                file_put_contents($local, 'restore point bytes');
+
+                try {
+                    $first = $driver->upload($local, SiteDriverContract::remoteName('a.gz'));
+                    $second = $driver->upload($local, SiteDriverContract::remoteName('b.gz'));
+                    $moved = $driver->moveWorkFile($first->path, "{$dir}/site-1/r1/db.sql.gz");
+
+                    expect($moved->path)->toBe("{$dir}/site-1/r1/db.sql.gz")
+                        ->and($moved->sizeBytes)->toBe(19)
+                        ->and($driver->statWorkFile($first->path))->toBeNull()
+                        ->and(fn () => $driver->moveWorkFile($second->path, "{$dir}/site-1/r1/db.sql.gz"))->toThrow(DriverException::class)
+                        ->and(fn () => $driver->moveWorkFile($second->path, "{$dir}/site-1/r1"))->toThrow(DriverException::class)
+                        ->and($driver->statWorkFile("{$dir}/site-1/r1/db.sql.gz", true)?->sha256)->toBe(hash('sha256', 'restore point bytes'))
+                        ->and($driver->statWorkFile($second->path))->not->toBeNull()
+                        ->and(fn () => $driver->moveWorkFile(SiteDriverContract::remoteName('none.gz'), "{$dir}/x.gz"))->toThrow(DriverException::class);
+                } finally {
+                    @unlink($local);
+                    $driver->removeWorkFile("{$dir}/site-1/r1/db.sql.gz");
+                    if (isset($second)) {
+                        $driver->remove($second->path);
+                    }
+                }
+            });
+
+            it('stats, lists, opens and removes work files', function () use ($factory): void {
+                $driver = $factory();
+                $dir = SiteDriverContract::remoteName('store');
+                $local = SiteDriverContract::localTemp();
+                file_put_contents($local, 'abc');
+
+                try {
+                    $driver->moveWorkFile($driver->upload($local, SiteDriverContract::remoteName('x.gz'))->path, "{$dir}/b/two.gz");
+                    $driver->moveWorkFile($driver->upload($local, SiteDriverContract::remoteName('y.gz'))->path, "{$dir}/a/one.gz");
+                    $stat = $driver->statWorkFile("{$dir}/a/one.gz");
+                    $paths = array_map(static fn ($f): string => $f->path, $driver->listWorkFiles($dir));
+                    sort($paths);
+                    $stream = $driver->openWorkFile("{$dir}/a/one.gz");
+                    $contents = stream_get_contents($stream);
+                    fclose($stream);
+
+                    expect($stat?->sizeBytes)->toBe(3)
+                        ->and($stat?->sha256)->toBeNull()
+                        ->and($stat?->modifiedAt === null || $stat->modifiedAt > 0)->toBeTrue()
+                        ->and($paths)->toBe(["{$dir}/a/one.gz", "{$dir}/b/two.gz"])
+                        ->and(array_map(static fn ($f): string => $f->path, $driver->listWorkFiles("{$dir}/a")))->toBe(["{$dir}/a/one.gz"])
+                        ->and($driver->listWorkFiles("{$dir}/missing"))->toBe([])
+                        ->and($contents)->toBe('abc')
+                        ->and(in_array("{$dir}/b/two.gz", array_map(static fn ($f): string => $f->path, $driver->listWorkFiles('')), true))->toBeTrue()
+                        ->and(fn () => $driver->openWorkFile("{$dir}/missing.gz"))->toThrow(WorkFileNotFound::class);
+
+                    $driver->removeWorkFile("{$dir}/a/one.gz");
+                    $driver->removeWorkFile("{$dir}/a/one.gz");
+                    expect($driver->statWorkFile("{$dir}/a/one.gz"))->toBeNull();
+                } finally {
+                    @unlink($local);
+                    $driver->removeWorkFile("{$dir}/a/one.gz");
+                    $driver->removeWorkFile("{$dir}/b/two.gz");
+                }
+            });
+
+            it('reports the physical home and work directory, the latter inside the former', function () use ($factory): void {
+                $area = $factory()->workArea();
+
+                expect(str_starts_with($area->home, '/'))->toBeTrue()
+                    ->and(str_starts_with($area->workDir, rtrim($area->home, '/').'/'))->toBeTrue();
+            });
+
+            it('refuses work paths outside its area', function (string $path) use ($factory): void {
+                $driver = $factory();
+
+                if ($path !== '') {
+                    // '' is the whole work area for a listing, and nothing else.
+                    expect(fn () => $driver->listWorkFiles($path))->toThrow(DriverException::class);
+                }
+                expect(fn () => $driver->statWorkFile($path))->toThrow(DriverException::class)
+                    ->and(fn () => $driver->openWorkFile($path))->toThrow(DriverException::class)
+                    ->and(fn () => $driver->removeWorkFile($path))->toThrow(DriverException::class)
+                    ->and(fn () => $driver->moveWorkFile('x.gz', $path))->toThrow(DriverException::class);
+            })->with(['../escape.gz', '/etc/passwd', 'a/../../b', 'a//b', '', '.hidden', 'a/.b', "a\0b", 'a/b/', "a/b.gz\n", "a'b", 'a b']);
 
             it('fails to download a removed file', function () use ($factory): void {
                 $driver = $factory();

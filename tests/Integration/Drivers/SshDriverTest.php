@@ -211,3 +211,46 @@ it('reports the unwritable paths of a missing WordPress root and refuses to size
         ->and($unwritable[0])->toBe('/var/www/vhosts/wp83.fixtures.test/missing')
         ->and(fn () => $driver->diskUsageBytes(30))->toThrow(DriverException::class);
 })->skip(fn () => ! Fixtures::up('wp83'), 'Llocs de prova aturats: make fixtures-up');
+
+it('lists work files by NUL-separated records, also next to a name with a newline (UZEROWPUP-40)', function (): void {
+    $driver = sshFixture('wp83');
+    $dir = SiteDriverContract::remoteName('nl');
+    $local = SiteDriverContract::localTemp();
+    file_put_contents($local, 'abc');
+    $base = '"$HOME/.wpup/"'.escapeshellarg($dir);
+
+    try {
+        $driver->moveWorkFile($driver->upload($local, SiteDriverContract::remoteName('x.gz'))->path, "{$dir}/ok.gz");
+        // A name a WorkPath can never be, that a line-based parser would read as "fake.gz".
+        Fixtures::run('wp83', "printf x > {$base}/\"\$(printf 'evil\\nfake.gz\\t1\\t1')\"");
+
+        expect(array_map(static fn ($f): string => $f->path, $driver->listWorkFiles($dir)))->toBe(["{$dir}/ok.gz"]);
+    } finally {
+        @unlink($local);
+        Fixtures::run('wp83', "rm -rf {$base}");
+    }
+});
+
+it('reads work files through the private staging directory, never /tmp (UZEROWPUP-40)', function (): void {
+    $driver = sshFixture('wp83');
+    $staging = config()->string('wpup.backups.staging_dir');
+    $tmpBefore = glob(sys_get_temp_dir().'/wpup-{work,read}-*', GLOB_BRACE) ?: [];
+    $dir = SiteDriverContract::remoteName('read');
+    $local = SiteDriverContract::localTemp();
+    file_put_contents($local, 'staged bytes');
+
+    try {
+        $driver->moveWorkFile($driver->upload($local, SiteDriverContract::remoteName('r.gz'))->path, "{$dir}/r.gz");
+        $stream = $driver->openWorkFile("{$dir}/r.gz");
+        $contents = stream_get_contents($stream);
+        fclose($stream);
+
+        expect($contents)->toBe('staged bytes')
+            ->and(fileperms($staging) & 0777)->toBe(0700)
+            ->and(glob($staging.'/*') ?: [])->toBe([])
+            ->and(glob(sys_get_temp_dir().'/wpup-{work,read}-*', GLOB_BRACE) ?: [])->toBe($tmpBefore);
+    } finally {
+        @unlink($local);
+        $driver->removeWorkFile("{$dir}/r.gz");
+    }
+});

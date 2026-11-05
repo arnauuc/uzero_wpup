@@ -164,6 +164,9 @@ return [
     'backups' => [
         // Read size when hashing an object at its destination.
         'hash_chunk_bytes' => 1_048_576,
+        // Temporary copies of restore points on the tool server (0700). Not /tmp:
+        // on Debian 13 it is a tmpfs, too small for a big archive.
+        'staging_dir' => env('WPUP_BACKUP_STAGING_DIR', storage_path('app/backup-staging')),
         // Database dump (UZEROWPUP-38). sprintf(): run label, random suffix.
         'database' => [
             'file_name' => 'db-%s-%s.sql.gz',
