@@ -12,21 +12,24 @@ use App\Domain\Secrets\SecretRedactor;
 use App\Enums\BackupKind;
 use App\Models\Backup;
 use App\Models\Site;
-use App\Support\PrivateDirectory;
 use Illuminate\Support\Facades\Log;
-use RuntimeException;
 
 /**
  * Puts one registered copy back on its site (UZEROWPUP-46).
  *
- * - verify() checks that the destination still holds the copy's bytes
- *   (its own SHA-256, never the stored value).
- * - restore() checks it again and hands the file to the driver: an object of
- *   the site-local store is restored in place (no copy, nothing over the
- *   network); an external one is streamed to a private file of the tool
- *   server, hashed, uploaded to the site's work directory (checksum verified)
- *   and removed afterwards. The driver checks size and SHA-256 on the site
- *   once more right before it restores, so a mismatch changes nothing.
+ * Checksums, one check per moment and path:
+ * - before anything is written (RestoreCheckStep), verify() asks the
+ *   destination for the SHA-256 of what it holds (computed from its bytes);
+ * - when restoring a site-local object, the driver checks size and SHA-256
+ *   on the site right before it uses the file, in place (no copy);
+ * - when restoring an external object, it is hashed while it is streamed to
+ *   the tool server (size and SHA-256 must be the registered ones), and the
+ *   driver's upload and restore check the bytes on the site as part of their
+ *   contract.
+ *
+ * Every temporary file on the site matches SiteDriver::RESTORE_TEMP_PATTERN:
+ * purgeTemporaries() removes the leftovers of an interrupted restore at the
+ * start of the next one, and SiteLocalTarget::purgeStale() the old ones.
  */
 final readonly class SiteRestore
 {
@@ -40,20 +43,34 @@ final readonly class SiteRestore
      */
     public function verify(Site $site, Backup $row, AuditActor $actor): BackupTarget
     {
-        $destination = $row->backupTarget->name ?? "#{$row->backup_target_id}";
+        $target = $this->target($site, $row, $actor);
 
         try {
-            $record = $row->backupTarget ?? throw new BackupTargetException("La destinació {$row->backup_target_id} no existeix.");
-            $target = $this->registry->for($record, $site, $actor);
             $actual = $target->checksum($row->path);
         } catch (BackupTargetException $e) {
-            throw new RestoreRefused("No s'ha pogut comprovar la còpia #{$row->id} a «{$destination}»: {$this->redactor->redact($e->getMessage())}");
+            throw new RestoreRefused("No s'ha pogut comprovar la còpia #{$row->id} a «{$this->destination($row)}»: {$this->redactor->redact($e->getMessage())}");
         }
         if (! hash_equals($row->sha256, $actual)) {
-            throw new RestoreRefused("La còpia #{$row->id} ({$row->path}) a «{$destination}» ja no té el SHA-256 registrat: no es restaura res.");
+            throw new RestoreRefused("La còpia #{$row->id} ({$row->path}) a «{$this->destination($row)}» ja no té el SHA-256 registrat.");
         }
 
         return $target;
+    }
+
+    /**
+     * What a code archive left out (the paths its restore never touches),
+     * read on the site for a site-local object; null when it cannot be read
+     * without transferring the archive (external destination).
+     *
+     * @return list<string>|null
+     *
+     * @throws DriverException
+     */
+    public function archiveExcludes(BackupTarget $target, SiteDriver $driver, Backup $row): ?array
+    {
+        return $target instanceof SiteLocalTarget
+            ? $driver->archiveExcludes($target->workFile($row->path, $row->size_bytes, $row->sha256))
+            : null;
     }
 
     /**
@@ -62,7 +79,7 @@ final readonly class SiteRestore
      */
     public function restore(Site $site, SiteDriver $driver, Backup $row, AuditActor $actor): void
     {
-        $target = $this->verify($site, $row, $actor);
+        $target = $this->target($site, $row, $actor);
 
         if ($target instanceof SiteLocalTarget) {
             $this->apply($driver, $row->kind, $target->workFile($row->path, $row->size_bytes, $row->sha256));
@@ -79,17 +96,53 @@ final readonly class SiteRestore
             } finally {
                 @unlink($local);
             }
-            if ($file->sha256 !== $row->sha256 || $file->sizeBytes !== $row->size_bytes) {
-                throw new RestoreRefused("La còpia #{$row->id} ha arribat al lloc amb uns altres bytes: no es restaura res.");
-            }
             $this->apply($driver, $row->kind, $file);
         } finally {
             try {
                 $driver->remove($name);
             } catch (DriverException $e) {
+                // purgeTemporaries() removes it at the next restore.
                 Log::warning('Could not remove the uploaded copy of a restore.', ['name' => $name, 'reason' => $this->redactor->redact($e->getMessage())]);
             }
         }
+    }
+
+    /**
+     * Leftovers of an interrupted restore in the work directory. Only called
+     * under the site lock, so no other restore is using them.
+     *
+     * @throws DriverException
+     */
+    public function purgeTemporaries(SiteDriver $driver): int
+    {
+        $removed = 0;
+        foreach ($driver->listWorkFiles('') as $file) {
+            if (preg_match(SiteDriver::RESTORE_TEMP_PATTERN, $file->path) === 1) {
+                $driver->removeWorkFile($file->path);
+                $removed++;
+            }
+        }
+
+        return $removed;
+    }
+
+    /**
+     * @throws RestoreRefused
+     */
+    private function target(Site $site, Backup $row, AuditActor $actor): BackupTarget
+    {
+        try {
+            $record = $row->backupTarget ?? throw new BackupTargetException("La destinació {$row->backup_target_id} no existeix.");
+
+            return $this->registry->for($record, $site, $actor);
+        } catch (BackupTargetException $e) {
+            throw new RestoreRefused("No s'ha pogut obrir «{$this->destination($row)}» per a la còpia #{$row->id}: {$this->redactor->redact($e->getMessage())}");
+        }
+    }
+
+    private function destination(Backup $row): string
+    {
+        return $row->backupTarget->name ?? "#{$row->backup_target_id}";
     }
 
     /**
@@ -104,42 +157,31 @@ final readonly class SiteRestore
     }
 
     /**
-     * The object, streamed in chunks to a private file of the staging
-     * directory, which must hold the registered bytes.
+     * The object streamed to a private file of the staging directory, which
+     * must hold exactly the registered bytes.
      *
      * @throws RestoreRefused
      */
     private function download(BackupTarget $target, Backup $row): string
     {
         try {
-            $path = PrivateDirectory::ensure(config()->string('wpup.backups.staging_dir')).'/restore-'.bin2hex(random_bytes(16));
             $stream = $target->readStream($row->path);
-        } catch (BackupTargetException|RuntimeException $e) {
+
+            try {
+                [$path, $sha256] = StagingCopy::copy($stream, config()->string('wpup.backups.staging_dir'), config()->integer('wpup.backups.hash_chunk_bytes'), 'La lectura', $row->path, $row->size_bytes);
+            } finally {
+                if (is_resource($stream)) {
+                    fclose($stream);
+                }
+            }
+        } catch (BackupTargetException $e) {
             throw new RestoreRefused("No s'ha pogut llegir la còpia #{$row->id}: {$this->redactor->redact($e->getMessage())}");
         }
 
-        $hash = hash_init('sha256');
-        $out = @fopen($path, 'xb');
-        $complete = false;
-
-        try {
-            if ($out !== false && chmod($path, 0600)) {
-                $complete = true;
-                while ($complete && ! feof($stream)) {
-                    $chunk = fread($stream, max(1, config()->integer('wpup.backups.hash_chunk_bytes')));
-                    $complete = $chunk !== false && fwrite($out, $chunk) === strlen($chunk);
-                    hash_update($hash, (string) $chunk);
-                }
-                fclose($out);
-            }
-        } finally {
-            fclose($stream);
-        }
-
-        if (! $complete || ! hash_equals($row->sha256, hash_final($hash))) {
+        if (! hash_equals($row->sha256, $sha256)) {
             @unlink($path);
 
-            throw new RestoreRefused("La còpia #{$row->id} no s'ha pogut llegir sencera o no té el SHA-256 registrat: no es restaura res.");
+            throw new RestoreRefused("La còpia #{$row->id} no té el SHA-256 registrat a «{$this->destination($row)}».");
         }
 
         return $path;

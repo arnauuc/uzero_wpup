@@ -10,7 +10,10 @@ use App\Domain\Backups\BackupStep;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\FilesBackup;
+use App\Domain\Backups\PreRestoreBackupStep;
 use App\Domain\Backups\RestoreCheckStep;
+use App\Domain\Backups\RestoreMaintenanceStep;
 use App\Domain\Backups\RestorePointGate;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\RestoreSelection;
@@ -238,40 +241,22 @@ class AppServiceProvider extends ServiceProvider
                     self::configInt('wpup.backups.step_timeout_seconds'),
                 ),
             ]));
-            // `backup:restore` (UZEROWPUP-46): fresh inventory, the copies checked before
-            // writing anything, a verified point of the current state, then the restore.
-            $resolver->register(RunType::Restore, static fn (): Pipeline => new Pipeline([
-                new InventoryStep(
-                    $app->make(SiteInventory::class),
-                    static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
-                    $app->make(RunAuthorization::class),
-                    self::configInt('wpup.inventory.step_timeout_seconds'),
-                    $app->make(SiteBlocking::class),
-                ),
-                new RestoreCheckStep(
-                    $app->make(RestoreSelection::class),
-                    $app->make(SiteRestore::class),
-                    static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
-                    $app->make(RunAuthorization::class),
-                    self::configInt('wpup.backups.restore.check_timeout_seconds'),
-                ),
-                new BackupStep(
-                    $app->make(RestorePointService::class),
-                    static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
-                    $app->make(RunAuthorization::class),
-                    self::configInt('wpup.backups.step_timeout_seconds'),
-                ),
-                new RestoreStep(
-                    $app->make(RestoreSelection::class),
-                    $app->make(SiteRestore::class),
-                    $app->make(RestorePointGate::class),
-                    static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
-                    $app->make(RunAuthorization::class),
-                    $app->make(AuditLogger::class),
-                    $app->make(SecretRedactor::class),
-                    self::configInt('wpup.backups.restore.step_timeout_seconds'),
-                ),
-            ]));
+            // `backup:restore` (UZEROWPUP-46): inventory that never blocks nor stops the run (a
+            // broken site must be restorable), the copies checked before writing anything,
+            // maintenance mode, a verified point of the current state, then the restore.
+            $resolver->register(RunType::Restore, static function () use ($app): Pipeline {
+                $driverFor = static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor);
+                $maintenance = new RestoreMaintenanceStep($driverFor, $app->make(RunAuthorization::class), $app->make(SecretRedactor::class), self::configInt('wpup.backups.restore.maintenance_timeout_seconds'));
+
+                return new Pipeline([
+                    new InventoryStep($app->make(SiteInventory::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.inventory.step_timeout_seconds'), readOnlySite: true, advisory: true),
+                    new RestoreCheckStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.restore.check_timeout_seconds')),
+                    $maintenance,
+                    new PreRestoreBackupStep($app->make(RestorePointService::class), $maintenance, $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.step_timeout_seconds')),
+                    new RestoreStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(RestorePointGate::class), $maintenance, $driverFor,
+                        $app->make(RunAuthorization::class), $app->make(AuditLogger::class), $app->make(SecretRedactor::class), self::configInt('wpup.backups.restore.step_timeout_seconds')),
+                ]);
+            });
             // The plan reads a fresh inventory without touching the site (no probe, no block change).
             $resolver->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
                 new InventoryStep(

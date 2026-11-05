@@ -22,15 +22,19 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * Last step of a restore run (UZEROWPUP-46): puts the chosen copies back on
- * the site, files first, then the database (SiteRestore checks each SHA-256
- * at its destination and again on the site right before), then checks that
- * WordPress still answers and flushes its object cache.
+ * Last step of a restore run (UZEROWPUP-46). Order of the run: inventory
+ * (advisory), check of the copies, maintenance mode on, point of the current
+ * state, and then this step: leftovers of an earlier restore removed, the
+ * copies chosen by RestoreCheckStep put back (files first, maintenance mode
+ * on again, then the database; SiteRestore says which checksum is checked
+ * where), WP-CLI checked, object cache flushed, and the maintenance mode left
+ * as it was before the run, whatever happens.
  *
- * It only runs once the run made a verified restore point of the current
- * state (BackupStep, AGENTS.md rule 3). Nothing is undone automatically when
- * something fails: the outcome says what was restored and how to go back to
- * that point by hand. Every attempt is audited (`backup.restore`).
+ * It needs the verified point of the current state (AGENTS.md rule 3) unless
+ * the operator asked for --without-pre-backup and it could not be made.
+ * Nothing is undone automatically when something fails: the outcome says what
+ * was restored and how to go back by hand. Every attempt is audited
+ * (`backup.restore`).
  */
 final readonly class RestoreStep implements Step
 {
@@ -43,6 +47,7 @@ final readonly class RestoreStep implements Step
         private RestoreSelection $selection,
         private SiteRestore $restore,
         private RestorePointGate $gate,
+        private RestoreMaintenanceStep $maintenance,
         private Closure $driverFor,
         private RunAuthorization $authorization,
         private AuditLogger $audit,
@@ -69,11 +74,10 @@ final readonly class RestoreStep implements Step
         }
 
         return sprintf(
-            'Restaurarà %s del lloc %s des del punt «%s» (còpies %s), després de tornar-ne a comprovar el SHA-256, i buidarà la memòria cau.',
+            'Restaurarà %s del lloc %s des del punt «%s» i buidarà la memòria cau.',
             implode(' i ', array_map(self::label(...), $request->kinds())),
             $context->run->site->name ?? '?',
             $request->directory,
-            implode(', ', array_map(static fn (int $id): string => "#{$id}", $request->backupIds)),
         );
     }
 
@@ -85,29 +89,50 @@ final readonly class RestoreStep implements Step
             return StepOutcome::failed(is_string($actor) ? $actor : "L'execució no té cap lloc.");
         }
 
-        $preRestore = $context->resultOf(BackupStep::NAME)['directory'] ?? null;
-        if (! is_string($preRestore) || ! $this->gate->isVerified($context->run)) {
-            return StepOutcome::failed("No hi ha un punt de restauració verificat de l'estat actual del lloc: no es restaura res.");
-        }
-        $back = "Per tornar a l'estat d'abans de restaurar: wpup backup:restore {$site->name} --point=".basename($preRestore).' --files --db';
-
+        $check = $context->resultOf(RestoreCheckStep::NAME);
+        $pre = $context->resultOf(PreRestoreBackupStep::NAME);
+        $preRestore = is_string($pre['directory'] ?? null) ? $pre['directory'] : null;
+        $shop = ($check['shop'] ?? true) === true;
         $restored = [];
+        $warnings = [];
         $audit = ['run_id' => $context->run->id, 'restore_point' => null, 'backup_ids' => [], 'kinds' => [], 'pre_restore_point' => $preRestore,
-            'accepted_data_loss' => ($context->resultOf(RestoreCheckStep::NAME)['accepted_data_loss'] ?? false) === true];
+            'shop' => $shop, 'accepted_data_loss' => ($check['accepted_data_loss'] ?? false) === true,
+            'data_loss_confirmed' => false, 'without_pre_backup' => false];
+
+        try {
+            $driver = ($this->driverFor)($site, $actor);
+        } catch (DriverException $e) {
+            return StepOutcome::failed("No s'ha pogut connectar amb el lloc: no s'ha restaurat res. {$this->redactor->redact($e->getMessage())}");
+        }
+        $maintenanceReset = false;
 
         try {
             $request = RestoreRequest::fromRun($context->run);
-            $audit = ['restore_point' => $request->directory, 'backup_ids' => array_values($request->backupIds),
+            $audit = ['data_loss_confirmed' => $request->dataLossConfirmed, 'without_pre_backup' => $request->withoutPreBackup, 'restore_point' => $request->directory,
                 'kinds' => array_map(static fn (BackupKind $k): string => $k->value, $request->kinds())] + $audit;
-            if ($request->restoresDatabase() && ($context->resultOf(RestoreCheckStep::NAME)['shop'] ?? true) === true && ! $request->acceptDataLoss) {
-                throw new RestoreRefused('La base de dades és d\'una botiga i no s\'ha acceptat perdre\'n les dades noves (--accept-data-loss).');
+            if ($preRestore === null ? ! ($request->withoutPreBackup && ($pre['skipped'] ?? false) === true) : ! $this->gate->isVerified($context->run)) {
+                throw new RestoreRefused("No hi ha un punt de restauració verificat de l'estat actual del lloc.");
             }
-            $driver = ($this->driverFor)($site, $actor);
-            foreach ($this->selection->rows($site, $request) as $row) {
+            if ($request->restoresDatabase() && $shop && ! ($request->acceptDataLoss && $request->dataLossConfirmed)) {
+                throw new RestoreRefused('La base de dades és (o pot ser) d\'una botiga i no s\'ha acceptat i confirmat perdre\'n les dades noves.');
+            }
+            $chosen = [];
+            foreach (is_array($check['chosen'] ?? null) ? $check['chosen'] : [] as $kind => $id) {
+                if (is_string($kind) && is_int($id)) {
+                    $chosen[$kind] = $id;
+                }
+            }
+            $rows = $this->selection->rows($site, $request, $chosen);
+            $audit['backup_ids'] = array_values(array_map(static fn ($row): int => $row->id, $rows));
+            $this->restore->purgeTemporaries($driver);
+            foreach ($rows as $row) {
                 $this->restore->restore($site, $driver, $row, $actor);
                 $restored[] = $row->kind;
+                if ($row->kind === BackupKind::Files) {
+                    $warnings[] = $this->maintenance->restoreState($driver, $context, on: true);
+                }
             }
-            $warnings = $this->afterRestore($driver);
+            $warnings = [...$warnings, ...$this->afterRestore($driver)];
         } catch (RunException $e) {
             // The run itself was stopped (timeout, claim lost): audited, never swallowed.
             $this->record($actor, $site, AuditResult::Failure, $audit + ['restored' => self::values($restored), 'reason' => 'run stopped']);
@@ -115,23 +140,47 @@ final readonly class RestoreStep implements Step
             throw $e;
         } catch (RestoreRefused|DriverException|PostRestoreCheckFailed $e) {
             $reason = $this->redactor->redact($e->getMessage());
+            $warnings[] = $this->maintenance->restoreState($driver, $context, on: false);
+            $maintenanceReset = true;
             $this->record($actor, $site, AuditResult::Failure, $audit + ['restored' => self::values($restored), 'reason' => $reason]);
-            $done = $restored === [] ? ' No s\'ha restaurat res.' : ' Ja s\'han restaurat '.implode(' i ', array_map(self::label(...), $restored)).'.';
+            $done = $restored === [] ? ' No s\'ha restaurat res.' : ' Ja s\'han restaurat '.implode(' i ', array_map(self::label(...), $restored)).'. '.$this->back($site, $preRestore, $shop);
+            $notes = array_values(array_filter($warnings));
 
-            return StepOutcome::failed("{$reason}{$done} {$back}");
+            return StepOutcome::failed(trim("{$reason}{$done}".($notes === [] ? '' : ' '.implode(' ', $notes))));
         } catch (Throwable $e) {
             $this->record($actor, $site, AuditResult::Failure, $audit + ['restored' => self::values($restored), 'exception' => $e::class]);
 
             throw $e;
+        } finally {
+            // Whatever happened: the maintenance mode as it was before the run.
+            if (! $maintenanceReset) {
+                $warnings[] = $this->maintenance->restoreState($driver, $context, on: false);
+            }
         }
 
         $this->record($actor, $site, AuditResult::Success, $audit + ['restored' => self::values($restored)]);
+        $warnings = array_values(array_filter($warnings));
 
         return StepOutcome::succeeded(
-            'Restaurat: '.implode(' i ', array_map(self::label(...), $restored))." des de «{$request->directory}». Punt de l'estat d'abans: «{$preRestore}».",
-            implode("\n", [...$warnings, $back]),
+            'Restaurat: '.implode(' i ', array_map(self::label(...), $restored))." des de «{$request->directory}». "
+                .($preRestore === null ? "Sense punt de l'estat d'abans (--without-pre-backup)." : "Punt de l'estat d'abans: «{$preRestore}».")
+                .($warnings === [] ? '' : sprintf(' %d avisos.', count($warnings))),
+            implode("\n", [...$warnings, $this->back($site, $preRestore, $shop)]),
             ['restore_point' => $request->directory, 'pre_restore_point' => $preRestore, 'restored' => self::values($restored)],
         );
+    }
+
+    /**
+     * How to go back to the state before the restore, when there is a point of it.
+     */
+    private function back(Site $site, ?string $preRestore, bool $shop): string
+    {
+        if ($preRestore === null) {
+            return "No hi ha cap punt de l'estat d'abans (--without-pre-backup).";
+        }
+
+        return "Per tornar a l'estat d'abans: wpup backup:restore {$site->name} --point=".basename($preRestore).' --files --db'
+            .($shop ? ' --accept-data-loss (i confirmar-ho escrivint el nom del lloc)' : '').'.';
     }
 
     /**
@@ -154,8 +203,7 @@ final readonly class RestoreStep implements Step
         }
 
         try {
-            $flush = $driver->wp(['cache', 'flush']);
-            $flushed = $flush->successful();
+            $flushed = $driver->wp(['cache', 'flush'])->successful();
         } catch (DriverException) {
             $flushed = false;
         }

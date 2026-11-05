@@ -58,10 +58,12 @@ final readonly class RestorePointService
 
     /**
      * @param  SiteDriver  $driver  the site's driver; credential reveals were audited as $actor
+     * @param  list<string>|null  $fileExcludes  what the code archive leaves out, instead of the configured
+     *                                           list and the profile's uploads choice (UZEROWPUP-46)
      *
      * @throws BackupFailed when there is no verified restore point on the site
      */
-    public function create(Site $site, SiteDriver $driver, ?Run $run, AuditActor $actor): RestorePoint
+    public function create(Site $site, SiteDriver $driver, ?Run $run, AuditActor $actor, ?array $fileExcludes = null): RestorePoint
     {
         $label = $run === null ? 'manual-'.CarbonImmutable::now()->format('YmdHis').'-'.bin2hex(random_bytes(3)) : "run{$run->id}";
         $directory = "site-{$site->id}/{$label}";
@@ -76,7 +78,7 @@ final readonly class RestorePointService
                 if ($run !== null) {
                     $this->discardAttempt($site, $run, $local, $localRecord, $actor, $directory);
                 }
-                [$localRows, $warnings] = $this->createLocal($site, $driver, $run, $local, $localRecord, $label, $directory);
+                [$localRows, $warnings] = $this->createLocal($site, $driver, $run, $local, $localRecord, $label, $directory, $fileExcludes);
             } else {
                 // Read-only: the notes of the archive are the same as when it was made.
                 $warnings = $this->files->warnings($driver);
@@ -133,11 +135,12 @@ final readonly class RestorePointService
     /**
      * Dump and archive on the site, moved into the local store and verified.
      *
+     * @param  list<string>|null  $fileExcludes
      * @return array{list<Backup>, list<string>} the verified rows and the warnings of the archive
      *
      * @throws Throwable after removing what it wrote
      */
-    private function createLocal(Site $site, SiteDriver $driver, ?Run $run, SiteLocalTarget $local, BackupTargetRecord $localRecord, string $label, string $directory): array
+    private function createLocal(Site $site, SiteDriver $driver, ?Run $run, SiteLocalTarget $local, BackupTargetRecord $localRecord, string $label, string $directory, ?array $fileExcludes): array
     {
         // Nothing is generated for a store the web could serve.
         $local->assertWritable();
@@ -148,7 +151,7 @@ final readonly class RestorePointService
 
         try {
             $pending[BackupKind::Database->value] = $this->database->run($driver, $label)->file;
-            $archive = $this->files->run($driver, $site->profile->include_uploads ?? false, $label);
+            $archive = $this->files->run($driver, $site->profile->include_uploads ?? false, $label, $fileExcludes);
             $pending[BackupKind::Files->value] = $archive->file;
 
             foreach ([BackupKind::Database, BackupKind::Files] as $kind) {

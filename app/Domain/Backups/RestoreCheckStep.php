@@ -8,29 +8,32 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
+use App\Domain\Inventory\InventoryStep;
 use App\Domain\Runs\ReadOnlyStep;
 use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
 use App\Enums\BackupKind;
-use App\Enums\ComponentType;
 use App\Models\Backup;
 use App\Models\Run;
 use App\Models\Site;
+use App\Models\SiteSnapshot;
 use Closure;
 
 /**
  * First check of a restore run (UZEROWPUP-46), before anything is written,
- * so it also runs under --dry-run: the chosen copies are still of the site,
- * live and verified, their destination still holds their bytes, and a shop's
- * database is not restored unless the operator accepted losing its new data.
+ * so it also runs under --dry-run:
  *
- * AGENTS.md rule 4: a shop's database is never restored automatically when
- * it may have new orders or users since the copy. This is a manual restore,
- * so it may go ahead, but only with the explicit --accept-data-loss. The
- * order and user watermark of the copy (backups.order_watermark,
- * UZEROWPUP-58) cannot be compared yet: until it can, a shop (WooCommerce
- * installed, active or not) always counts as possibly losing data.
+ * - of each kind, the first candidate copy that is still of the site, live,
+ *   verified and whose destination still holds its bytes (a warning says so
+ *   when the site-local copy could not be used and an external one is);
+ * - what the code archive left out, so that the point of the current state
+ *   (PreRestoreBackupStep) covers everything the restore may overwrite or
+ *   delete: exactly the archive's own exclude list, read on the site, or, for
+ *   an external copy, the configured list with uploads included;
+ * - AGENTS.md rule 4 (ShopGuard): the database of a shop, or of a site whose
+ *   inventory is unknown, needs --accept-data-loss and the operator's
+ *   interactive confirmation. A dry run only warns.
  */
 final readonly class RestoreCheckStep implements ReadOnlyStep
 {
@@ -42,6 +45,7 @@ final readonly class RestoreCheckStep implements ReadOnlyStep
     public function __construct(
         private RestoreSelection $selection,
         private SiteRestore $restore,
+        private FilesBackup $files,
         private Closure $driverFor,
         private RunAuthorization $authorization,
         private int $timeoutSeconds,
@@ -65,23 +69,37 @@ final readonly class RestoreCheckStep implements ReadOnlyStep
     public function run(StepContext $context): StepOutcome
     {
         $actor = self::actor($this->authorization, $context->run);
-        if (is_string($actor)) {
-            return StepOutcome::failed($actor);
-        }
         $site = $context->run->site;
-        if ($site === null) {
-            return StepOutcome::failed("L'execució no té cap lloc: no hi ha res per restaurar.");
+        if (is_string($actor) || $site === null) {
+            return StepOutcome::failed(is_string($actor) ? $actor : "L'execució no té cap lloc.");
         }
+
+        $warnings = [];
+        $driver = null;
+        $driverFor = function () use (&$driver, $site, $actor): SiteDriver {
+            return $driver ??= ($this->driverFor)($site, $actor);
+        };
 
         try {
             $request = RestoreRequest::fromRun($context->run);
-            $rows = $this->selection->rows($site, $request);
-            foreach ($rows as $row) {
-                $this->restore->verify($site, $row, $actor);
+            $chosen = [];
+            $excludes = null;
+            foreach ($this->selection->candidates($site, $request) as $kind => $candidates) {
+                [$row, $target] = $this->firstVerified($site, $actor, $candidates, $warnings);
+                $chosen[$kind] = $row;
+                if ($row->kind === BackupKind::Files) {
+                    $excludes = $this->restore->archiveExcludes($target, $driverFor(), $row) ?? $this->files->excludes(true);
+                }
             }
-            $shop = $request->restoresDatabase() && $this->isShop(($this->driverFor)($site, $actor));
-            if ($shop && ! $request->acceptDataLoss) {
-                throw new RestoreRefused(self::dataLossMessage($rows[BackupKind::Database->value]).' Cal --accept-data-loss per restaurar-la igualment.');
+
+            $shop = ShopGuard::isShop($this->snapshot($context, $site));
+            if ($request->restoresDatabase() && $shop && ! ($request->acceptDataLoss && $request->dataLossConfirmed)) {
+                $why = ShopGuard::message($chosen[BackupKind::Database->value]->created_at->format(BackupListing::dateFormat()))
+                    .' Cal --accept-data-loss i confirmar-ho de manera interactiva escrivint el nom del lloc (--force no ho salta).';
+                if (! $context->dryRun) {
+                    throw new RestoreRefused($why);
+                }
+                $warnings[] = $why;
             }
         } catch (RestoreRefused $e) {
             return StepOutcome::failed($e->getMessage());
@@ -89,17 +107,17 @@ final readonly class RestoreCheckStep implements ReadOnlyStep
             return StepOutcome::failed("No s'ha pogut comprovar el lloc: {$e->getMessage()}");
         }
 
-        $summary = sprintf('Còpies verificades a la destinació: %s', implode(', ', array_map(
+        $summary = 'Còpies verificades a la destinació: '.implode(', ', array_map(
             static fn (Backup $row): string => "#{$row->id} ".($row->kind === BackupKind::Database ? 'BD' : 'fitxers').' ('.($row->backupTarget->name ?? '?').')',
-            $rows,
-        )));
-        $warning = $shop ? self::dataLossMessage($rows[BackupKind::Database->value]).' L\'operador ho ha acceptat (--accept-data-loss).' : '';
+            $chosen,
+        ));
 
-        return StepOutcome::succeeded($summary.($warning === '' ? '' : ". {$warning}"), $warning, [
-            'directory' => $request->directory,
-            'backup_ids' => array_values(array_map(static fn (Backup $row): int => $row->id, $rows)),
+        return StepOutcome::succeeded($summary.($warnings === [] ? '' : sprintf('; %d avisos', count($warnings))), implode("\n", $warnings), [
+            'chosen' => array_map(static fn (Backup $row): int => $row->id, $chosen),
+            'pre_restore_excludes' => $excludes,
             'shop' => $shop,
-            'accepted_data_loss' => $shop,
+            'accepted_data_loss' => $request->restoresDatabase() && $shop && $request->acceptDataLoss && $request->dataLossConfirmed,
+            'warnings' => $warnings,
         ]);
     }
 
@@ -119,16 +137,42 @@ final readonly class RestoreCheckStep implements ReadOnlyStep
         return $authorization->actorFor($run, Ability::RunOperations) ?? RunAuthorization::deniedMessage($run);
     }
 
-    public static function dataLossMessage(Backup $database): string
+    /**
+     * @param  non-empty-list<Backup>  $candidates
+     * @param  list<string>  $warnings
+     * @return array{Backup, BackupTarget}
+     *
+     * @throws RestoreRefused when none holds its bytes
+     */
+    private function firstVerified(Site $site, AuditActor $actor, array $candidates, array &$warnings): array
     {
-        return "El lloc és una botiga (WooCommerce): restaurar-ne la base de dades esborra les comandes, els clients i els usuaris entrats des de la còpia ({$database->created_at->format(BackupListing::dateFormat())}), i encara no es pot saber quins són.";
+        $failures = [];
+        foreach ($candidates as $row) {
+            try {
+                $target = $this->restore->verify($site, $row, $actor);
+            } catch (RestoreRefused $e) {
+                $failures[] = $e->getMessage();
+
+                continue;
+            }
+            if ($failures !== []) {
+                $warnings[] = implode(' ', $failures)." Es fa servir la còpia #{$row->id} de «".($row->backupTarget->name ?? '?').'».';
+            }
+
+            return [$row, $target];
+        }
+
+        throw new RestoreRefused(implode(' ', $failures).' No es restaura res.');
     }
 
     /**
-     * @throws DriverException
+     * The snapshot of this run's inventory or, when it failed (a broken site),
+     * the latest one known.
      */
-    private function isShop(SiteDriver $driver): bool
+    private function snapshot(StepContext $context, Site $site): ?SiteSnapshot
     {
-        return $driver->installedComponents()->find(ComponentType::Woocommerce, 'woocommerce') !== null;
+        $id = $context->resultOf(InventoryStep::NAME)['snapshot_id'] ?? null;
+
+        return (is_int($id) ? SiteSnapshot::query()->find($id) : null) ?? ShopGuard::latest($site);
     }
 }

@@ -178,6 +178,7 @@ return [
         // their destination) before anything is written, and the restore itself.
         'restore' => [
             'check_timeout_seconds' => 1800,
+            'maintenance_timeout_seconds' => 120,
             'step_timeout_seconds' => 3600,
         ],
         // `wpup backup --json`, `backup:list --json` (UZEROWPUP-45) and `backup:prune --json` document version.

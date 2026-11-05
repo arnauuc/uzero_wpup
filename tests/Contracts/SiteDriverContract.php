@@ -168,8 +168,36 @@ final class SiteDriverContract
                     $driver->restoreDatabase($stored);
 
                     expect(trim($driver->wp(['option', 'get', 'blogname'])->stdout))->toBe($original)
-                        ->and($driver->listWorkFiles($dir))->toHaveCount(1);
+                        ->and($driver->listWorkFiles($dir))->toHaveCount(1)
+                        ->and(SiteDriverContract::restoreTemporaries($driver))->toBe([]);
                 } finally {
+                    $driver->wp(['option', 'update', 'blogname', $original]);
+                    $driver->removeWorkFile($stored->path);
+                }
+            });
+
+            it('restores the files from a nested work path, protecting what the archive left out', function () use ($factory): void {
+                $driver = $factory();
+                $dir = SiteDriverContract::remoteName('store');
+                $archive = $driver->archiveFiles(SiteDriverContract::remoteName('files.tar.gz'), ['wp-content/uploads']);
+                $stored = new RemoteFile("{$dir}/site-1/r1/files.tar.gz", $archive->sizeBytes, $archive->sha256);
+                $driver->moveWorkFile($archive->path, $stored->path);
+                $zip = SiteDriverContract::contractPluginZip('1.2.0');
+
+                try {
+                    expect($driver->archiveExcludes($stored))->toContain('wp-content/uploads');
+                    $remote = $driver->upload($zip, SiteDriverContract::remoteName('wpup-contract-plugin.zip'));
+                    $driver->applyUpdate(new UpdatePackage(ComponentType::Plugin, 'wpup-contract-plugin', '1.2.0', $remote));
+                    $driver->remove($remote->path);
+                    expect(fn () => $driver->restoreFiles(new RemoteFile($stored->path, $stored->sizeBytes, str_repeat('0', 64))))->toThrow(DriverException::class)
+                        ->and($driver->installedComponents()->find(ComponentType::Plugin, 'wpup-contract-plugin'))->not->toBeNull();
+
+                    $driver->restoreFiles($stored);
+
+                    expect($driver->installedComponents()->find(ComponentType::Plugin, 'wpup-contract-plugin'))->toBeNull()
+                        ->and(SiteDriverContract::restoreTemporaries($driver))->toBe([]);
+                } finally {
+                    @unlink($zip);
                     $driver->removeWorkFile($stored->path);
                 }
             });
@@ -357,6 +385,19 @@ final class SiteDriverContract
                 }
             });
         });
+    }
+
+    /**
+     * Temporary files of a restore left anywhere in the work directory.
+     *
+     * @return list<string>
+     */
+    public static function restoreTemporaries(SiteDriver $driver): array
+    {
+        return array_values(array_filter(
+            array_map(static fn ($f): string => $f->path, $driver->listWorkFiles('')),
+            static fn (string $path): bool => preg_match(SiteDriver::RESTORE_TEMP_PATTERN, basename($path)) === 1 || str_contains($path, '.restore.'),
+        ));
     }
 
     public static function remoteName(string $suffix): string

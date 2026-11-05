@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
-use App\Domain\Backups\BackupStep;
 use App\Domain\Backups\BackupTarget;
+use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\FilesBackup;
 use App\Domain\Backups\FlysystemTarget;
+use App\Domain\Backups\PreRestoreBackupStep;
 use App\Domain\Backups\RestoreCheckStep;
+use App\Domain\Backups\RestoreMaintenanceStep;
 use App\Domain\Backups\RestorePoint;
 use App\Domain\Backups\RestorePointGate;
 use App\Domain\Backups\RestorePointRetention;
@@ -22,6 +25,7 @@ use App\Domain\Backups\SiteLocalDestination;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\SiteRestore;
+use App\Domain\Backups\StagingCopy;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
@@ -74,12 +78,22 @@ final class RestoreRunDriver extends FakeDriver
     /** WP-CLI stops working once the files are restored. */
     public bool $breakAfterRestore = false;
 
+    /** @var list<bool> the maintenance mode when each restore started */
+    public array $maintenanceAtRestore = [];
+
     public function restoreFiles(RemoteFile $archive): void
     {
+        $this->maintenanceAtRestore[] = $this->maintenance;
         parent::restoreFiles($archive);
         if ($this->breakAfterRestore) {
             $this->failingCommands = ['core version'];
         }
+    }
+
+    public function restoreDatabase(RemoteFile $dump): void
+    {
+        $this->maintenanceAtRestore[] = $this->maintenance;
+        parent::restoreDatabase($dump);
     }
 
     public function archiveFiles(string $remotePath, array $excludes): RemoteFile
@@ -112,13 +126,18 @@ function restoreRunPipeline(FakeDriver $driver): void
     app(BackupTargetRegistry::class)->register(BackupTargetType::SiteLocal, static fn (): BackupTarget => new SiteLocalTarget(
         $driver, app(SecretRedactor::class), app(HttpFactory::class), app(SiteLocalSettings::class), 'https://fake.test',
     ));
-    app(PipelineResolver::class)->register(RunType::Restore, static fn (): Pipeline => new Pipeline([
-        new InventoryStep(app(SiteInventory::class), $driverFor, app(RunAuthorization::class), 60),
-        new RestoreCheckStep(app(RestoreSelection::class), app(SiteRestore::class), $driverFor, app(RunAuthorization::class), 60),
-        new BackupStep(app(RestorePointService::class), $driverFor, app(RunAuthorization::class), 60),
-        new RestoreStep(app(RestoreSelection::class), app(SiteRestore::class), app(RestorePointGate::class), $driverFor,
-            app(RunAuthorization::class), app(AuditLogger::class), app(SecretRedactor::class), 60),
-    ]));
+    app(PipelineResolver::class)->register(RunType::Restore, static function () use ($driverFor): Pipeline {
+        $maintenance = new RestoreMaintenanceStep($driverFor, app(RunAuthorization::class), app(SecretRedactor::class), 60);
+
+        return new Pipeline([
+            new InventoryStep(app(SiteInventory::class), $driverFor, app(RunAuthorization::class), 60, readOnlySite: true, advisory: true),
+            new RestoreCheckStep(app(RestoreSelection::class), app(SiteRestore::class), app(FilesBackup::class), $driverFor, app(RunAuthorization::class), 60),
+            $maintenance,
+            new PreRestoreBackupStep(app(RestorePointService::class), $maintenance, $driverFor, app(RunAuthorization::class), 60),
+            new RestoreStep(app(RestoreSelection::class), app(SiteRestore::class), app(RestorePointGate::class), $maintenance, $driverFor,
+                app(RunAuthorization::class), app(AuditLogger::class), app(SecretRedactor::class), 60),
+        ]);
+    });
 }
 
 function restoreRunSite(string $name = 'botiga'): Site
@@ -142,10 +161,10 @@ function restoreRunPoint(Site $site, FakeDriver $driver): RestorePoint
  * @param  list<BackupKind>  $kinds
  * @param  array<string, mixed>  $flags
  */
-function restoreRun(Site $site, RestorePoint $point, array $kinds, bool $acceptDataLoss = false, array $flags = []): Run
+function restoreRun(Site $site, RestorePoint $point, array $kinds, bool $acceptDataLoss = false, array $flags = [], ?bool $confirmed = null, bool $withoutPreBackup = false): Run
 {
     $user = User::factory()->create(['role' => UserRole::Operator]);
-    $request = app(RestoreSelection::class)->select($site, $point->directory, [], $kinds, $acceptDataLoss);
+    $request = app(RestoreSelection::class)->select($site, $point->directory, [], $kinds, $acceptDataLoss)->with($confirmed ?? $acceptDataLoss, $withoutPreBackup);
 
     return Run::factory()->create([
         'type' => RunType::Restore, 'site_id' => $site->id, 'user_id' => $user->id, 'actor' => $user->name,
@@ -158,19 +177,21 @@ function restoreStepOf(Run $run, string $name): RunStep
     return $run->steps()->where('name', $name)->firstOrFail();
 }
 
-it('registers the restore pipeline: inventory, check, a point of the current state, then the restore', function (): void {
+it('registers the restore pipeline: inventory, check, maintenance, a point of the current state, then the restore', function (): void {
     $pipeline = app(PipelineResolver::class)->resolve(Run::factory()->create(['type' => RunType::Restore]));
 
-    expect(array_map(fn ($s): string => $s->name(), $pipeline->steps))->toBe([InventoryStep::NAME, RestoreCheckStep::NAME, BackupStep::NAME, RestoreStep::NAME]);
+    expect(array_map(fn ($s): string => $s->name(), $pipeline->steps))->toBe([InventoryStep::NAME, RestoreCheckStep::NAME, RestoreMaintenanceStep::NAME, PreRestoreBackupStep::NAME, RestoreStep::NAME])
+        ->and($pipeline->get(PreRestoreBackupStep::NAME))->toBeInstanceOf(PreRestoreBackupStep::class);
 });
 
 it('restores the files and the database of a point, after a verified point of the current state, and audits it', function (): void {
     $site = restoreRunSite();
-    $driver = new FakeDriver;
+    $driver = new RestoreRunDriver;
     restoreRunPipeline($driver);
     $point = restoreRunPoint($site, $driver);
     $driver->options['blogname'] = 'Canviat';
     $driver->coreVersion = '6.9.0';
+    $driver->files['restore-0123456789abcdef.sql'] = 'resta d\'una restauració interrompuda';
 
     $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Files, BackupKind::Database], acceptDataLoss: true));
 
@@ -181,7 +202,11 @@ it('restores the files and the database of a point, after a verified point of th
         ->and(array_values(array_intersect($driver->writeCalls, ['dumpDatabase', 'archiveFiles', 'restoreFiles', 'restoreDatabase'])))
         ->toBe(['dumpDatabase', 'archiveFiles', 'dumpDatabase', 'archiveFiles', 'restoreFiles', 'restoreDatabase'])
         ->and($driver->wpCalls)->toContain(['cache', 'flush'])
-        ->and(restoreStepOf($run, RestoreStep::NAME)->summary)->toContain("Punt de l'estat d'abans: «site-{$site->id}/run{$run->id}»");
+        ->and($driver->maintenanceAtRestore)->toBe([true, true])
+        ->and($driver->maintenance)->toBeFalse()
+        ->and($driver->files)->not->toHaveKey('restore-0123456789abcdef.sql')
+        ->and(restoreStepOf($run, RestoreStep::NAME)->summary)->toContain("Punt de l'estat d'abans: «site-{$site->id}/run{$run->id}»")
+        ->and(restoreStepOf($run, RestoreStep::NAME)->output)->toContain("--point=run{$run->id} --files --db --accept-data-loss");
 
     // The pre-restore point holds the changed state.
     $pre = Backup::query()->where('run_id', $run->id)->where('kind', BackupKind::Database)->firstOrFail();
@@ -191,7 +216,8 @@ it('restores the files and the database of a point, after a verified point of th
     expect($audit->result)->toBe(AuditResult::Success)
         ->and($audit->context)->toMatchArray([
             'run_id' => $run->id, 'restore_point' => $point->directory, 'kinds' => ['files', 'database'], 'restored' => ['files', 'database'],
-            'pre_restore_point' => "site-{$site->id}/run{$run->id}", 'accepted_data_loss' => true,
+            'pre_restore_point' => "site-{$site->id}/run{$run->id}", 'accepted_data_loss' => true, 'data_loss_confirmed' => true, 'shop' => true,
+            'without_pre_backup' => false,
         ]);
 });
 
@@ -221,7 +247,7 @@ it('refuses a shop database without --accept-data-loss before writing anything',
     $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Database]));
 
     expect($run->status)->toBe(RunStatus::Failed)
-        ->and(restoreStepOf($run, RestoreCheckStep::NAME)->error)->toContain('botiga (WooCommerce)')->toContain('--accept-data-loss')
+        ->and(restoreStepOf($run, RestoreCheckStep::NAME)->error)->toContain('botiga')->toContain('--accept-data-loss')->toContain('--force no ho salta')
         ->and($driver->writeCalls)->not->toContain('dumpDatabase', 'restoreDatabase')
         ->and(Backup::query()->where('run_id', $run->id)->count())->toBe(0);
 });
@@ -271,7 +297,8 @@ it('restores nothing when a copy changes after the check', function (): void {
     $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Files]));
 
     expect($run->status)->toBe(RunStatus::Failed)
-        ->and(restoreStepOf($run, RestoreStep::NAME)->error)->toContain("No s'ha restaurat res")->toContain('--point=run'.$run->id)
+        ->and(restoreStepOf($run, RestoreStep::NAME)->error)->toContain("No s'ha restaurat res")
+        ->and(str_contains((string) restoreStepOf($run, RestoreStep::NAME)->error, 'Per tornar'))->toBeFalse()
         ->and($driver->writeCalls)->not->toContain('restoreFiles')
         ->and($driver->coreVersion)->toBe('6.9.0')
         ->and(AuditLogEntry::query()->where('action', 'backup.restore')->sole()->result)->toBe(AuditResult::Failure);
@@ -287,9 +314,10 @@ it('does not restore when the point of the current state cannot be made', functi
     $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Files]));
 
     expect($run->status)->toBe(RunStatus::Failed)
-        ->and(restoreStepOf($run, BackupStep::NAME)->status)->toBe(RunStepStatus::Failed)
+        ->and(restoreStepOf($run, PreRestoreBackupStep::NAME)->status)->toBe(RunStepStatus::Failed)
         ->and(restoreStepOf($run, RestoreStep::NAME)->status)->toBe(RunStepStatus::Pending)
-        ->and($driver->writeCalls)->not->toContain('restoreFiles');
+        ->and($driver->writeCalls)->not->toContain('restoreFiles')
+        ->and($driver->maintenance)->toBeFalse();
 });
 
 it('reports a site that does not answer after the restore, without undoing it, and says how to go back', function (): void {
@@ -384,6 +412,170 @@ it('holds the source point while the restore run is unfinished, even when it is 
     expect(app(RestorePointRetention::class)->plan([$site->id])->purges)->toHaveCount(1);
 });
 
+it('makes the point of the current state with what the restored archive can overwrite: uploads too', function (): void {
+    $site = restoreRunSite();
+    $driver = new FakeDriver;
+    restoreRunPipeline($driver);
+    $site->profile?->update(['include_uploads' => true]);
+    $point = restoreRunPoint($site->refresh(), $driver);
+    $site->profile?->update(['include_uploads' => false]);
+
+    $run = app(RunEngine::class)->execute(restoreRun($site->refresh(), $point, [BackupKind::Files]));
+    $pre = Backup::query()->where('run_id', $run->id)->where('kind', BackupKind::Files)->firstOrFail();
+    $archive = unserialize($driver->files["restore-points/{$pre->path}"], ['allowed_classes' => false]);
+    $excludes = is_array($archive) ? $archive['excludes'] ?? null : null;
+
+    expect($run->status)->toBe(RunStatus::Succeeded)
+        ->and($excludes)->toBe($driver->archiveExcludes(new RemoteFile('restore-points/'.$point->local(BackupKind::Files)?->path, 0, '')))
+        ->and($excludes)->not->toContain('wp-content/uploads');
+});
+
+it('uses a verified external copy of the point when the site-local one no longer holds its bytes, with a warning', function (): void {
+    $site = restoreRunSite();
+    $driver = new FakeDriver;
+    restoreRunPipeline($driver);
+    $dir = sys_get_temp_dir().'/wpup-restore-run-'.bin2hex(random_bytes(6));
+    mkdir($dir, 0700, true);
+    $record = BackupTargetRecord::factory()->create(['type' => BackupTargetType::Sftp, 'name' => 'extern']);
+    $site->backupTargets()->attach($record->id);
+    app(BackupTargetRegistry::class)->register(BackupTargetType::Sftp, static fn (): BackupTarget => new FlysystemTarget(new Filesystem(new LocalFilesystemAdapter($dir)), app(SecretRedactor::class), 1_048_576));
+
+    try {
+        $point = restoreRunPoint($site, $driver);
+        $driver->files['restore-points/'.$point->local(BackupKind::Files)?->path] = 'malmès';
+        $driver->coreVersion = '6.9.0';
+
+        $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Files]));
+        $check = restoreStepOf($run, RestoreCheckStep::NAME);
+
+        expect($run->status)->toBe(RunStatus::Succeeded)
+            ->and($driver->coreVersion)->toBe('6.8.3')
+            ->and($check->summary)->toContain('(extern)')->toContain('1 avisos')
+            ->and($check->output)->toContain('ja no té el SHA-256 registrat')->toContain('«extern»');
+    } finally {
+        File::deleteDirectory($dir);
+    }
+});
+
+it('leaves the maintenance mode on when it already was', function (): void {
+    $site = restoreRunSite();
+    $driver = new RestoreRunDriver;
+    restoreRunPipeline($driver);
+    $point = restoreRunPoint($site, $driver);
+    $driver->maintenance = true;
+
+    $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Files]));
+
+    expect($run->status)->toBe(RunStatus::Succeeded)
+        ->and($driver->maintenanceAtRestore)->toBe([true])
+        ->and($driver->maintenance)->toBeTrue();
+});
+
+it('restores a site too broken to back up only with --without-pre-backup, and says there is no way back', function (): void {
+    $site = restoreRunSite();
+    $driver = new RestoreRunDriver;
+    restoreRunPipeline($driver);
+    $point = restoreRunPoint($site, $driver);
+    $driver->archiveFailure = new RemoteCommandFailed('tar ha fallat');
+    $driver->installedFailure = new RemoteCommandFailed('PHP Fatal error');
+    $driver->coreVersion = '6.9.0';
+
+    $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Files], withoutPreBackup: true));
+
+    expect($run->status)->toBe(RunStatus::Succeeded)
+        ->and(restoreStepOf($run, InventoryStep::NAME)->summary)->toContain('Es continua sense inventari')
+        ->and(restoreStepOf($run, PreRestoreBackupStep::NAME)->summary)->toContain('--without-pre-backup')
+        ->and(restoreStepOf($run, RestoreStep::NAME)->summary)->toContain("Sense punt de l'estat d'abans")
+        ->and($driver->coreVersion)->toBe('6.8.3')
+        ->and($driver->maintenance)->toBeFalse()
+        ->and(AuditLogEntry::query()->where('action', 'backup.restore')->sole()->context)->toMatchArray(['without_pre_backup' => true, 'pre_restore_point' => null]);
+});
+
+it('treats a site whose inventory fails as a shop: its database needs the confirmation', function (): void {
+    $site = restoreRunSite();
+    $driver = new FakeDriver;
+    unset($driver->components['woocommerce:woocommerce']);
+    restoreRunPipeline($driver);
+    $point = restoreRunPoint($site, $driver);
+    $driver->installedFailure = new RemoteCommandFailed('PHP Fatal error');
+
+    $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Database]));
+
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and(restoreStepOf($run, RestoreCheckStep::NAME)->error)->toContain('--accept-data-loss')
+        ->and($driver->writeCalls)->not->toContain('restoreDatabase');
+});
+
+it('never restores a shop database with --accept-data-loss alone, without the interactive confirmation', function (): void {
+    $site = restoreRunSite();
+    $driver = new FakeDriver;
+    restoreRunPipeline($driver);
+    $point = restoreRunPoint($site, $driver);
+
+    $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Database], acceptDataLoss: true, confirmed: false));
+
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and(restoreStepOf($run, RestoreCheckStep::NAME)->error)->toContain('escrivint el nom del lloc')
+        ->and($driver->writeCalls)->not->toContain('restoreDatabase');
+});
+
+/** A stream that never ends and never gives a byte. */
+final class StuckStream
+{
+    /** @var resource|null */
+    public $context;
+
+    public function stream_open(string $path, string $mode, int $options, ?string &$opened): bool
+    {
+        return true;
+    }
+
+    public function stream_read(int $count): string
+    {
+        return '';
+    }
+
+    public function stream_eof(): bool
+    {
+        return false;
+    }
+
+    public function stream_seek(int $offset, int $whence): bool
+    {
+        return $offset === 0;
+    }
+
+    public function stream_tell(): int
+    {
+        return 0;
+    }
+
+    /** @return array<string, int> */
+    public function stream_stat(): array
+    {
+        return [];
+    }
+}
+
+it('stops a staging copy on a short read or a stuck stream, and leaves no file', function (): void {
+    $staging = config()->string('wpup.backups.staging_dir');
+    $before = glob($staging.'/copy-*') ?: [];
+    $short = fopen('php://temp', 'r+b') ?: throw new RuntimeException('php://temp');
+    fwrite($short, 'abc');
+    stream_wrapper_register('wpup-stuck', StuckStream::class);
+
+    try {
+        $stuck = fopen('wpup-stuck://x', 'rb') ?: throw new RuntimeException('wpup-stuck');
+        expect(fn () => StagingCopy::copy($short, $staging, 2, 'La lectura', 'k', 10))->toThrow(BackupTargetException::class, 'lectura incompleta (3 de 10 bytes)')
+            ->and(fn () => StagingCopy::copy($stuck, $staging, 2, 'La lectura', 'k'))->toThrow(BackupTargetException::class, 'ha deixat de donar dades')
+            ->and(glob($staging.'/copy-*') ?: [])->toBe($before)
+            ->and(StagingCopy::copy($short, $staging, 2, 'La lectura', 'k', 3)[1])->toBe(hash('sha256', 'abc'));
+    } finally {
+        stream_wrapper_unregister('wpup-stuck');
+        array_map(unlink(...), array_diff(glob($staging.'/copy-*') ?: [], $before));
+    }
+});
+
 describe('selection', function (): void {
     it('takes the verified site-local copies of a point, by its directory, its last segment or its run id', function (): void {
         $site = restoreRunSite();
@@ -393,9 +585,9 @@ describe('selection', function (): void {
         $selection = app(RestoreSelection::class);
 
         foreach ([$point->directory, basename($point->directory)] as $ref) {
-            expect($selection->select($site, $ref, [], [BackupKind::Database, BackupKind::Files], false)->backupIds)->toBe([
-                'database' => $point->local(BackupKind::Database)?->id,
-                'files' => $point->local(BackupKind::Files)?->id,
+            expect($selection->select($site, $ref, [], [BackupKind::Database, BackupKind::Files], false)->candidates)->toBe([
+                'database' => [$point->local(BackupKind::Database)?->id],
+                'files' => [$point->local(BackupKind::Files)?->id],
             ]);
         }
         $run = Run::factory()->create(['site_id' => $site->id]);
@@ -446,8 +638,10 @@ describe('selection', function (): void {
         $request = app(RestoreSelection::class)->select($site, $point->directory, [], [BackupKind::Files], false);
         $point->local(BackupKind::Files)?->update(['deleted_at' => now()]);
 
-        expect(fn () => app(RestoreSelection::class)->rows($site, $request))->toThrow(RestoreRefused::class, "s'ha esborrat")
-            ->and(fn () => RestoreRequest::fromRun(Run::factory()->create(['flags' => [RestoreRequest::POINT_FLAG => 'x', RestoreRequest::BACKUPS_FLAG => ['files' => '1']]])))
+        expect(fn () => app(RestoreSelection::class)->rows($site, $request, ['files' => (int) $point->local(BackupKind::Files)?->id]))->toThrow(RestoreRefused::class, "s'ha esborrat")
+            ->and(fn () => app(RestoreSelection::class)->candidates($site, $request))->toThrow(RestoreRefused::class, "s'ha esborrat")
+            ->and(fn () => app(RestoreSelection::class)->rows($site, $request, ['files' => 999999]))->toThrow(RestoreRefused::class, 'No s\'ha triat cap còpia vàlida')
+            ->and(fn () => RestoreRequest::fromRun(Run::factory()->create(['flags' => [RestoreRequest::POINT_FLAG => 'x', RestoreRequest::BACKUPS_FLAG => ['files' => ['1']]]])))
             ->toThrow(RestoreRefused::class);
     });
 });
