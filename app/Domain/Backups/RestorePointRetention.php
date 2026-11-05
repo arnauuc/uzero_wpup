@@ -19,6 +19,7 @@ use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Run;
 use App\Models\Site;
 use Carbon\CarbonImmutable;
+use Closure;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use LogicException;
@@ -33,20 +34,25 @@ use Throwable;
  * rules, in precedence order:
  *
  * 1. Never purged, whatever its age (RetentionHold, first match reported): the
- *    point just made; any point of a site whose lock is held by someone else;
- *    a protected point; a point of an unfinished run; of a rolled back or
- *    failed run nobody has reviewed; of a run an unfinished run was launched
- *    from (parent_run_id); and, on a site with an unfinished run, its newest
- *    point verified on the site (what a rollback restores).
+ *    point just made; any point of a site whose lock, or whose hosting
+ *    account's lock, is held by someone else; a point protected by hand; a
+ *    point of an unfinished run; of a rolled back or failed run nobody has
+ *    reviewed (isIncident(), read from the run: the only source of truth);
+ *    of a run an unfinished run was launched from (parent_run_id); and, on a
+ *    site with an unfinished run, its newest point verified on the site (what
+ *    a rollback restores).
  * 2. Purged when expired (every row's expires_at has passed).
  * 3. Then, while the site still has more than `backups.max_per_site` points,
  *    the oldest one not held is purged. Held points still count.
  *
- * Purging takes the site lock (a busy site is left for the next purge) and
- * recomputes the site's plan under it, so it only deletes what is still due
- * then. A file that cannot be deleted keeps its row live (logged, redacted)
- * and the next purge retries it. Every purge leaves one `backups.pruned`
- * entry in audit_log.
+ * Purging takes the site lock (and its hosting account's; a busy site is left
+ * for the next purge), recomputes the site's plan under it, so it only
+ * deletes what is still due then, and renews the lock before every file: a
+ * lost lock stops the site at once. A file that cannot be deleted keeps its
+ * row live (logged, redacted) and the next purge retries it; a destination
+ * that cannot be opened is skipped for the rest of the purge. Each purged site
+ * leaves one `backups.pruned` entry in audit_log, written even when the purge
+ * stops halfway.
  */
 final readonly class RestorePointRetention
 {
@@ -56,6 +62,18 @@ final readonly class RestorePointRetention
         private AuditLogger $audit,
         private SecretRedactor $redactor,
     ) {}
+
+    /**
+     * ADR-0009: the point of a reverted update, or of a run with an incident,
+     * is held until an operator reviews the run (`run:ack`). Read from the run
+     * itself (status and reviewed_at), conservatively: any run that ended
+     * rolled back or failed (it may have changed the site before failing, or
+     * its rollback may have failed).
+     */
+    public static function isIncident(Run $run): bool
+    {
+        return in_array($run->status, [RunStatus::RolledBack, RunStatus::Failed], true);
+    }
 
     /**
      * What a purge would do now, for $sites (every site when null).
@@ -69,6 +87,7 @@ final readonly class RestorePointRetention
 
     /**
      * Purges the points of $plan that are still due once each site is locked.
+     * Each site is audited right after it is purged.
      */
     public function prune(RetentionPlan $plan, AuditActor $actor, string $trigger): PruneResult
     {
@@ -80,79 +99,118 @@ final readonly class RestorePointRetention
             $sites[$purge->site->id] = $purge->site;
         }
 
-        $purged = $failures = $busy = [];
+        $results = [];
         foreach ($sites as $siteId => $site) {
             try {
+                // The site and its hosting account, as a run takes them.
                 $lease = $this->locks->acquire($site, $actor->name);
             } catch (LockedException) {
-                $busy[] = $site;
+                $results[] = new PruneResult(busySites: [$site]);
 
                 continue;
             }
 
             try {
-                [$sitePurged, $siteFailures] = $this->purgeSite($site, $actor, $directories[$siteId], null, []);
-                array_push($purged, ...$sitePurged);
-                array_push($failures, ...$siteFailures);
+                $results[] = $this->purgeSite($site, $actor, $trigger, $directories[$siteId], null, [], $lease->refresh(...));
             } finally {
                 $lease->release();
             }
         }
 
-        $result = new PruneResult($purged, $failures, $busy);
-        $this->record($actor, $trigger, $result, null);
-
-        return $result;
+        return PruneResult::merge($results);
     }
 
     /**
      * The site's plan recomputed now (its lock is held), limited to
-     * $directories when given, purged.
+     * $directories when given, purged. The lock is renewed ($keepLock) before
+     * every file: if it is lost, nothing else is deleted. Whatever was
+     * deleted is audited, even if an exception stops the purge.
      *
      * @param  list<string>|null  $directories
-     * @param  array<int, BackupTarget>  $targets
-     * @return array{list<PlannedPurge>, list<PruneFailure>}
+     * @param  array<int, BackupTarget>  $targets  destinations already open, by backup_targets.id
+     * @param  Closure(): bool  $keepLock
      */
-    private function purgeSite(Site $site, AuditActor $actor, ?array $directories, ?string $exclude, array $targets): array
+    private function purgeSite(Site $site, AuditActor $actor, string $trigger, ?array $directories, ?string $exclude, array $targets, Closure $keepLock): PruneResult
     {
-        $purged = $failures = [];
+        $purged = $failures = $deleted = [];
+        /** @var array<int, string> $unavailable destinations that could not be opened, with the reason */
+        $unavailable = [];
+        $lockLost = false;
 
-        foreach ($this->compute([$site->id], checkLocks: false, exclude: $exclude)->purges as $purge) {
-            if ($directories !== null && ! in_array($purge->point->directory, $directories, true)) {
-                continue;
-            }
+        try {
+            foreach ($this->compute([$site->id], checkLocks: false, exclude: $exclude)->purges as $purge) {
+                if ($directories !== null && ! in_array($purge->point->directory, $directories, true)) {
+                    continue;
+                }
 
-            $pointFailures = $this->purgePoint($site, $purge->point, $actor, $targets);
-            if ($pointFailures === []) {
-                $purged[] = $purge;
+                $pointFailures = $this->purgePoint($site, $purge->point, $actor, $targets, $unavailable, $keepLock, $deleted, $lockLost);
+                if ($lockLost) {
+                    Log::warning('Lost the site lock while purging restore points; the purge of the site stops.', ['site_id' => $site->id]);
+
+                    break;
+                }
+                if ($pointFailures === []) {
+                    $purged[] = $purge;
+                }
+                array_push($failures, ...$pointFailures);
             }
-            array_push($failures, ...$pointFailures);
+        } finally {
+            $result = new PruneResult($purged, $failures, lockLostSites: $lockLost ? [$site] : []);
+            $this->record($actor, $trigger, $site, $result, $deleted);
         }
 
-        return [$purged, $failures];
+        return $result;
     }
 
     /**
      * Deletes every file of $point at its destination, then marks its row deleted.
      *
      * @param  array<int, BackupTarget>  $targets  open destinations, filled as they are opened
+     * @param  array<int, string>  $unavailable  destinations that failed to open: their files are skipped
+     * @param  Closure(): bool  $keepLock
+     * @param  list<int>  $deleted  ids of the rows deleted, appended
      * @return list<PruneFailure>
      */
-    private function purgePoint(Site $site, StoredRestorePoint $point, AuditActor $actor, array &$targets): array
+    private function purgePoint(Site $site, StoredRestorePoint $point, AuditActor $actor, array &$targets, array &$unavailable, Closure $keepLock, array &$deleted, bool &$lockLost): array
     {
         $failures = [];
 
         foreach ($point->rows as $row) {
+            $destination = $row->backupTarget->name ?? "#{$row->backup_target_id}";
+            if (isset($unavailable[$row->backup_target_id])) {
+                $failures[] = new PruneFailure($site->id, $point->directory, $row->path, $destination, $unavailable[$row->backup_target_id]);
+
+                continue;
+            }
+            if (! $keepLock()) {
+                $lockLost = true;
+
+                return $failures;
+            }
+
             try {
-                $target = $targets[$row->backup_target_id] ??= $this->target($row, $site, $actor);
+                $target = $targets[$row->backup_target_id] ?? null;
+                if ($target === null) {
+                    try {
+                        $target = $targets[$row->backup_target_id] = $this->target($row, $site, $actor);
+                    } catch (BackupTargetException $e) {
+                        $unavailable[$row->backup_target_id] = $reason = $this->redactor->redact($e->getMessage());
+                        Log::warning('Could not open a destination to purge restore points; its files are skipped.', [
+                            'site_id' => $site->id, 'destination' => $destination, 'reason' => $reason,
+                        ]);
+                        $failures[] = new PruneFailure($site->id, $point->directory, $row->path, $destination, $reason);
+
+                        continue;
+                    }
+                }
                 $target->delete($row->path);
                 $row->update(['deleted_at' => CarbonImmutable::now()]);
+                $deleted[] = $row->id;
             } catch (RunException $e) {
                 // The run itself was stopped (timeout, claim lost): never swallowed.
                 throw $e;
             } catch (Throwable $e) {
                 $reason = $this->redactor->redact($e->getMessage());
-                $destination = $row->backupTarget->name ?? "#{$row->backup_target_id}";
                 Log::warning('Could not delete a file of a restore point; its row stays and the next purge retries it.', [
                     'site_id' => $site->id, 'key' => $row->path, 'destination' => $destination, 'exception' => $e::class, 'reason' => $reason,
                 ]);
@@ -165,13 +223,16 @@ final readonly class RestorePointRetention
     }
 
     /**
+     * Only to delete existing copies: an inactive destination, or one no
+     * longer linked to the site, is still opened (BackupTargetRegistry::forDeletion()).
+     *
      * @throws BackupTargetException
      */
     private function target(Backup $row, Site $site, AuditActor $actor): BackupTarget
     {
         $record = $row->backupTarget ?? throw new BackupTargetException("La destinació {$row->backup_target_id} no existeix.");
 
-        return $this->registry->for($record, $site, $actor);
+        return $this->registry->forDeletion($record, $site, $actor);
     }
 
     /**
@@ -213,7 +274,9 @@ final readonly class RestorePointRetention
             if ($site === null) {
                 continue;
             }
-            $busy = $checkLocks && $this->locks->holder(LockLevel::Site, $site->id) !== null;
+            // Busy as acquire() sees it: the site or its hosting account.
+            $busy = $checkLocks && ($this->locks->holder(LockLevel::Site, $site->id) !== null
+                || $this->locks->holder(LockLevel::HostingAccount, $site->hosting_account_id) !== null);
             [$sitePurges, $siteHeld] = $this->planSite($site, $this->points($site->id, $siteRows), $context, $maxPerSite, $busy, $exclude);
             array_push($purges, ...$sitePurges);
             array_push($held, ...$siteHeld);
@@ -286,7 +349,7 @@ final readonly class RestorePointRetention
             $point->isProtected() => RetentionHold::Protected,
             // A row whose run is gone (or not readable) is treated as unfinished: never guessed.
             $runId !== null && ($run === null || ! $run->status->isTerminal()) => RetentionHold::RunInProgress,
-            $run !== null && $run->reviewed_at === null && ProtectIncidentRestorePoints::isIncident($run) => RetentionHold::IncidentNotReviewed,
+            $run !== null && $run->reviewed_at === null && self::isIncident($run) => RetentionHold::IncidentNotReviewed,
             $runId !== null && in_array($runId, $context->parentRunIds, true) => RetentionHold::NeededByRun,
             $point->directory === $newestVerified => RetentionHold::NewestOfActiveSite,
             default => null,
@@ -313,25 +376,31 @@ final readonly class RestorePointRetention
         return $points;
     }
 
-    private function record(AuditActor $actor, string $trigger, PruneResult $result, ?int $siteId): void
+    /**
+     * One `backups.pruned` entry per site, with every row it deleted (also of
+     * points left half purged).
+     *
+     * @param  list<int>  $deleted
+     */
+    private function record(AuditActor $actor, string $trigger, Site $site, PruneResult $result, array $deleted): void
     {
-        if ($result->purged === [] && $result->failures === []) {
+        if ($deleted === [] && $result->failures === [] && $result->lockLostSites === []) {
             return;
         }
 
-        $this->audit->record($actor, 'backups.pruned', $result->failed() ? AuditResult::Failure : AuditResult::Success, $siteId === null ? null : 'site', $siteId, [
+        $this->audit->record($actor, 'backups.pruned', $result->failed() ? AuditResult::Failure : AuditResult::Success, 'site', $site->id, [
             'trigger' => $trigger,
             'purged' => array_map(static fn (PlannedPurge $p): array => [
-                'site_id' => $p->site->id,
                 'directory' => $p->point->directory,
                 'run_id' => $p->point->runId(),
                 'reason' => $p->reason->value,
                 'backup_ids' => $p->point->backupIds(),
             ], $result->purged),
+            'deleted_backup_ids' => $deleted,
             'failures' => array_map(static fn (PruneFailure $f): array => [
-                'site_id' => $f->siteId, 'directory' => $f->directory, 'key' => $f->key, 'destination' => $f->destination, 'reason' => $f->reason,
+                'directory' => $f->directory, 'key' => $f->key, 'destination' => $f->destination, 'reason' => $f->reason,
             ], $result->failures),
-            'busy_site_ids' => array_map(static fn (Site $s): int => $s->id, $result->busySites),
+            'lock_lost' => $result->lockLostSites !== [],
         ]);
     }
 }

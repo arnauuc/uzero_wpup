@@ -10,7 +10,6 @@ use App\Domain\Backups\BackupStep;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
-use App\Domain\Backups\ProtectIncidentRestorePoints;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
@@ -38,7 +37,6 @@ use App\Domain\Notifications\SiteBlockNotifier;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
-use App\Domain\Runs\Events\RunFinished;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunAuthorization;
@@ -377,9 +375,6 @@ class AppServiceProvider extends ServiceProvider
     {
         // ADR-0007: the minimum PHP of the fleet cannot be configured below 7.4.
         SitePrerequisites::assertMinimumPhp(config('wpup.min_site_php'));
-
-        // ADR-0009: the restore point of a reverted run, or of one with an incident, is protected.
-        Event::listen(RunFinished::class, [ProtectIncidentRestorePoints::class, 'handle']);
 
         // Second line of defence behind the `wpup` bash wrapper: when invoked through
         // it (WPUP_CLI=1), only Uzero wpup commands may run (ADR-0002).

@@ -12,8 +12,8 @@ use App\Domain\Runs\RunAcknowledgement;
 use App\Models\Run;
 
 /**
- * Marks a finished run as reviewed (ADR-0009): its restore point stops being
- * protected and the retention may purge it.
+ * Marks a finished run as reviewed (ADR-0009): the retention stops holding its
+ * restore point, which then lasts the usual retention from now.
  */
 final class RunAckCommand extends WpupCommand implements ChangesState
 {
@@ -21,7 +21,7 @@ final class RunAckCommand extends WpupCommand implements ChangesState
         {run : Id de l\'execució}
         '.self::DRY_RUN;
 
-    protected $description = 'Marca una execució acabada com a revisada i en desprotegeix el punt de restauració';
+    protected $description = 'Marca una execució acabada com a revisada; el seu punt de restauració passa a seguir la retenció normal';
 
     protected function ability(): Ability
     {
@@ -54,32 +54,33 @@ final class RunAckCommand extends WpupCommand implements ChangesState
             return self::SUCCESS;
         }
 
-        $protected = $acknowledgement->protectedBackups($run);
-        $this->line("Execució #{$run->id} ({$run->type->value}, {$run->status->value}) de {$run->targetLabel()}: {$protected} fitxers protegits.");
+        $files = $acknowledgement->backups($run);
+        $days = config()->integer('wpup.backups.retention_days');
+        $this->line("Execució #{$run->id} ({$run->type->value}, {$run->status->value}) de {$run->targetLabel()}: {$files} fitxers al punt de restauració.");
 
         if ($this->isDryRun()) {
-            $this->info("[dry-run] Es marcaria com a revisada i se'n desprotegirien {$protected} fitxers.");
+            $this->info("[dry-run] Es marcaria com a revisada; el punt de restauració caducaria d'aquí a {$days} dies i seguiria la retenció normal.");
 
             return self::SUCCESS;
         }
 
-        if (! $this->confirm('Marcar-la com a revisada? El seu punt de restauració deixarà d\'estar protegit i s\'esborrarà segons la retenció.', false)) {
+        if (! $this->confirm("Marcar-la com a revisada? El seu punt de restauració deixarà d'estar retingut: caducarà d'aquí a {$days} dies i seguirà la retenció normal.", false)) {
             $this->warn('No s\'ha fet res.');
 
             return self::FAILURE;
         }
 
         try {
-            $unprotected = $acknowledgement->acknowledge($run, $this->operator, $this->actor());
+            $extended = $acknowledgement->acknowledge($run, $this->operator, $this->actor());
         } catch (RunNotAcknowledgeable $e) {
             $this->error($e->getMessage());
 
             return self::FAILURE;
         }
 
-        $this->info($unprotected === null
+        $this->info($extended === null
             ? "L'execució #{$run->id} ja estava revisada."
-            : "Execució #{$run->id} revisada; {$unprotected} fitxers desprotegits.");
+            : "Execució #{$run->id} revisada; el punt de restauració caduca d'aquí a {$days} dies.");
 
         return self::SUCCESS;
     }

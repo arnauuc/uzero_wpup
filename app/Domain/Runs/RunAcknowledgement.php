@@ -16,19 +16,21 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * An operator marks a finished run as reviewed (`wpup run:ack`, later the
- * panel). Its restore point stops being protected (ADR-0009): from then on the
- * retention treats it like any other (7 days, at most 2 per site).
+ * panel). The retention holds the restore point of a reverted or failed run
+ * until then (RestorePointRetention::isIncident()); from then on it is treated
+ * like any other, and it lasts at least `backups.retention_days` from the
+ * review (ADR-0009). A point protected by hand stays protected.
  */
 final readonly class RunAcknowledgement
 {
     public function __construct(private AuditLogger $audit) {}
 
     /**
-     * Files of the run's restore point that are protected now.
+     * Live files of the run's restore point.
      */
-    public function protectedBackups(Run $run): int
+    public function backups(Run $run): int
     {
-        return Backup::query()->where('run_id', $run->id)->whereNull('deleted_at')->where('protected', true)->count();
+        return Backup::query()->where('run_id', $run->id)->whereNull('deleted_at')->count();
     }
 
     /**
@@ -42,32 +44,38 @@ final readonly class RunAcknowledgement
     }
 
     /**
-     * @return int|null files whose protection was lifted; null if it was already reviewed
+     * @return int|null files whose expiry was extended; null if it was already reviewed
      *
      * @throws RunNotAcknowledgeable
      */
     public function acknowledge(Run $run, User $user, AuditActor $actor): ?int
     {
-        $unprotected = DB::transaction(function () use ($run, $user): ?int {
+        $extended = DB::transaction(function () use ($run, $user): ?int {
             $current = Run::query()->whereKey($run->id)->lockForUpdate()->firstOrFail();
             $this->assertAcknowledgeable($current);
             if ($current->reviewed_at !== null) {
                 return null;
             }
 
-            $current->forceFill(['reviewed_at' => CarbonImmutable::now(), 'reviewed_by' => $user->id])->save();
+            $now = CarbonImmutable::now();
+            $current->forceFill(['reviewed_at' => $now, 'reviewed_by' => $user->id])->save();
+            $expiresAt = $now->addDays(config()->integer('wpup.backups.retention_days'));
 
-            return Backup::query()->where('run_id', $run->id)->whereNull('deleted_at')->where('protected', true)->update(['protected' => false]);
+            // max(current expiry, review + retention): never shortened.
+            return Backup::query()->where('run_id', $run->id)->whereNull('deleted_at')
+                // A file without expiry is kept as it is.
+                ->where('expires_at', '<', $expiresAt)
+                ->update(['expires_at' => $expiresAt]);
         });
         $run->refresh();
 
-        if ($unprotected !== null) {
+        if ($extended !== null) {
             $this->audit->record($actor, 'run.acknowledged', AuditResult::Success, 'run', $run->id, [
                 'status' => $run->status->value,
-                'unprotected_backups' => $unprotected,
+                'extended_backups' => $extended,
             ]);
         }
 
-        return $unprotected;
+        return $extended;
     }
 }

@@ -14,10 +14,10 @@ enum RetentionHold: string
     /** The point that was just made (purge after creating a point). */
     case JustCreated = 'just_created';
 
-    /** Someone holds the site's lock: a run may be using the point right now. */
+    /** Someone holds the site's lock or its hosting account's: a run may be using the point right now. */
     case SiteBusy = 'site_busy';
 
-    /** Marked protected (reverted run or incident) until an operator reviews the run. */
+    /** Protected by hand (`backups.protected`): never purged while it is. */
     case Protected = 'protected';
 
     /** Its run has not finished (queued, running, rolling back or interrupted). */
@@ -37,7 +37,7 @@ enum RetentionHold: string
         return match ($this) {
             self::JustCreated => "s'acaba de fer",
             self::SiteBusy => 'el lloc està bloquejat per una altra operació',
-            self::Protected => 'protegit fins que es revisi l\'execució',
+            self::Protected => 'protegit',
             self::RunInProgress => 'la seva execució no ha acabat',
             self::IncidentNotReviewed => 'execució revertida o fallida pendent de revisar',
             self::NeededByRun => 'el necessita una execució en curs',

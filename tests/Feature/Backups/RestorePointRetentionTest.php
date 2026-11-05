@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Backups\BackupTarget;
+use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
 use App\Domain\Backups\PlannedPurge;
+use App\Domain\Backups\PruneFailure;
 use App\Domain\Backups\PruneResult;
 use App\Domain\Backups\PurgeReason;
 use App\Domain\Backups\RestorePointRetention;
 use App\Domain\Backups\RetainedPoint;
 use App\Domain\Backups\RetentionHold;
+use App\Domain\Backups\StoredObject;
+use App\Domain\Locks\LockLevel;
 use App\Domain\Locks\SiteLockManager;
+use App\Domain\Runs\Exceptions\RunException;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunEngine;
@@ -105,9 +110,12 @@ it('keeps the two newest points of a site and purges the oldest, at every destin
     $audit = AuditLogEntry::query()->where('action', 'backups.pruned')->sole();
     expect($audit->result)->toBe(AuditResult::Success)
         ->and($audit->actor)->toBe('tests')
+        ->and($audit->object_type)->toBe('site')
+        ->and($audit->object_id)->toBe((string) $site->id)
         ->and($audit->context['trigger'] ?? null)->toBe('tests')
+        ->and($audit->context['deleted_backup_ids'] ?? null)->toEqual(Backup::query()->where('path', 'like', "{$old}/%")->orderBy('id')->pluck('id')->all())
         ->and($audit->context['purged'] ?? null)->toEqual([[
-            'site_id' => $site->id, 'directory' => $old, 'run_id' => Backup::query()->where('path', 'like', "{$old}/%")->value('run_id'),
+            'directory' => $old, 'run_id' => Backup::query()->where('path', 'like', "{$old}/%")->value('run_id'),
             'reason' => 'over_cap', 'backup_ids' => Backup::query()->where('path', 'like', "{$old}/%")->orderBy('id')->pluck('id')->all(),
         ]]);
 });
@@ -165,7 +173,7 @@ it('holds the point of a reverted or failed run until it is reviewed, even if it
     $point = RetentionFixture::point($site, $run, 9);
 
     expect(retentionPurges())->toBe([])
-        ->and(retentionHolds())->toBe([$point => RetentionHold::IncidentNotReviewed->value]);
+        ->and(retentionHolds())->toBe(["site-{$site->id}/run{$run->id}" => RetentionHold::IncidentNotReviewed->value]);
 
     $run->update(['reviewed_at' => now()]);
 
@@ -258,9 +266,10 @@ it('keeps the row of a file it could not delete, reports it redacted and still p
         ->toBe([BackupTargetRecord::query()->where('name', RetentionFixture::EXTERNAL)->value('id')])
         ->and(RetentionFixture::live($other))->toBe([]);
 
-    $audit = AuditLogEntry::query()->where('action', 'backups.pruned')->sole();
+    $audit = AuditLogEntry::query()->where('action', 'backups.pruned')->where('object_id', (string) $broken->id)->sole();
     expect($audit->result)->toBe(AuditResult::Failure)
-        ->and(json_encode($audit->context))->not->toContain(UndeletableTarget::SECRET);
+        ->and(json_encode($audit->context))->not->toContain(UndeletableTarget::SECRET)
+        ->and(AuditLogEntry::query()->where('action', 'backups.pruned')->where('object_id', (string) $other->id)->sole()->result)->toBe(AuditResult::Success);
 });
 
 it('applies the same retention to every site independently', function (): void {
@@ -277,12 +286,12 @@ it('applies the same retention to every site independently', function (): void {
         ->and(RetentionFixture::live($b))->toHaveCount(1);
 });
 
-it('protects the restore point of a run that is rolled back, and audits it', function (): void {
+it('holds the point of a run that the engine rolls back, without marking it protected, until it is reviewed', function (): void {
     $site = RetentionFixture::site();
     $run = Run::factory()->create(['site_id' => $site->id, 'type' => RunType::Update]);
     app(PipelineResolver::class)->register(RunType::Update, static fn (): Pipeline => new Pipeline([
         new ScriptedCompensableStep('backup', static function () use ($site, $run): StepOutcome {
-            RetentionFixture::point($site, $run, 0);
+            RetentionFixture::point($site, $run, 9);
 
             return StepOutcome::succeeded('punt fet');
         }, static fn (): StepOutcome => StepOutcome::succeeded('res a desfer')),
@@ -292,28 +301,146 @@ it('protects the restore point of a run that is rolled back, and audits it', fun
     app(RunEngine::class)->execute($run);
 
     expect($run->status)->toBe(RunStatus::RolledBack)
-        ->and(Backup::query()->where('run_id', $run->id)->pluck('protected')->unique()->all())->toBe([true])
-        ->and(AuditLogEntry::query()->where('action', 'backups.protected')->sole()->context)->toBe(['status' => 'rolled_back', 'backups' => 2]);
+        ->and(Backup::query()->where('run_id', $run->id)->pluck('protected')->unique()->all())->toBe([false])
+        ->and(retentionHolds())->toBe(["site-{$site->id}/run{$run->id}" => RetentionHold::IncidentNotReviewed->value]);
 });
 
-it('protects the point of a failed run, and not the one of a run that succeeded', function (): void {
+it('considers a site busy when its hosting account is locked by another site, in the plan and when purging', function (): void {
     $site = RetentionFixture::site();
-    $failed = Run::factory()->create(['site_id' => $site->id, 'type' => RunType::Update]);
-    $succeeded = Run::factory()->create(['site_id' => $site->id, 'type' => RunType::Update]);
-    app(PipelineResolver::class)->register(RunType::Update, static fn (Run $run): Pipeline => new Pipeline([
-        new ScriptedCompensableStep('backup', static function () use ($site, $run): StepOutcome {
-            RetentionFixture::point($site, $run, 0);
+    $point = RetentionFixture::point($site, RetentionFixture::run($site), 9);
+    $neighbour = Site::factory()->create(['hosting_account_id' => $site->hosting_account_id]);
+    $retention = app(RestorePointRetention::class);
+    $plan = $retention->plan();
+    $lease = app(SiteLockManager::class)->acquire($neighbour, 'una altra execució');
 
-            return StepOutcome::succeeded('punt fet');
-        }, static fn (): StepOutcome => StepOutcome::failed('el rollback ha fallat')),
-        new ScriptedCompensableStep('update', static fn (): StepOutcome => $run->id === $succeeded->id ? StepOutcome::succeeded('ok') : StepOutcome::failed('fatal nou'), static fn (): StepOutcome => StepOutcome::succeeded('restaurat')),
-    ]));
+    try {
+        expect(retentionHolds())->toBe([$point => RetentionHold::SiteBusy->value]);
+        $result = $retention->prune($plan, AuditActor::system('tests'), 'tests');
+    } finally {
+        $lease->release();
+    }
 
-    app(RunEngine::class)->execute($failed);
-    app(RunEngine::class)->execute($succeeded);
+    expect(array_map(static fn (Site $s): int => $s->id, $result->busySites))->toBe([$site->id])
+        ->and(RetentionFixture::stored($point))->toBeTrue();
+});
 
-    expect($failed->status)->toBe(RunStatus::Failed)
-        ->and(Backup::query()->where('run_id', $failed->id)->pluck('protected')->unique()->all())->toBe([true])
-        ->and($succeeded->status)->toBe(RunStatus::Succeeded)
-        ->and(Backup::query()->where('run_id', $succeeded->id)->pluck('protected')->unique()->all())->toBe([false]);
+it('stops purging a site as soon as its lock is lost, and audits what it had deleted', function (): void {
+    $site = RetentionFixture::site();
+    $first = RetentionFixture::point($site, RetentionFixture::run($site), 10);
+    $second = RetentionFixture::point($site, RetentionFixture::run($site), 9);
+    $local = app(BackupTargetRegistry::class);
+    // The first delete loses the lock (as if it expired or an admin released it).
+    $local->register(BackupTargetType::SiteLocal, static fn (): BackupTarget => new class implements BackupTarget
+    {
+        public function put(string $key, $stream): StoredObject
+        {
+            throw new BackupTargetException('no');
+        }
+
+        public function readStream(string $key)
+        {
+            throw BackupTargetException::notFound($key);
+        }
+
+        public function exists(string $key): bool
+        {
+            return true;
+        }
+
+        public function checksum(string $key): string
+        {
+            return str_repeat('0', 64);
+        }
+
+        public function delete(string $key): void
+        {
+            @unlink(RetentionFixture::dir(false)."/{$key}");
+            $siteId = (int) substr(explode('/', $key)[0], 5);
+            app(SiteLockManager::class)->forceRelease(LockLevel::Site, $siteId);
+        }
+
+        public function list(string $prefix = ''): array
+        {
+            return [];
+        }
+    });
+
+    $result = retentionPrune();
+
+    $audit = AuditLogEntry::query()->where('action', 'backups.pruned')->sole();
+    expect($result->failed())->toBeTrue()
+        ->and($result->purged)->toBe([])
+        ->and(array_map(static fn (Site $s): int => $s->id, $result->lockLostSites))->toBe([$site->id])
+        ->and(Backup::query()->where('site_id', $site->id)->whereNotNull('deleted_at')->count())->toBe(1)
+        ->and(RetentionFixture::live($site))->toBe([$first, $second])
+        ->and($audit->result)->toBe(AuditResult::Failure)
+        ->and($audit->context['lock_lost'] ?? null)->toBeTrue()
+        ->and($audit->context['deleted_backup_ids'] ?? null)->toHaveCount(1);
+});
+
+it('audits what it deleted before an exception stopped the purge', function (): void {
+    $site = RetentionFixture::site();
+    RetentionFixture::point($site, RetentionFixture::run($site), 9);
+    $target = new class extends UndeletableTarget
+    {
+        public int $deletes = 0;
+
+        public function delete(string $key): void
+        {
+            if (++$this->deletes > 1) {
+                throw new RunException('El torn de l\'execució ha acabat.');
+            }
+        }
+    };
+    app(BackupTargetRegistry::class)->register(BackupTargetType::SiteLocal, static fn (): BackupTarget => $target);
+
+    expect(fn () => retentionPrune())->toThrow(RunException::class);
+
+    $audit = AuditLogEntry::query()->where('action', 'backups.pruned')->sole();
+    expect($audit->context['deleted_backup_ids'] ?? null)->toHaveCount(1)
+        ->and(Backup::query()->where('site_id', $site->id)->whereNotNull('deleted_at')->count())->toBe(1);
+});
+
+it('still deletes the copies at a destination that was deactivated or unlinked from the site', function (string $change): void {
+    $site = RetentionFixture::site(external: true);
+    $point = RetentionFixture::point($site, RetentionFixture::run($site), 9);
+    $record = BackupTargetRecord::query()->where('name', RetentionFixture::EXTERNAL)->sole();
+    $change === 'deactivated' ? $record->update(['active' => false]) : $site->backupTargets()->detach($record->id);
+
+    $result = retentionPrune();
+
+    expect($result->failed())->toBeFalse()
+        ->and(RetentionFixture::stored($point, external: true))->toBeFalse()
+        ->and(RetentionFixture::live($site))->toBe([]);
+})->with(['deactivated', 'unlinked']);
+
+it('fails clearly for a destination whose type is no longer registered', function (): void {
+    $site = RetentionFixture::site();
+    $record = BackupTargetRecord::factory()->create(['type' => BackupTargetType::S3, 'name' => 'antiga-s3']);
+    Backup::factory()->create(['site_id' => $site->id, 'run_id' => RetentionFixture::run($site)->id, 'backup_target_id' => $record->id, 'path' => "site-{$site->id}/run1/db.gz", 'expires_at' => now()->subDay()]);
+
+    $result = retentionPrune();
+
+    expect($result->failures)->toHaveCount(1)
+        ->and($result->failures[0]->reason)->toContain('No hi ha cap destinació de còpia registrada per al tipus «s3»');
+});
+
+it('opens a broken destination once per purge and skips the rest of its files', function (): void {
+    $site = RetentionFixture::site(external: true);
+    RetentionFixture::point($site, RetentionFixture::run($site), 10);
+    RetentionFixture::point($site, RetentionFixture::run($site), 9);
+    $opened = 0;
+    app(BackupTargetRegistry::class)->register(BackupTargetType::Sftp, static function () use (&$opened): BackupTarget {
+        $opened++;
+
+        throw new BackupTargetException('No es pot connectar a la destinació.');
+    });
+
+    $result = retentionPrune();
+
+    expect($opened)->toBe(1)
+        ->and($result->failures)->toHaveCount(4)
+        ->and(array_unique(array_map(static fn (PruneFailure $f): string => $f->reason, $result->failures)))->toBe(['No es pot connectar a la destinació.'])
+        // The local copies went: only the external rows stay.
+        ->and(Backup::query()->where('site_id', $site->id)->whereNull('deleted_at')->count())->toBe(4);
 });

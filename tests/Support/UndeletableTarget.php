@@ -9,7 +9,7 @@ use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\StoredObject;
 
 /** A destination whose deletes fail, with a secret in the message. */
-final class UndeletableTarget implements BackupTarget
+class UndeletableTarget implements BackupTarget
 {
     public const string SECRET = 'sk-secret-1234567890';
 
