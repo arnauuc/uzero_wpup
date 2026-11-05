@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Domain\Backups\Dropbox\DropboxClient;
 use App\Domain\Backups\Dropbox\DropboxCredential;
 use App\Domain\Backups\Dropbox\DropboxException;
+use App\Domain\Backups\Dropbox\DropboxRetryPolicy;
 use App\Domain\Backups\Dropbox\DropboxSettings;
 use App\Domain\Backups\Dropbox\DropboxTokenProvider;
 use App\Domain\Secrets\Secret;
@@ -32,7 +33,9 @@ function dropboxClient(FakeDropboxApi $fake, ?DropboxSettings $settings = null):
     $http = new Client(['handler' => HandlerStack::create($fake)]);
     $redactor = app(SecretRedactor::class);
 
-    return new DropboxClient($http, new DropboxTokenProvider($http, $fake->credential(), $redactor, $settings), $redactor, $settings);
+    $retry = new DropboxRetryPolicy($settings, $redactor);
+
+    return new DropboxClient($http, new DropboxTokenProvider($http, $fake->credential(), $redactor, $settings, $retry), $redactor, $settings, $retry);
 }
 
 /**
@@ -225,7 +228,7 @@ it('moves, copies, deletes and creates folders, and classifies their errors', fu
     $client->upload('/other.gz', BackupTargetContract::stream('o'));
 
     $client->copy('/a.gz', '/b.gz');
-    $client->move('/a.gz', '/c/a.gz');
+    $moved = $client->move('/a.gz', '/c/a.gz');
     $client->createFolder('/d');
     $client->delete('/b.gz');
     $error = static function (Closure $call): DropboxException {
@@ -238,7 +241,8 @@ it('moves, copies, deletes and creates folders, and classifies their errors', fu
         throw new LogicException('No error.');
     };
 
-    expect($client->metadata('/a.gz'))->toBeNull()
+    expect($moved)->toMatchArray(['path_display' => '/c/a.gz', 'size' => 3])
+        ->and($client->metadata('/a.gz'))->toBeNull()
         ->and($client->metadata('/b.gz'))->toBeNull()
         ->and($client->metadata('/c/a.gz'))->toMatchArray(['size' => 3])
         ->and($client->metadata('/d'))->toMatchArray(['.tag' => 'folder'])
@@ -354,4 +358,72 @@ it('does not take a different file of the same size for a copy that already happ
 
     expect(fn () => $client->copy('/a.gz', '/b.gz'))->toThrow(DropboxException::class, 'to/conflict')
         ->and(FakeDropboxApi::contentHash($fake->dir.'/files/a.gz'))->not->toBe(FakeDropboxApi::contentHash($fake->dir.'/files/b.gz'));
+});
+
+/**
+ * @return array{0: DropboxClient, 1: FakeDropboxApi, 2: string} a client, its fake holding /big.tar.gz, and its SHA-256
+ */
+function dropboxWithBigFile(): array
+{
+    $fake = FakeDropboxApi::inTemp();
+    $client = dropboxClient($fake);
+    [$file, $sha] = dropboxSourceFile(9 * 1_048_576 + 3);
+    $source = fopen($file, 'rb');
+    assert(is_resource($source));
+    $client->upload('/big.tar.gz', $source);
+    fclose($source);
+
+    return [$client, $fake, $sha];
+}
+
+it('keeps its buffers in the private staging directory, never in /tmp', function (): void {
+    [$client, $fake, $sha] = dropboxWithBigFile();
+    $before = scandir(sys_get_temp_dir());
+    $source = ShortReadStream::open(random_bytes(5 * 1_048_576));
+
+    $client->upload('/piped.gz', $source);
+    $read = $client->download('/big.tar.gz');
+    $uri = stream_get_meta_data($read)['uri'] ?? '';
+
+    expect($uri)->toStartWith(FakeDropboxApi::stagingDir().'/dropbox-')
+        ->and(file_exists($uri))->toBeFalse()
+        ->and(sha256Of($read))->toBe($sha)
+        ->and(scandir(sys_get_temp_dir()))->toBe($before)
+        ->and(fileperms(FakeDropboxApi::stagingDir()) & 0777)->toBe(0700);
+});
+
+it('takes a download cut after its last byte as complete', function (bool $knownSize): void {
+    [$client, $fake, $sha] = dropboxWithBigFile();
+    $fake->omitLength = ! $knownSize;
+    $fake->cutNext('files/download', 9 * 1_048_576 + 3);
+
+    expect(sha256Of($client->download('/big.tar.gz')))->toBe($sha)
+        // Without the size, the retry is answered 416 and the metadata confirms it.
+        ->and(array_count_values($fake->calls)['files/download'])->toBe($knownSize ? 1 : 2);
+})->with(['size known' => true, 'size unknown (416)' => false]);
+
+it('starts again when the server ignores the Range of a cut download, even twice', function (): void {
+    [$client, $fake, $sha] = dropboxWithBigFile();
+    $fake->ignoreRange = true;
+    $fake->cutNext('files/download', 3 * 1_048_576);
+    $fake->cutNext('files/download', 5 * 1_048_576);
+
+    expect(sha256Of($client->download('/big.tar.gz')))->toBe($sha)
+        ->and(array_count_values($fake->calls)['files/download'])->toBe(3);
+});
+
+it('starts again when a 206 does not continue the partial download', function (): void {
+    [$client, $fake, $sha] = dropboxWithBigFile();
+    $fake->wrongRangeStart = true;
+    $fake->cutNext('files/download', 3 * 1_048_576);
+
+    expect(sha256Of($client->download('/big.tar.gz')))->toBe($sha)
+        ->and($fake->ranges)->toBe(['bytes=3145728-'])
+        ->and(array_count_values($fake->calls)['files/download'])->toBe(3);
+});
+
+it('gives up on a source that stalls', function (): void {
+    $client = dropboxClient(FakeDropboxApi::inTemp());
+
+    expect(fn () => $client->upload('/stalled.gz', ShortReadStream::open('', 0)))->toThrow(DropboxException::class, 'ha deixat de donar dades');
 });

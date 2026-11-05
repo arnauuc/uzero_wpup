@@ -22,17 +22,15 @@ final class DropboxTokenProvider
 
     private ?Secret $accessToken = null;
 
-    private readonly DropboxRetryPolicy $retry;
-
     public function __construct(
         private readonly ClientInterface $http,
         private readonly DropboxCredential $credential,
         private readonly SecretRedactor $redactor,
         private readonly DropboxSettings $settings,
+        private readonly DropboxRetryPolicy $retry,
     ) {
         $redactor->register($credential->appSecret);
         $redactor->register($credential->refreshToken);
-        $this->retry = new DropboxRetryPolicy($settings, $redactor);
     }
 
     public function token(): string

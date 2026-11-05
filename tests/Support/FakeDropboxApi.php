@@ -55,7 +55,13 @@ final class FakeDropboxApi
     /** Answer Range requests with the whole file (200), as a server may. */
     public bool $ignoreRange = false;
 
-    /** @var array<string, int> endpoint => bytes sent before the next transfer is cut */
+    /** Answer Range requests with a 206 that starts at 0, as a broken proxy may. */
+    public bool $wrongRangeStart = false;
+
+    /** Leave out Content-Length, so the client cannot know the size. */
+    public bool $omitLength = false;
+
+    /** @var array<string, list<int>> endpoint => bytes sent before each next transfer is cut */
     private array $cut = [];
 
     /** @var array<string, bool> token => still valid */
@@ -85,7 +91,13 @@ final class FakeDropboxApi
 
     public static function settings(int $chunkBytes = DropboxSettings::CHUNK_UNIT_BYTES, int $maxRetries = 2, int $maxRetryAfter = 0): DropboxSettings
     {
-        return new DropboxSettings(self::BASE.'2/', self::BASE.'content/2/', self::BASE.'oauth2/token', $chunkBytes, $maxRetries, $maxRetryAfter, 1_048_576, 1, 5, 65_536, 200, 65_536, 5);
+        return new DropboxSettings(self::BASE.'2/', self::BASE.'content/2/', self::BASE.'oauth2/token', $chunkBytes, $maxRetries, $maxRetryAfter, 1_048_576, 1, 5, 65_536, 200, 65_536, 5, self::stagingDir(), 50);
+    }
+
+    /** Where the client keeps its buffers in tests. */
+    public static function stagingDir(): string
+    {
+        return storage_path('app/testing-dropbox-staging');
     }
 
     public function credential(): DropboxCredential
@@ -112,7 +124,7 @@ final class FakeDropboxApi
     /** The next response of $endpoint is cut off after $bytes bytes reach the sink. */
     public function cutNext(string $endpoint, int $bytes): void
     {
-        $this->cut[$endpoint] = $bytes;
+        $this->cut[$endpoint][] = $bytes;
     }
 
     /** The next call to $endpoint is processed, but its response is lost (500). */
@@ -144,9 +156,15 @@ final class FakeDropboxApi
         }
         $sink = $options['sink'] ?? null;
         if (is_resource($sink)) {
+            if (is_callable($options['on_headers'] ?? null)) {
+                try {
+                    ($options['on_headers'])($response);
+                } catch (Throwable $e) {
+                    return Create::rejectionFor(new TransferException('An error was encountered during the on_headers event', $request, 0, $e));
+                }
+            }
             $body = $response->getBody();
-            $limit = $this->cut[$endpoint] ?? null;
-            unset($this->cut[$endpoint]);
+            $limit = ($this->cut[$endpoint] ?? []) !== [] ? array_shift($this->cut[$endpoint]) : null;
             for ($sent = 0; ! $body->eof() && ($limit === null || $sent < $limit); $sent += strlen($data)) {
                 $data = $body->read($limit === null ? 1_048_576 : min(1_048_576, $limit - $sent));
                 fwrite($sink, $data);
@@ -214,14 +232,20 @@ final class FakeDropboxApi
 
     private function download(string $file, string $range): ResponseInterface
     {
+        clearstatcache();
+        $size = (int) filesize($file);
         $body = Utils::streamFor(Utils::tryFopen($file, 'rb'));
+        $length = fn (int $bytes): array => $this->omitLength ? [] : ['Content-Length' => (string) $bytes];
         if ($range === '' || $this->ignoreRange) {
-            return new Response(200, [], $body);
+            return new Response(200, $length($size), $body);
         }
         $this->ranges[] = $range;
-        $from = preg_match('/^bytes=(\d+)-$/', $range, $m) === 1 ? (int) $m[1] : 0;
+        $from = preg_match('/^bytes=(\d+)-$/', $range, $m) === 1 && ! $this->wrongRangeStart ? (int) $m[1] : 0;
+        if ($from >= $size) {
+            return self::json(416, ['error_summary' => 'range_not_satisfiable/']);
+        }
 
-        return new Response(206, ['Content-Range' => "bytes {$from}-".((int) filesize($file) - 1).'/'.filesize($file)], new LimitStream($body, -1, $from));
+        return new Response(206, $length($size - $from) + ['Content-Range' => "bytes {$from}-".($size - 1)."/{$size}"], new LimitStream($body, -1, $from));
     }
 
     private function store(RequestInterface $request, string $file): ResponseInterface

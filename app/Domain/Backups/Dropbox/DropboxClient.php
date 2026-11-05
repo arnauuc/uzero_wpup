@@ -5,16 +5,18 @@ declare(strict_types=1);
 namespace App\Domain\Backups\Dropbox;
 
 use App\Domain\Secrets\SecretRedactor;
-use ArrayObject;
+use App\Support\PrivateDirectory;
 use Generator;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\TransferException;
 use GuzzleHttp\Psr7\LimitStream;
+use GuzzleHttp\Psr7\Response;
 use GuzzleHttp\Psr7\Stream;
 use GuzzleHttp\Psr7\Utils;
 use JsonException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamInterface;
+use RuntimeException;
 
 /**
  * The few Dropbox API v2 calls a backup destination needs. Paths are Dropbox
@@ -25,30 +27,25 @@ use Psr\Http\Message\StreamInterface;
  *   memory stays bounded and a chunk can be resent. A file smaller than one
  *   chunk uses a single files/upload. When a response was lost and Dropbox
  *   already holds more (incorrect_offset), the upload resumes from there.
- * - Downloads are written to a disk-backed temporary stream; a cut transfer
- *   resumes with a Range request from what already arrived.
+ * - Buffers (downloads, chunks of non-seekable sources) are unlinked files
+ *   of the private staging directory, never /tmp. A cut download resumes
+ *   with a Range request from what already arrived.
  * - 429/5xx answers and transport errors are retried (DropboxRetryPolicy);
  *   an expired access token is refreshed once per call. A move or copy that
  *   turns out to have succeeded before a lost response counts as done.
  */
-final readonly class DropboxClient
+final class DropboxClient
 {
-    private DropboxRetryPolicy $retry;
-
-    /** @var ArrayObject<string, string> lowercase path => content_hash of what this client uploaded */
-    private ArrayObject $uploaded;
+    /** @var array<string, string> lowercase path => content_hash of what this client uploaded */
+    private array $uploaded = [];
 
     public function __construct(
-        private ClientInterface $http,
-        private DropboxTokenProvider $tokens,
-        private SecretRedactor $redactor,
-        private DropboxSettings $settings,
-    ) {
-        $this->retry = new DropboxRetryPolicy($settings, $redactor);
-        /** @var ArrayObject<string, string> $uploaded */
-        $uploaded = new ArrayObject([]);
-        $this->uploaded = $uploaded;
-    }
+        private readonly ClientInterface $http,
+        private readonly DropboxTokenProvider $tokens,
+        private readonly SecretRedactor $redactor,
+        private readonly DropboxSettings $settings,
+        private readonly DropboxRetryPolicy $retry,
+    ) {}
 
     /**
      * @return array<mixed>|null the metadata, or null when nothing is there
@@ -81,10 +78,15 @@ final readonly class DropboxClient
         }
     }
 
-    public function move(string $from, string $to): void
+    /**
+     * @return array<mixed>|null the metadata of the moved file (null when a lost response was recovered)
+     */
+    public function move(string $from, string $to): ?array
     {
+        $moved = null;
         try {
-            $this->rpc('files/move_v2', ['from_path' => $from, 'to_path' => $to, 'autorename' => false]);
+            $result = $this->rpc('files/move_v2', ['from_path' => $from, 'to_path' => $to, 'autorename' => false]);
+            $moved = is_array($result['metadata'] ?? null) ? $result['metadata'] : null;
         } catch (DropboxException $e) {
             // Done before a lost response: the source is gone and the destination
             // holds what this client uploaded at the source.
@@ -98,6 +100,8 @@ final readonly class DropboxClient
             $this->uploaded[mb_strtolower($to)] = $this->uploaded[mb_strtolower($from)];
             unset($this->uploaded[mb_strtolower($from)]);
         }
+
+        return $moved;
     }
 
     public function copy(string $from, string $to): void
@@ -277,6 +281,7 @@ final readonly class DropboxClient
 
         $retry = 0;
         $refreshed = false;
+        $known = null;
         while (true) {
             $have = 0;
             $options = $this->settings->timeouts($sink !== null) + ['http_errors' => false, 'headers' => ['Authorization' => 'Bearer '.$this->tokens->token()]];
@@ -288,11 +293,18 @@ final readonly class DropboxClient
                 }
                 if ($sink !== null) {
                     $have = (int) (fstat($sink)['size'] ?? 0);
+                    if ($have > 0 && $known !== null && $have >= $known) {
+                        // Every byte had arrived before the transfer was cut.
+                        return new Response(206);
+                    }
                     fseek($sink, 0, SEEK_END);
                     if ($have > 0) {
                         $options['headers']['Range'] = "bytes={$have}-";
                     }
                     $options['sink'] = $sink;
+                    $options['on_headers'] = static function (ResponseInterface $response) use ($sink, &$have, &$known): void {
+                        self::onDownloadHeaders($response, $sink, $have, $known);
+                    };
                 }
             } else {
                 $options['headers']['Content-Type'] = 'application/json';
@@ -311,16 +323,15 @@ final readonly class DropboxClient
 
             $status = $response->getStatusCode();
             if ($status === 200 || ($status === 206 && $have > 0)) {
-                if ($status === 200 && $sink !== null && $have > 0) {
-                    // The Range was ignored: the whole file came after the partial one.
-                    $this->dropPrefix($sink, $have);
-                }
-
                 return $response;
             }
             [$summary, $correctOffset] = $this->error($response, $sink, $have);
             if ($sink !== null) {
                 ftruncate($sink, max(0, $have));
+                // Asked from the end: complete if that is the file's size.
+                if ($status === 416 && $have > 0 && is_string($arg['path'] ?? null) && ($this->metadata($arg['path'])['size'] ?? null) === $have) {
+                    return $response;
+                }
             }
             if ($status === 401 && str_starts_with($summary, 'expired_access_token') && ! $refreshed) {
                 $refreshed = true;
@@ -382,7 +393,7 @@ final readonly class DropboxClient
             $stream->seek($position);
 
             return $stream->isSeekable();
-        } catch (\RuntimeException) {
+        } catch (RuntimeException) {
             return false;
         }
     }
@@ -396,35 +407,51 @@ final readonly class DropboxClient
     {
         $buffer = $this->buffer();
         // A short read is not the end: only EOF makes a chunk the last one.
-        for ($copied = 0; $copied < $this->settings->chunkBytes && ! feof($source); $copied += $read) {
-            $read = stream_copy_to_stream($source, $buffer, $this->settings->chunkBytes - $copied);
-            if ($read === false) {
+        $copied = 0;
+        $idle = 0;
+        while ($copied < $this->settings->chunkBytes && ! feof($source)) {
+            $data = fread($source, max(1, min($this->settings->readChunkBytes, $this->settings->chunkBytes - $copied)));
+            // A read that times out returns nothing: a stuck stream ends here.
+            $idle = $data === '' ? $idle + 1 : 0;
+            if ($data === false || $idle > $this->settings->maxIdleReads || fwrite($buffer, $data) !== strlen($data)) {
                 fclose($buffer);
 
-                throw DropboxException::transport('upload', 'no es pot llegir el flux de dades');
+                throw DropboxException::transport('upload', $data === '' ? 'el flux ha deixat de donar dades' : 'no es pot llegir el flux de dades');
             }
+            $copied += strlen($data);
         }
 
         return Utils::streamFor($buffer);
     }
 
     /**
-     * Removes the first $bytes of $sink, in place.
+     * Before a download body is written: a 200 is the whole file (the Range
+     * was ignored, or there was none), so the sink starts again; a 206 must
+     * continue exactly where the sink ends, else the sink starts again and
+     * the request is retried.
      *
      * @param  resource  $sink
      */
-    private function dropPrefix($sink, int $bytes): void
+    private static function onDownloadHeaders(ResponseInterface $response, $sink, int &$have, ?int &$known): void
     {
-        for ($read = $bytes, $write = 0; ; $read += strlen($data), $write += strlen($data)) {
-            fseek($sink, $read);
-            $data = fread($sink, max(1, $this->settings->bufferMemoryBytes));
-            if ($data === false || $data === '') {
-                break;
+        $status = $response->getStatusCode();
+        if ($status === 200) {
+            ftruncate($sink, 0);
+            rewind($sink);
+            $have = 0;
+            $length = $response->getHeaderLine('Content-Length');
+            $known = ctype_digit($length) ? (int) $length : null;
+        } elseif ($status === 206) {
+            if (preg_match('#^bytes (\d+)-\d+/(\d+)$#', $response->getHeaderLine('Content-Range'), $range) !== 1 || (int) $range[1] !== $have) {
+                ftruncate($sink, 0);
+                rewind($sink);
+                $have = 0;
+                $known = null;
+
+                throw new RuntimeException('The Content-Range does not continue the partial download.');
             }
-            fseek($sink, $write);
-            fwrite($sink, $data);
+            $known = (int) $range[2];
         }
-        ftruncate($sink, $write);
     }
 
     /**
@@ -432,9 +459,20 @@ final readonly class DropboxClient
      */
     private function buffer()
     {
-        $buffer = fopen('php://temp/maxmemory:'.$this->settings->bufferMemoryBytes, 'w+b');
+        try {
+            $path = PrivateDirectory::ensure($this->settings->stagingDir).'/dropbox-'.bin2hex(random_bytes(16));
+        } catch (RuntimeException $e) {
+            throw new DropboxException("No s'ha pogut preparar el fitxer temporal de Dropbox: {$e->getMessage()}");
+        }
+        $buffer = @fopen($path, 'x+b');
+        if ($buffer === false) {
+            throw new DropboxException("No s'ha pogut crear el fitxer temporal de Dropbox a {$this->settings->stagingDir}.");
+        }
+        chmod($path, 0600);
+        // Unlinked at once: it disappears when closed, whatever happens.
+        unlink($path);
 
-        return $buffer !== false ? $buffer : throw DropboxException::transport('upload', "no s'ha pogut obrir un fitxer temporal");
+        return $buffer;
     }
 
     /**

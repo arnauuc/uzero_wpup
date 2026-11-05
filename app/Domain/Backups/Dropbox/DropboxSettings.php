@@ -24,18 +24,20 @@ final readonly class DropboxSettings
         public int $chunkBytes,
         public int $maxRetries,
         public int $maxRetryAfterSeconds,
-        public int $bufferMemoryBytes,
+        public int $readChunkBytes,
         public int $connectTimeoutSeconds,
         public int $timeoutSeconds,
         public int $maxErrorBytes,
         public int $errorSummaryChars,
         public int $maxTokenResponseBytes,
         public int $readTimeoutSeconds,
+        public string $stagingDir,
+        public int $maxIdleReads,
     ) {
         if ($chunkBytes <= 0 || $chunkBytes % self::CHUNK_UNIT_BYTES !== 0 || $chunkBytes > self::MAX_CHUNK_BYTES) {
             throw new InvalidArgumentException('wpup.backups.dropbox.chunk_bytes must be a multiple of 4 MiB, at most 150 MiB.');
         }
-        if ($maxRetries < 0 || $maxRetryAfterSeconds < 0 || min($bufferMemoryBytes, $maxErrorBytes, $errorSummaryChars, $maxTokenResponseBytes, $readTimeoutSeconds) <= 0) {
+        if ($maxRetries < 0 || $maxRetryAfterSeconds < 0 || min($readChunkBytes, $maxErrorBytes, $errorSummaryChars, $maxTokenResponseBytes, $readTimeoutSeconds, $maxIdleReads) <= 0 || $stagingDir === '') {
             throw new InvalidArgumentException('wpup.backups.dropbox retries and buffers must not be negative.');
         }
     }

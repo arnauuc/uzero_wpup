@@ -5,19 +5,18 @@ declare(strict_types=1);
 namespace Tests\Support;
 
 /**
- * A non-seekable stream wrapper that hands out at most READ_BYTES per read,
- * like a socket or a pipe under load.
+ * A non-seekable stream wrapper that hands out at most $readBytes per read,
+ * like a socket or a pipe under load; with 0 it stalls (never ends, never
+ * gives a byte).
  */
 final class ShortReadStream
 {
     private const string SCHEME = 'wpup-short';
 
-    private const int READ_BYTES = 1000;
-
     /** @var resource|null set by PHP */
     public $context;
 
-    /** @var array<string, string> */
+    /** @var array<string, array{string, int}> contents and read size */
     private static array $contents = [];
 
     private string $id = '';
@@ -27,13 +26,13 @@ final class ShortReadStream
     /**
      * @return resource
      */
-    public static function open(string $contents)
+    public static function open(string $contents, int $readBytes = 1000)
     {
         if (! in_array(self::SCHEME, stream_get_wrappers(), true)) {
             stream_wrapper_register(self::SCHEME, self::class);
         }
         $id = bin2hex(random_bytes(6));
-        self::$contents[$id] = $contents;
+        self::$contents[$id] = [$contents, $readBytes];
         $stream = fopen(self::SCHEME.'://'.$id, 'rb');
         assert(is_resource($stream));
 
@@ -49,7 +48,8 @@ final class ShortReadStream
 
     public function stream_read(int $count): string
     {
-        $chunk = substr(self::$contents[$this->id], $this->position, min($count, self::READ_BYTES));
+        [$contents, $readBytes] = self::$contents[$this->id];
+        $chunk = substr($contents, $this->position, min($count, $readBytes));
         $this->position += strlen($chunk);
 
         return $chunk;
@@ -57,7 +57,7 @@ final class ShortReadStream
 
     public function stream_eof(): bool
     {
-        return $this->position >= strlen(self::$contents[$this->id]);
+        return self::$contents[$this->id][1] > 0 && $this->position >= strlen(self::$contents[$this->id][0]);
     }
 
     /** Like a pipe: it cannot seek. */
