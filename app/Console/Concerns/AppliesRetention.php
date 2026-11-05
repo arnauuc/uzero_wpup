@@ -20,12 +20,20 @@ use Illuminate\Console\Command;
 /**
  * The flow shared by `backup:prune` (operators) and the scheduled
  * `engine:prune-restore-points`: show the plan, stop on --dry-run, ask
- * ($confirm) and purge. Exits with an error when a file could not be deleted.
+ * ($confirm) and purge. Exits with an error when a file could not be deleted
+ * or a site's lock was lost halfway.
  *
  * @mixin Command
  */
 trait AppliesRetention
 {
+    /**
+     * One JSON document on stdout (WpupCommand::emitJson()).
+     *
+     * @param  array<mixed>  $data
+     */
+    abstract protected function emitJson(array $data): void;
+
     /**
      * @param  list<int>|null  $siteIds
      * @param  Closure(RetentionPlan): bool  $confirm
@@ -40,7 +48,7 @@ trait AppliesRetention
         }
         if ($dryRun || $plan->purges === []) {
             if ($json) {
-                $this->line((string) json_encode(RetentionReport::document($plan, null, $dryRun), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+                $this->emitJson(RetentionReport::document($plan, null, $dryRun));
             }
 
             return Command::SUCCESS;
@@ -54,7 +62,7 @@ trait AppliesRetention
 
         $result = $retention->prune($plan, $actor, $trigger);
         if ($json) {
-            $this->line((string) json_encode(RetentionReport::document($plan, $result, false), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+            $this->emitJson(RetentionReport::document($plan, $result, false));
         } else {
             $this->printPruneResult($result);
         }
@@ -96,6 +104,10 @@ trait AppliesRetention
         foreach ($result->busySites as $site) {
             /** @var Site $site */
             $this->warn("El lloc «{$site->name}» està bloquejat per una altra operació: es deixa per a la propera neteja.");
+        }
+        foreach ($result->lockLostSites as $site) {
+            /** @var Site $site */
+            $this->error("S'ha perdut el bloqueig del lloc «{$site->name}» a mitja neteja: s'ha aturat sense esborrar res més.");
         }
         foreach ($result->failures as $failure) {
             /** @var PruneFailure $failure */

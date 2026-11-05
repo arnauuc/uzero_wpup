@@ -6,6 +6,7 @@ namespace App\Console\Commands\Backups;
 
 use App\Console\ChangesState;
 use App\Console\Concerns\AppliesRetention;
+use App\Console\WpupCommand;
 use App\Domain\Audit\AuditActor;
 use Illuminate\Console\Command;
 
@@ -29,5 +30,13 @@ final class PruneRestorePointsCommand extends Command implements ChangesState
     {
         return $this->applyRetention(null, AuditActor::system('retenció de punts de restauració'), 'schedule',
             $this->option('dry-run') === true, $this->option('json') === true, static fn (): bool => true);
+    }
+
+    /**
+     * @param  array<mixed>  $data
+     */
+    protected function emitJson(array $data): void
+    {
+        $this->line((string) json_encode($data, WpupCommand::JSON_FLAGS));
     }
 }

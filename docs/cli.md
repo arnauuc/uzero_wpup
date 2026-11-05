@@ -114,7 +114,7 @@ Mai no s'esborra, sigui quina sigui l'edat: un punt protegit manualment (`backup
 | Comanda | Què fa |
 | --- | --- |
 | `run:ack <execució>` | Marca com a revisada una execució acabada. El seu punt de restauració deixa d'estar retingut i caduca, com a mínim, 7 dies després de la revisió; després segueix la retenció normal. No toca una protecció manual. Demana confirmació |
-| `backup:prune [--site=…]` | Mostra què s'esborraria (i què es conserva i per què) i, després de confirmar-ho, ho esborra a totes les destinacions. Amb `--json` cal `--dry-run` o `--force`. Surt amb error si algun fitxer no s'ha pogut esborrar (la fila queda viva i es torna a provar a la propera neteja) o si s'ha perdut el bloqueig d'un lloc a mitja neteja |
+| `backup:prune [llocs…\|--tag=…\|--all]` | Sense selecció, tots els llocs (també els inactius). Mostra què s'esborraria (i què es conserva i per què) i, després de confirmar-ho, ho esborra a totes les destinacions. Amb `--json` cal `--dry-run` o `--force`. Surt amb error si algun fitxer no s'ha pogut esborrar (la fila queda viva i es torna a provar a la propera neteja) o si s'ha perdut el bloqueig d'un lloc a mitja neteja |
 
 El planificador fa la mateixa neteja cada dia a les `backups.prune_time` (per defecte, 06:30) amb `engine:prune-restore-points`, que no és accessible des del binari `wpup`. Totes dues tenen `--dry-run`, i cada lloc netejat deixa un resum a l'auditoria (`backups.pruned`).
 

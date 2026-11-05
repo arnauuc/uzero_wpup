@@ -5,10 +5,12 @@ declare(strict_types=1);
 use App\Domain\Audit\AuditActor;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\RestorePointRetention;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Identity\CliCommandGate;
+use App\Domain\Locks\SiteLockManager;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
@@ -19,12 +21,15 @@ use App\Enums\UserRole;
 use App\Models\AuditLogEntry;
 use App\Models\Backup;
 use App\Models\Run;
+use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\User;
 use Illuminate\Console\Scheduling\Event as ScheduledEvent;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
 use Tests\Support\FakeDriver;
@@ -121,16 +126,17 @@ it('lists the points it keeps and why', function (): void {
         ->assertSuccessful();
 });
 
-it('limits the purge to --site and refuses an unknown site', function (): void {
+it('limits the purge to the selected sites, with the usual selection messages', function (): void {
     [$old] = pruneSiteWithThree('botiga-a');
     [$otherOld] = pruneSiteWithThree('botiga-b');
 
-    command('backup:prune', ['--site' => ['botiga-b'], '--force' => true])->assertSuccessful();
+    command('backup:prune', ['sites' => ['botiga-b'], '--force' => true])->assertSuccessful();
 
     expect(RetentionFixture::stored($old))->toBeTrue()
         ->and(RetentionFixture::stored($otherOld))->toBeFalse();
 
-    command('backup:prune', ['--site' => ['fantasma']])->expectsOutputToContain('fantasma')->assertFailed();
+    command('backup:prune', ['sites' => ['fantasma']])->expectsOutputToContain('Llocs desconeguts: fantasma.')->assertFailed();
+    command('backup:prune', ['sites' => ['botiga-a'], '--all' => true])->expectsOutputToContain('només una forma')->assertFailed();
 });
 
 it('prints a versioned JSON document, and needs --force or --dry-run with --json', function (): void {
@@ -265,4 +271,38 @@ it('still returns the new point when the purge after it fails', function (): voi
     expect($point->directory)->toBe("site-{$site->id}/run{$run->id}")
         ->and(Backup::query()->where('path', 'like', "{$old}/%")->whereNull('deleted_at')->count())->toBe(2)
         ->and(AuditLogEntry::query()->where('action', 'backups.pruned')->sole()->result)->toBe(AuditResult::Failure);
+});
+
+it('never throws from the purge after making a point, and logs why', function (): void {
+    $site = RetentionFixture::site();
+    SiteProfile::factory()->create(['site_id' => $site->id]);
+    $driver = new FakeDriver;
+    $run = Run::factory()->create(['site_id' => $site->id, 'type' => RunType::Backup, 'status' => RunStatus::Running]);
+    config(['wpup.backups.max_per_site' => 0]);
+    $errors = [];
+    Event::listen(MessageLogged::class, static function (MessageLogged $e) use (&$errors): void {
+        if ($e->level === 'error') {
+            $errors[] = $e->message;
+        }
+    });
+
+    $point = prunePointService($driver)->create($site, $driver, $run, AuditActor::system('tests'));
+
+    expect($point->directory)->toBe("site-{$site->id}/run{$run->id}");
+    expect($errors)->toBe(['Could not apply the retention after making a restore point.']);
+});
+
+it('leaves a busy site alone after a point made without a run', function (): void {
+    $site = RetentionFixture::site();
+    $old = RetentionFixture::point($site, RetentionFixture::run($site), 9);
+    $lease = app(SiteLockManager::class)->acquire($site, 'una altra execució');
+
+    try {
+        $result = app(RestorePointRetention::class)->enforceAfterCreate($site, "site-{$site->id}/manual-nou", AuditActor::system('tests'), callerHoldsLock: false);
+    } finally {
+        $lease->release();
+    }
+
+    expect(array_map(static fn (Site $s): int => $s->id, $result->busySites))->toBe([$site->id])
+        ->and(RetentionFixture::stored($old))->toBeTrue();
 });
