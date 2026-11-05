@@ -7,6 +7,7 @@ namespace Tests\Contracts;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\UpdatePackage;
 use App\Domain\Drivers\Exceptions\DriverException;
+use App\Domain\Drivers\Exceptions\WorkFileNotFound;
 use App\Domain\Drivers\SiteDriver;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
@@ -288,7 +289,8 @@ final class SiteDriverContract
                         ->and(array_map(static fn ($f): string => $f->path, $driver->listWorkFiles("{$dir}/a")))->toBe(["{$dir}/a/one.gz"])
                         ->and($driver->listWorkFiles("{$dir}/missing"))->toBe([])
                         ->and($contents)->toBe('abc')
-                        ->and(fn () => $driver->openWorkFile("{$dir}/missing.gz"))->toThrow(DriverException::class);
+                        ->and(in_array("{$dir}/b/two.gz", array_map(static fn ($f): string => $f->path, $driver->listWorkFiles('')), true))->toBeTrue()
+                        ->and(fn () => $driver->openWorkFile("{$dir}/missing.gz"))->toThrow(WorkFileNotFound::class);
 
                     $driver->removeWorkFile("{$dir}/a/one.gz");
                     $driver->removeWorkFile("{$dir}/a/one.gz");
@@ -300,11 +302,21 @@ final class SiteDriverContract
                 }
             });
 
+            it('reports the physical home and work directory, the latter inside the former', function () use ($factory): void {
+                $area = $factory()->workArea();
+
+                expect(str_starts_with($area->home, '/'))->toBeTrue()
+                    ->and(str_starts_with($area->workDir, rtrim($area->home, '/').'/'))->toBeTrue();
+            });
+
             it('refuses work paths outside its area', function (string $path) use ($factory): void {
                 $driver = $factory();
 
+                if ($path !== '') {
+                    // '' is the whole work area for a listing, and nothing else.
+                    expect(fn () => $driver->listWorkFiles($path))->toThrow(DriverException::class);
+                }
                 expect(fn () => $driver->statWorkFile($path))->toThrow(DriverException::class)
-                    ->and(fn () => $driver->listWorkFiles($path))->toThrow(DriverException::class)
                     ->and(fn () => $driver->openWorkFile($path))->toThrow(DriverException::class)
                     ->and(fn () => $driver->removeWorkFile($path))->toThrow(DriverException::class)
                     ->and(fn () => $driver->moveWorkFile('x.gz', $path))->toThrow(DriverException::class);

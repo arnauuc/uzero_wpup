@@ -11,8 +11,10 @@ use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\UpdatePackage;
+use App\Domain\Drivers\Data\WorkArea;
 use App\Domain\Drivers\Data\WorkFile;
 use App\Domain\Drivers\Exceptions\DriverException;
+use App\Domain\Drivers\Exceptions\WorkFileNotFound;
 
 /**
  * The only way the orchestrator talks to a site (AGENTS.md). Implementations:
@@ -237,6 +239,15 @@ interface SiteDriver
      */
 
     /**
+     * Physical paths of the account's home and of the work directory, so a
+     * destination can check from outside that the web does not serve the work
+     * area (SiteLocalTarget's canary, UZEROWPUP-40).
+     *
+     * @throws DriverException
+     */
+    public function workArea(): WorkArea;
+
+    /**
      * Size and modification time of a regular file (symlinks do not count), and
      * its SHA-256 computed on the site when $withChecksum. Null if it does not
      * exist. Needed for exists() and checksum() without downloading anything.
@@ -247,8 +258,9 @@ interface SiteDriver
 
     /**
      * The regular files under $directory, recursively, with their WorkPath
-     * relative to the work area. A missing directory has none. Needed to list
-     * restore points (retention, UZEROWPUP-44).
+     * relative to the work area ('' lists the whole work area). A missing
+     * directory has none. Needed to list restore points (retention,
+     * UZEROWPUP-44) and to find stale temporary files.
      *
      * @return list<WorkFile>
      *
@@ -271,11 +283,12 @@ interface SiteDriver
     /**
      * A readable stream with the file's bytes; the caller closes it. Memory is
      * bounded: the bytes are not held whole in memory (the SSH driver copies the
-     * file to a private temporary file of the tool server first).
+     * file to a private temporary file of the tool server's staging directory first).
      *
      * @return resource
      *
-     * @throws DriverException including when it does not exist
+     * @throws WorkFileNotFound when it does not exist
+     * @throws DriverException
      */
     public function openWorkFile(string $path);
 

@@ -26,9 +26,14 @@ final class WorkPath
      */
     public static function valid(string $path): string
     {
-        // A segment never starts with ".", so "." and ".." (and hidden files) are out.
-        return strlen($path) <= self::MAX_LENGTH && preg_match('#^'.self::SEGMENT.'(/'.self::SEGMENT.')*$#D', $path) === 1
+        return self::isValid($path)
             ? $path
             : throw new DriverException(sprintf('Ruta remota de treball no vàlida: «%s».', mb_substr($path, 0, 200)));
+    }
+
+    public static function isValid(string $path): bool
+    {
+        // A segment never starts with ".", so "." and ".." (and hidden files) are out.
+        return strlen($path) <= self::MAX_LENGTH && preg_match('#^'.self::SEGMENT.'(/'.self::SEGMENT.')*$#D', $path) === 1;
     }
 }

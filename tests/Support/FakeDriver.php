@@ -13,10 +13,12 @@ use App\Domain\Drivers\Data\ProbeCheck;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\UpdatePackage;
+use App\Domain\Drivers\Data\WorkArea;
 use App\Domain\Drivers\Data\WorkFile;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
+use App\Domain\Drivers\Exceptions\WorkFileNotFound;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\WebFileName;
 use App\Domain\Drivers\WorkPath;
@@ -141,6 +143,15 @@ class FakeDriver implements SiteDriver
 
     /** The physical root archiveFiles() archives. */
     public string $archiveRoot = '/var/www/html';
+
+    /** Physical home of the account (workArea()); the work dir is "{home}/.wpup" unless $workDirInRoot. */
+    public string $home = '/var/www/vhosts/fake.test';
+
+    /** Physical work directory reported by workArea(), when set. */
+    public ?string $workDirPath = null;
+
+    /** @var array<string, int> work path => mtime reported by statWorkFile()/listWorkFiles() */
+    public array $fileTimes = [];
 
     /** Where the tool's work dir is relative to the root, null: outside it. */
     public ?string $workDirInRoot = null;
@@ -433,6 +444,11 @@ class FakeDriver implements SiteDriver
         unset($this->files[$remotePath]);
     }
 
+    public function workArea(): WorkArea
+    {
+        return new WorkArea($this->home, $this->workDirPath ?? ($this->workDirInRoot === null ? $this->home.'/.wpup' : $this->archiveRoot.'/'.$this->workDirInRoot));
+    }
+
     public function statWorkFile(string $path, bool $withChecksum = false): ?WorkFile
     {
         WorkPath::valid($path);
@@ -440,16 +456,18 @@ class FakeDriver implements SiteDriver
             return null;
         }
 
-        return new WorkFile($path, strlen($this->files[$path]), null, $withChecksum ? hash('sha256', $this->files[$path]) : null);
+        return new WorkFile($path, strlen($this->files[$path]), $this->fileTimes[$path] ?? null, $withChecksum ? hash('sha256', $this->files[$path]) : null);
     }
 
     public function listWorkFiles(string $directory): array
     {
-        WorkPath::valid($directory);
+        if ($directory !== '') {
+            WorkPath::valid($directory);
+        }
         $files = [];
         foreach ($this->files as $path => $content) {
-            if (str_starts_with($path, $directory.'/')) {
-                $files[] = new WorkFile($path, strlen($content));
+            if ($directory === '' || str_starts_with($path, $directory.'/')) {
+                $files[] = new WorkFile($path, strlen($content), $this->fileTimes[$path] ?? null);
             }
         }
 
@@ -467,7 +485,7 @@ class FakeDriver implements SiteDriver
             throw new RemoteCommandFailed("«{$to}» ja existeix.");
         }
 
-        unset($this->files[$from]);
+        unset($this->files[$from], $this->fileTimes[$from]);
         $this->files[$to] = $content;
 
         return new WorkFile($to, strlen($content));
@@ -478,7 +496,7 @@ class FakeDriver implements SiteDriver
         WorkPath::valid($path);
         $stream = fopen('php://temp', 'r+b');
         if ($stream === false || ! isset($this->files[$path])) {
-            throw new RemoteCommandFailed("El fitxer «{$path}» no existeix.");
+            throw WorkFileNotFound::at($path);
         }
         fwrite($stream, $this->files[$path]);
         rewind($stream);
@@ -490,7 +508,7 @@ class FakeDriver implements SiteDriver
     {
         $this->writeCalls[] = 'removeWorkFile';
         WorkPath::valid($path);
-        unset($this->files[$path]);
+        unset($this->files[$path], $this->fileTimes[$path]);
     }
 
     private function store(string $remotePath, string $content): RemoteFile
