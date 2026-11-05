@@ -163,8 +163,12 @@ return [
     // Restore points and their destinations (ADR-0009).
     'backups' => [
         // A restore point is kept this long after a correct update (ADR-0009);
-        // UZEROWPUP-44 enforces it, with the cap per site and the protection.
+        // UZEROWPUP-44 enforces it, with the cap per site and the protection
+        // (RestorePointRetention).
         'retention_days' => 7,
+        // At most this many restore points per site: making one more purges the
+        // oldest that nothing holds (protected, needed by a run...).
+        'max_per_site' => 2,
         // The backup step of a run: dump, archive, and copies to every destination.
         'step_timeout_seconds' => 3600,
         // `wpup backup --json` and `wpup backup:list --json` document version (UZEROWPUP-45).

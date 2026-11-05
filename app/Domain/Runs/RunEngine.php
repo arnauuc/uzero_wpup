@@ -10,6 +10,7 @@ use App\Domain\Locks\LockedException;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Concurrency\ConcurrencyLimitReached;
+use App\Domain\Runs\Events\RunFinished;
 use App\Domain\Runs\Exceptions\ClaimLost;
 use App\Domain\Runs\Exceptions\InvalidTransition;
 use App\Domain\Runs\Exceptions\RunAlreadyClaimed;
@@ -374,6 +375,9 @@ final readonly class RunEngine
             $run->id,
             ['status' => $status->value, 'failed_step' => $failure[0] ?? null],
         );
+
+        // E.g. the restore point of a reverted run is protected (ProtectIncidentRestorePoints).
+        event(new RunFinished($run));
     }
 
     /**

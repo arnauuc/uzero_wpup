@@ -105,6 +105,16 @@ sudo -u wpup wpup site:import llocs.yaml --dry-run
 sudo -u wpup wpup site:import llocs.csv
 ```
 
+## Retenció dels punts de restauració (ADR-0009)
+
+Un punt de restauració d'una actualització correcta es conserva 7 dies, i cada lloc en té com a màxim 2 (`backups.retention_days` i `backups.max_per_site` a `config/wpup.php`). Si en té més, la neteja esborra el més antic que no estigui retingut. La mateixa retenció s'aplica a la còpia externa.
+
+Mai no s'esborra, sigui quina sigui l'edat: un punt protegit; el d'una execució que no ha acabat; el d'una execució revertida o fallida que encara no s'ha revisat; el d'una execució de la qual depèn una execució en curs (p. ex. un rollback); el més recent verificat d'un lloc amb una execució en curs; ni cap punt d'un lloc que té el bloqueig agafat.
+
+| Comanda | Què fa |
+| --- | --- |
+| `run:ack <execució>` | Marca com a revisada una execució acabada. El seu punt de restauració deixa d'estar protegit i passa a seguir la retenció normal. Demana confirmació |
+
 ## Claus i secrets (només `admin`, mai pel web)
 
 | Comanda | Què fa |
