@@ -20,3 +20,8 @@ Schedule::call(static fn (): bool => app(KekConfirmation::class)->confirm())
     ->name('kek-confirmation')
     ->everyMinute()
     ->withoutOverlapping();
+
+// Retention of restore points (ADR-0009, UZEROWPUP-44): expired and surplus points.
+Schedule::command('engine:prune-restore-points')
+    ->dailyAt(config()->string('wpup.backups.prune_time'))
+    ->withoutOverlapping();

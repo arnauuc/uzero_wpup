@@ -107,13 +107,16 @@ sudo -u wpup wpup site:import llocs.csv
 
 ## Retenció dels punts de restauració (ADR-0009)
 
-Un punt de restauració d'una actualització correcta es conserva 7 dies, i cada lloc en té com a màxim 2 (`backups.retention_days` i `backups.max_per_site` a `config/wpup.php`). Si en té més, la neteja esborra el més antic que no estigui retingut. La mateixa retenció s'aplica a la còpia externa.
+Un punt de restauració d'una actualització correcta es conserva 7 dies, i cada lloc en té com a màxim 2 (`backups.retention_days` i `backups.max_per_site` a `config/wpup.php`). Fer-ne un de tercer esborra el més antic que no estigui retingut. La mateixa retenció s'aplica a la còpia externa.
 
 Mai no s'esborra, sigui quina sigui l'edat: un punt protegit manualment (`backups.protected`); el d'una execució que no ha acabat; el d'una execució revertida o fallida que encara no s'ha revisat; el d'una execució de la qual depèn una execució en curs (p. ex. un rollback); el més recent verificat d'un lloc amb una execució en curs; ni cap punt d'un lloc que té agafat el bloqueig, el seu o el del seu compte d'hosting. La retenció ho llegeix de l'estat de l'execució: no cal marcar res.
 
 | Comanda | Què fa |
 | --- | --- |
 | `run:ack <execució>` | Marca com a revisada una execució acabada. El seu punt de restauració deixa d'estar retingut i caduca, com a mínim, 7 dies després de la revisió; després segueix la retenció normal. No toca una protecció manual. Demana confirmació |
+| `backup:prune [llocs…\|--tag=…\|--all]` | Sense selecció, tots els llocs (també els inactius). Mostra què s'esborraria (i què es conserva i per què) i, després de confirmar-ho, ho esborra a totes les destinacions. Amb `--json` cal `--dry-run` o `--force`. Surt amb error si algun fitxer no s'ha pogut esborrar (la fila queda viva i es torna a provar a la propera neteja) o si s'ha perdut el bloqueig d'un lloc a mitja neteja |
+
+El planificador fa la mateixa neteja cada dia a les `backups.prune_time` (per defecte, 06:30) amb `engine:prune-restore-points`, que no és accessible des del binari `wpup`. Totes dues tenen `--dry-run`, i cada lloc netejat deixa un resum a l'auditoria (`backups.pruned`).
 
 ## Claus i secrets (només `admin`, mai pel web)
 

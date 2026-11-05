@@ -29,6 +29,9 @@ abstract class WpupCommand extends Command
 
     protected const JSON = '{--json : Sortida en JSON, per a scripts}';
 
+    /** json_encode() flags of every --json document. */
+    public const int JSON_FLAGS = JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR;
+
     protected const QUEUED = '{--follow : Mostra el progrés en directe} {--wait : Espera que acabi; el codi de sortida en reflecteix el resultat}';
 
     protected User $operator;
@@ -85,7 +88,7 @@ abstract class WpupCommand extends Command
      */
     protected function emitJson(array $data): void
     {
-        $this->line((string) json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        $this->line((string) json_encode($data, self::JSON_FLAGS));
     }
 
     protected function stringArgument(string $name): string

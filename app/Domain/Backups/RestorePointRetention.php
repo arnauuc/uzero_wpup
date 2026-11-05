@@ -121,6 +121,48 @@ final readonly class RestorePointRetention
     }
 
     /**
+     * Applies the retention to $site right after a point was made (ADR-0009:
+     * making a third point purges the oldest one not held). Never the point
+     * just made. Best effort: every failure, taking the lock included, is
+     * logged and never thrown. The only exception is a RunException, the
+     * engine's signal that the run itself was stopped (timeout, claim lost),
+     * which no step may swallow.
+     *
+     * @param  bool  $callerHoldsLock  the run making the point holds (and renews) the site lock
+     * @param  array<int, BackupTarget>  $targets  destinations already open, by backup_targets.id
+     */
+    public function enforceAfterCreate(Site $site, string $directory, AuditActor $actor, bool $callerHoldsLock, array $targets = []): PruneResult
+    {
+        $lease = null;
+
+        try {
+            if (! $callerHoldsLock) {
+                try {
+                    $lease = $this->locks->acquire($site, $actor->name);
+                } catch (LockedException) {
+                    return new PruneResult(busySites: [$site]);
+                }
+            }
+
+            return $this->purgeSite($site, $actor, 'restore_point_created', null, $directory, $targets, $lease === null ? static fn (): bool => true : $lease->refresh(...));
+        } catch (RunException $e) {
+            throw $e;
+        } catch (Throwable $e) {
+            Log::error('Could not apply the retention after making a restore point.', [
+                'site_id' => $site->id, 'exception' => $e::class, 'reason' => $this->redactor->redact($e->getMessage()),
+            ]);
+
+            return new PruneResult;
+        } finally {
+            try {
+                $lease?->release();
+            } catch (Throwable $e) {
+                Log::error('Could not release the site lock after the retention.', ['site_id' => $site->id, 'reason' => $this->redactor->redact($e->getMessage())]);
+            }
+        }
+    }
+
+    /**
      * The site's plan recomputed now (its lock is held), limited to
      * $directories when given, purged. The lock is renewed ($keepLock) before
      * every file: if it is lost, nothing else is deleted. Whatever was
