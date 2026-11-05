@@ -9,6 +9,7 @@ use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Credentials\KeyRotationStep;
 use App\Domain\Credentials\SecretsRekey;
@@ -120,6 +121,14 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.concurrency.lease_seconds'),
         ));
         $this->app->singleton(PipelineResolver::class);
+        $this->app->bind(SiteLocalSettings::class, static fn (): SiteLocalSettings => new SiteLocalSettings(
+            self::configString('wpup.backups.site_local.root'),
+            self::configInt('wpup.backups.site_local.copy_chunk_bytes'),
+            self::configString('wpup.backups.staging_dir'),
+            self::configInt('wpup.backups.site_local.canary_timeout_seconds'),
+            config('wpup.inventory.http_probe.verify_tls') !== false,
+            self::configInt('wpup.backups.site_local.stale_after_seconds'),
+        ));
         // Backup destinations register their factory here (UZEROWPUP-37).
         $this->app->singleton(BackupTargetRegistry::class, static function (Application $app): BackupTargetRegistry {
             $registry = new BackupTargetRegistry;
@@ -131,12 +140,7 @@ class AppServiceProvider extends ServiceProvider
                     throw new BackupTargetException($app->make(SecretRedactor::class)->redact($e->getMessage()));
                 }
 
-                return new SiteLocalTarget(
-                    $driver,
-                    $app->make(SecretRedactor::class),
-                    self::configString('wpup.backups.site_local.root'),
-                    self::configInt('wpup.backups.site_local.copy_chunk_bytes'),
-                );
+                return new SiteLocalTarget($driver, $app->make(SecretRedactor::class), $app->make(HttpFactory::class), $app->make(SiteLocalSettings::class), $site->url);
             });
 
             return $registry;

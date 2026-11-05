@@ -206,12 +206,17 @@ return [
         // Destination on the site's own server (UZEROWPUP-40): a directory of the
         // tool's work directory (outside the docroot, 0700), shared by every site
         // through one backup_targets row of type site_local, linked to each site
-        // when it is created (SiteLocalDestination).
+        // when it is created (SiteLocalDestination). If `name` is taken by a
+        // destination of another type, the row is named "{name}-site-local".
         'site_local' => [
             'name' => 'local',
             'root' => 'restore-points',
             // Read size when copying a stream to the temporary file it uploads.
             'copy_chunk_bytes' => 1_048_576,
+            // Check that the web does not serve the store (a random canary).
+            'canary_timeout_seconds' => 10,
+            // Temporary files of the store older than this are removed on the next write.
+            'stale_after_seconds' => 86_400,
         ],
     ],
 

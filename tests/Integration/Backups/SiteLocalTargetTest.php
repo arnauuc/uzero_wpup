@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Backups\BackupTarget;
+use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
 use App\Domain\Backups\DatabaseBackup;
 use App\Domain\Backups\SiteLocalDestination;
+use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Drivers\DriverFactory;
 use App\Domain\Secrets\SecretRedactor;
+use App\Models\Site;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Facades\Http;
 use Tests\Contracts\BackupTargetContract;
 use Tests\Support\Fixtures;
@@ -22,15 +26,23 @@ use Tests\Support\Fixtures;
 
 const SITE_LOCAL_TEST_ROOT = 'restore-points/it-';
 
+/** HTTP port of each fixture (docker/fixtures/compose.yaml). */
+const SITE_LOCAL_HTTP_PORTS = ['wp83' => 8083, 'wp74' => 8081];
+
 /**
+ * A target on fixture $name with its own store root, the site's URL reachable
+ * from the app container (the canary check requests it).
+ *
  * @return array{SiteLocalTarget, string} the target and its root
  */
-function siteLocalFixture(string $name): array
+function siteLocalFixture(string $name, ?Site $site = null, string $urlPath = ''): array
 {
     $root = SITE_LOCAL_TEST_ROOT.bin2hex(random_bytes(6));
-    $driver = app(DriverFactory::class)->forSite(Fixtures::site($name), AuditActor::system('tests'));
+    $site ??= Fixtures::site($name);
+    $driver = app(DriverFactory::class)->forSite($site, AuditActor::system('tests'));
+    $url = "http://{$name}:".SITE_LOCAL_HTTP_PORTS[$name].$urlPath;
 
-    return [new SiteLocalTarget($driver, app(SecretRedactor::class), $root, 1_048_576), $root];
+    return [new SiteLocalTarget($driver, app(SecretRedactor::class), app(HttpFactory::class), app(SiteLocalSettings::class)->withRoot($root), $url), $root];
 }
 
 foreach (['wp83', 'wp74'] as $fixture) {
@@ -95,8 +107,7 @@ it('keeps directories 0700 and objects 0600', function (): void {
 it('adopts a database dump of the work directory without transferring it', function (): void {
     $site = Fixtures::site('wp83');
     $driver = app(DriverFactory::class)->forSite($site, AuditActor::system('tests'));
-    $root = SITE_LOCAL_TEST_ROOT.bin2hex(random_bytes(6));
-    $target = new SiteLocalTarget($driver, app(SecretRedactor::class), $root, 1_048_576);
+    [$target, $root] = siteLocalFixture('wp83', $site);
     $dump = app(DatabaseBackup::class)->run($driver, 'it'.bin2hex(random_bytes(3)))->file;
 
     $stored = $target->adopt($dump, "site-{$site->id}/run-1/db.sql.gz");
@@ -117,4 +128,40 @@ it('is resolved by the registry for a site linked to the shared destination', fu
 
     expect($target)->toBeInstanceOf(SiteLocalTarget::class)
         ->and($target->exists('site-0/none.gz'))->toBeFalse();
+});
+
+it('refuses to write when the web serves the store from a work directory inside the docroot', function (): void {
+    // WordPress in a subdirectory of the docroot and the work directory next to
+    // it: outside the WordPress root, but served by the web.
+    $suffix = bin2hex(random_bytes(4));
+    $home = '/var/www/vhosts/wp83.fixtures.test';
+    Fixtures::run('wp83', "mkdir -p {$home}/httpdocs/wpup-it-wp-{$suffix}");
+    config(['wpup.ssh.work_dir' => "httpdocs/wpup-it-work-{$suffix}"]);
+    $site = Fixtures::site('wp83');
+    $site->update(['wp_path' => "{$home}/httpdocs/wpup-it-wp-{$suffix}"]);
+
+    try {
+        [$target] = siteLocalFixture('wp83', $site, "/wpup-it-wp-{$suffix}");
+
+        expect(fn () => $target->put('site-1/r1/db.sql.gz', BackupTargetContract::stream('rows')))->toThrow(BackupTargetException::class, 'El web serveix')
+            ->and(trim(Fixtures::run('wp83', "find {$home}/httpdocs/wpup-it-work-{$suffix} -type f | wc -l")))->toBe('0');
+    } finally {
+        Fixtures::run('wp83', "rm -rf {$home}/httpdocs/wpup-it-wp-{$suffix} {$home}/httpdocs/wpup-it-work-{$suffix}");
+    }
+});
+
+it('removes its own stale temporary files before writing, and nothing else', function (): void {
+    [$target, $root] = siteLocalFixture('wp83');
+    $hex = bin2hex(random_bytes(16));
+    $other = 'wpup-it-keep-'.bin2hex(random_bytes(4)).'.part';
+    Fixtures::run('wp83', "cd \"\$HOME/.wpup\" && touch -d '3 days ago' store-{$hex}.part store-{$hex}.part.part {$other} && touch store-".str_repeat('0', 32).'.part');
+
+    try {
+        $target->put('site-1/r1/db.sql.gz', BackupTargetContract::stream('rows'));
+
+        expect(Fixtures::run('wp83', "cd \"\$HOME/.wpup\" && ls store-{$hex}.part store-{$hex}.part.part {$other} store-".str_repeat('0', 32).'.part 2>/dev/null; true'))
+            ->toBe('store-'.str_repeat('0', 32).".part\n{$other}\n");
+    } finally {
+        Fixtures::run('wp83', "cd \"\$HOME/.wpup\" && rm -f {$other} store-".str_repeat('0', 32).'.part');
+    }
 });
