@@ -118,6 +118,22 @@ Mai no s'esborra, sigui quina sigui l'edat: un punt protegit manualment (`backup
 
 El planificador fa la mateixa neteja cada dia a les `backups.prune_time` (per defecte, 06:30) amb `engine:prune-restore-points`, que no és accessible des del binari `wpup`. Totes dues tenen `--dry-run`, i cada lloc netejat deixa un resum a l'auditoria (`backups.pruned`).
 
+## `backup:restore`
+
+Restaura un lloc, al mateix lloc, des d'una còpia registrada (`backup:list`): els fitxers (`--files`), la base de dades (`--db`) o tots dos.
+
+```bash
+sudo -u wpup wpup backup:restore botiga --point=run12 --files --db --dry-run
+sudo -u wpup wpup backup:restore botiga --backup=41 --backup=42 --files --db --accept-data-loss
+```
+
+- **Què es restaura:** `--point` indica el punt de restauració (el directori `site-3/run12`, el seu nom `run12` o `manual-…`, o l'id de l'execució); de cada tipus es fa servir la còpia verificada al servidor del lloc o, si no n'hi ha, la d'una destinació externa. `--backup=<id>` (repetible) tria les còpies exactes, sempre d'un mateix punt. Es refusa qualsevol còpia d'un altre lloc, esborrada o no verificada.
+- **Com:** s'encua una execució del tipus `restore` amb el bloqueig del lloc. Fa un inventari nou; comprova que cada còpia encara té el SHA-256 registrat a la seva destinació; fa un punt de restauració verificat de l'estat actual (si no el pot fer, no restaura res); torna a comprovar el SHA-256 de cada còpia, a la destinació i al lloc, just abans de restaurar; restaura els fitxers i després la base de dades; i comprova que WP-CLI respon i buida la memòria cau d'objectes.
+- **Si alguna cosa falla**, no es desfà res automàticament: el resultat diu què s'ha restaurat i la comanda per tornar al punt de l'estat d'abans (`--point=run<execució de la restauració> --files --db`).
+- **Confirmació:** cal escriure el nom del lloc. Sense terminal interactiu, o amb `--json`, cal `--force` (o `--dry-run`). Amb `--dry-run` només fa l'inventari i la comprovació de les còpies, sense tocar res.
+- **Botigues (regla de seguretat 4):** la base de dades es reemplaça sencera, i es perd tot el que s'hi ha escrit des de la còpia. En un lloc amb WooCommerce, l'execució s'atura abans de tocar res si no s'indica `--accept-data-loss`. Mentre la marca d'aigua de comandes i usuaris (UZEROWPUP-58) no es pugui comparar, l'eina no sap quines comandes es perdrien i ho considera sempre possible.
+- **Auditoria:** cada intent queda a `backup.restore` amb l'execució, el punt d'origen, les còpies, què s'ha restaurat, el punt de l'estat d'abans i si s'ha acceptat perdre dades.
+
 ## Claus i secrets (només `admin`, mai pel web)
 
 | Comanda | Què fa |
