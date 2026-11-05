@@ -6,9 +6,11 @@ namespace App\Providers;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
+use App\Domain\Backups\BackupStep;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Credentials\KeyRotationStep;
@@ -213,6 +215,22 @@ class AppServiceProvider extends ServiceProvider
                     $app->make(RunAuthorization::class),
                     self::configInt('wpup.inventory.step_timeout_seconds'),
                     $app->make(SiteBlocking::class),
+                ),
+            ]));
+            // A restore point (UZEROWPUP-43) from a fresh inventory: the same first step as every run.
+            $resolver->register(RunType::Backup, static fn (): Pipeline => new Pipeline([
+                new InventoryStep(
+                    $app->make(SiteInventory::class),
+                    static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+                    $app->make(RunAuthorization::class),
+                    self::configInt('wpup.inventory.step_timeout_seconds'),
+                    $app->make(SiteBlocking::class),
+                ),
+                new BackupStep(
+                    $app->make(RestorePointService::class),
+                    static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+                    $app->make(RunAuthorization::class),
+                    self::configInt('wpup.backups.step_timeout_seconds'),
                 ),
             ]));
             // The plan reads a fresh inventory without touching the site (no probe, no block change).

@@ -162,6 +162,11 @@ return [
      */
     // Restore points and their destinations (ADR-0009).
     'backups' => [
+        // A restore point is kept this long after a correct update (ADR-0009);
+        // UZEROWPUP-44 enforces it, with the cap per site and the protection.
+        'retention_days' => 7,
+        // The backup step of a run: dump, archive, and copies to every destination.
+        'step_timeout_seconds' => 3600,
         // Read size when hashing an object at its destination.
         'hash_chunk_bytes' => 1_048_576,
         // Temporary copies of restore points on the tool server (0700). Not /tmp:
