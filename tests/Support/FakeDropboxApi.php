@@ -415,8 +415,17 @@ final class FakeDropboxApi
         $in = fopen($file, 'rb');
         assert(is_resource($in));
         $blocks = '';
-        while (($block = fread($in, DropboxSettings::CHUNK_UNIT_BYTES)) !== false && $block !== '') {
-            $blocks .= hash('sha256', $block, true);
+        // Each 4 MiB block hashed in 1 MiB reads: the contract measures memory.
+        while (! feof($in)) {
+            $block = hash_init('sha256');
+            $read = 0;
+            for ($i = 0; $i < 4 && ($piece = (string) fread($in, 1_048_576)) !== ''; $i++) {
+                hash_update($block, $piece);
+                $read += strlen($piece);
+            }
+            if ($read > 0) {
+                $blocks .= hash_final($block, true);
+            }
         }
         fclose($in);
 

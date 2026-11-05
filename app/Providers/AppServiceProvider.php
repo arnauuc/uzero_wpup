@@ -10,6 +10,8 @@ use App\Domain\Backups\BackupStep;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\Dropbox\DropboxSettings;
+use App\Domain\Backups\Dropbox\DropboxTargetFactory;
 use App\Domain\Backups\FilesBackup;
 use App\Domain\Backups\PreRestoreBackupStep;
 use App\Domain\Backups\RestoreCheckStep;
@@ -153,8 +155,34 @@ class AppServiceProvider extends ServiceProvider
                 return new SiteLocalTarget($driver, $app->make(SecretRedactor::class), $app->make(HttpFactory::class), $app->make(SiteLocalSettings::class), $site->url);
             });
 
+            // Dropbox, an App folder (UZEROWPUP-107).
+            $registry->register(BackupTargetType::Dropbox, static fn (BackupTargetRecord $record, Site $site, AuditActor $actor): BackupTarget => $app->make(DropboxTargetFactory::class)->make($record, $actor));
+
             return $registry;
         });
+        $this->app->bind(DropboxSettings::class, static fn (): DropboxSettings => new DropboxSettings(
+            self::configString('wpup.backups.dropbox.api_url'),
+            self::configString('wpup.backups.dropbox.content_url'),
+            self::configString('wpup.backups.dropbox.token_url'),
+            self::configInt('wpup.backups.dropbox.chunk_bytes'),
+            self::configInt('wpup.backups.dropbox.max_retries'),
+            self::configInt('wpup.backups.dropbox.max_retry_after_seconds'),
+            self::configInt('wpup.backups.dropbox.read_chunk_bytes'),
+            self::configInt('wpup.backups.dropbox.connect_timeout_seconds'),
+            self::configInt('wpup.backups.dropbox.timeout_seconds'),
+            self::configInt('wpup.backups.dropbox.max_error_bytes'),
+            self::configInt('wpup.backups.dropbox.error_summary_chars'),
+            self::configInt('wpup.backups.dropbox.max_token_response_bytes'),
+            self::configInt('wpup.backups.dropbox.read_timeout_seconds'),
+            self::configString('wpup.backups.staging_dir'),
+            self::configInt('wpup.backups.dropbox.max_idle_reads'),
+        ));
+        $this->app->bind(DropboxTargetFactory::class, static fn (Application $app): DropboxTargetFactory => new DropboxTargetFactory(
+            $app->make(SecretStore::class),
+            $app->make(SecretRedactor::class),
+            $app->make(DropboxSettings::class),
+            self::configInt('wpup.backups.hash_chunk_bytes'),
+        ));
         $this->app->bind(HttpProbe::class, static fn (Application $app): HttpProbe => new HttpProbe(
             $app->make(HttpFactory::class),
             $app->make(SecretRedactor::class),

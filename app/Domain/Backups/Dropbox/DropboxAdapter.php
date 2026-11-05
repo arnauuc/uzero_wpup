@@ -1,0 +1,299 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\Backups\Dropbox;
+
+use Closure;
+use League\Flysystem\Config;
+use League\Flysystem\DirectoryAttributes;
+use League\Flysystem\FileAttributes;
+use League\Flysystem\FilesystemAdapter;
+use League\Flysystem\FilesystemException;
+use League\Flysystem\UnableToCheckDirectoryExistence;
+use League\Flysystem\UnableToCheckFileExistence;
+use League\Flysystem\UnableToCopyFile;
+use League\Flysystem\UnableToCreateDirectory;
+use League\Flysystem\UnableToDeleteDirectory;
+use League\Flysystem\UnableToDeleteFile;
+use League\Flysystem\UnableToListContents;
+use League\Flysystem\UnableToMoveFile;
+use League\Flysystem\UnableToReadFile;
+use League\Flysystem\UnableToRetrieveMetadata;
+use League\Flysystem\UnableToSetVisibility;
+use League\Flysystem\UnableToWriteFile;
+use League\Flysystem\Visibility;
+
+/**
+ * Flysystem v3 adapter over DropboxClient, rooted at a folder inside the App
+ * folder of the Dropbox app (the app itself cannot reach anything else).
+ * FlysystemTarget does the rest: temporary write and move, SHA-256 and
+ * redaction. Dropbox has no visibility (everything is private to the app)
+ * nor MIME types.
+ *
+ * Case (a deliberate decision): Dropbox paths are case-insensitive and
+ * path_display is not reliable above the last component, so paths with
+ * capital letters are refused (every key the tool generates is lowercase:
+ * "site-{id}/run{id}/db.sql.gz", FlysystemTarget's temporary names) and
+ * listings use path_lower. BackupKey itself is not changed.
+ *
+ * Like other adapters, move() and copy() replace what is at the destination.
+ * The metadata of what this adapter just wrote or moved answers fileSize()
+ * and lastModified() without another call.
+ */
+final class DropboxAdapter implements FilesystemAdapter
+{
+    private readonly string $root;
+
+    /** @var array<string, array<mixed>> Dropbox path => metadata of what this adapter just stored there */
+    private array $stored = [];
+
+    public function __construct(private readonly DropboxClient $client, string $root)
+    {
+        $this->root = '/'.trim($root, '/');
+    }
+
+    public function fileExists(string $path): bool
+    {
+        try {
+            return ($this->client->metadata($this->path($path))['.tag'] ?? null) === 'file';
+        } catch (DropboxException $e) {
+            throw new UnableToCheckFileExistence("Unable to check existence for: {$path}. {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    public function directoryExists(string $path): bool
+    {
+        try {
+            return ($this->client->metadata($this->path($path))['.tag'] ?? null) === 'folder';
+        } catch (DropboxException $e) {
+            throw new UnableToCheckDirectoryExistence("Unable to check existence for: {$path}. {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    public function write(string $path, string $contents, Config $config): void
+    {
+        $stream = fopen('php://temp', 'w+b');
+        if ($stream === false) {
+            throw UnableToWriteFile::atLocation($path, 'no temporary stream');
+        }
+        fwrite($stream, $contents);
+        rewind($stream);
+
+        try {
+            $this->writeStream($path, $stream, $config);
+        } finally {
+            fclose($stream);
+        }
+    }
+
+    public function writeStream(string $path, $contents, Config $config): void
+    {
+        try {
+            $full = $this->path($path);
+            unset($this->stored[$full]);
+            $this->stored[$full] = $this->client->upload($full, $contents);
+        } catch (DropboxException $e) {
+            throw UnableToWriteFile::atLocation($path, $e->getMessage(), $e);
+        }
+    }
+
+    public function read(string $path): string
+    {
+        $stream = $this->readStream($path);
+        try {
+            return (string) stream_get_contents($stream);
+        } finally {
+            fclose($stream);
+        }
+    }
+
+    public function readStream(string $path)
+    {
+        try {
+            return $this->client->download($this->path($path));
+        } catch (DropboxException $e) {
+            throw UnableToReadFile::fromLocation($path, $e->getMessage(), $e);
+        }
+    }
+
+    public function delete(string $path): void
+    {
+        $this->remove($path, 'file', static fn (string $reason, ?DropboxException $e): UnableToDeleteFile => UnableToDeleteFile::atLocation($path, $reason, $e));
+    }
+
+    public function deleteDirectory(string $path): void
+    {
+        $this->remove($path, 'folder', static fn (string $reason, ?DropboxException $e): UnableToDeleteDirectory => UnableToDeleteDirectory::atLocation($path, $reason, $e));
+    }
+
+    public function createDirectory(string $path, Config $config): void
+    {
+        try {
+            $this->client->createFolder($this->path($path));
+        } catch (DropboxException $e) {
+            if (! $e->isFolderConflict()) {
+                throw UnableToCreateDirectory::atLocation($path, $e->getMessage(), $e);
+            }
+        }
+    }
+
+    public function setVisibility(string $path, string $visibility): void
+    {
+        throw UnableToSetVisibility::atLocation($path, 'Dropbox has no visibility: everything is private to the app.');
+    }
+
+    public function visibility(string $path): FileAttributes
+    {
+        return new FileAttributes($path, null, Visibility::PRIVATE);
+    }
+
+    public function mimeType(string $path): FileAttributes
+    {
+        throw UnableToRetrieveMetadata::mimeType($path, 'Dropbox does not report MIME types.');
+    }
+
+    public function lastModified(string $path): FileAttributes
+    {
+        return $this->attributes($path, 'lastModified');
+    }
+
+    public function fileSize(string $path): FileAttributes
+    {
+        return $this->attributes($path, 'fileSize');
+    }
+
+    public function listContents(string $path, bool $deep): iterable
+    {
+        try {
+            foreach ($this->client->listFolder($this->path($path), $deep) as $entry) {
+                $attributes = $this->toAttributes($entry);
+                if ($attributes !== null) {
+                    yield $attributes;
+                }
+            }
+        } catch (DropboxException $e) {
+            // A folder that does not exist has nothing in it.
+            if (! $e->isNotFound()) {
+                throw UnableToListContents::atLocation($path, $deep, $e);
+            }
+        }
+    }
+
+    public function move(string $source, string $destination, Config $config): void
+    {
+        try {
+            [$from, $to] = [$this->path($source), $this->path($destination)];
+            unset($this->stored[$from], $this->stored[$to]);
+            $this->clear($to);
+            $moved = $this->client->move($from, $to);
+            if ($moved !== null) {
+                $this->stored[$to] = $moved;
+            }
+        } catch (DropboxException $e) {
+            throw UnableToMoveFile::because($e->getMessage(), $source, $destination);
+        }
+    }
+
+    public function copy(string $source, string $destination, Config $config): void
+    {
+        try {
+            $to = $this->path($destination);
+            unset($this->stored[$to]);
+            $this->clear($to);
+            $this->client->copy($this->path($source), $to);
+        } catch (DropboxException $e) {
+            throw UnableToCopyFile::because($e->getMessage(), $source, $destination);
+        }
+    }
+
+    private function clear(string $path): void
+    {
+        try {
+            if ($this->client->metadata($path) !== null) {
+                $this->client->delete($path);
+            }
+        } catch (DropboxException $e) {
+            // Gone in between: nothing to clear.
+            if (! $e->isNotFound()) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * Deletes $path if it is a $tag ("file" or "folder"); nothing if it is not there.
+     *
+     * @param  Closure(string, DropboxException|null): FilesystemException  $failure
+     */
+    private function remove(string $path, string $tag, Closure $failure): void
+    {
+        try {
+            $full = $this->path($path);
+            unset($this->stored[$full]);
+            $meta = $this->client->metadata($full);
+            if ($meta === null) {
+                return;
+            }
+            if (($meta['.tag'] ?? null) !== $tag) {
+                throw $failure($tag === 'file' ? 'it is a folder' : 'it is a file', null);
+            }
+            $this->client->delete($full);
+        } catch (DropboxException $e) {
+            if (! $e->isNotFound()) {
+                throw $failure($e->getMessage(), $e);
+            }
+        }
+    }
+
+    /**
+     * @throws DropboxException for a path with capital letters
+     */
+    private function path(string $path): string
+    {
+        $path = trim($path, '/');
+        if (mb_strtolower($path) !== $path) {
+            throw new DropboxException("Dropbox no distingeix majúscules de minúscules: la ruta «{$path}» ha de ser en minúscules.");
+        }
+
+        return $path === '' ? $this->root : $this->root.'/'.$path;
+    }
+
+    private function attributes(string $path, string $type): FileAttributes
+    {
+        try {
+            $full = $this->path($path);
+            $meta = $this->stored[$full] ?? $this->client->metadata($full);
+        } catch (DropboxException $e) {
+            throw UnableToRetrieveMetadata::create($path, $type, $e->getMessage(), $e);
+        }
+
+        $attributes = $meta === null ? null : $this->toAttributes($meta);
+
+        return $attributes instanceof FileAttributes ? $attributes : throw UnableToRetrieveMetadata::create($path, $type, 'file not found');
+    }
+
+    /**
+     * @param  array<mixed>  $entry
+     */
+    private function toAttributes(array $entry): FileAttributes|DirectoryAttributes|null
+    {
+        $lower = $entry['path_lower'] ?? null;
+        $prefix = $this->root.'/';
+        if (! is_string($lower) || ! str_starts_with($lower, $prefix)) {
+            return null;
+        }
+        $path = substr($lower, strlen($prefix));
+        if (($entry['.tag'] ?? null) === 'folder') {
+            return new DirectoryAttributes($path);
+        }
+        $modified = is_string($entry['server_modified'] ?? null) ? strtotime($entry['server_modified']) : false;
+
+        return ($entry['.tag'] ?? null) === 'file' ? new FileAttributes(
+            $path,
+            is_int($entry['size'] ?? null) ? $entry['size'] : null,
+            null,
+            $modified === false ? null : $modified,
+        ) : null;
+    }
+}

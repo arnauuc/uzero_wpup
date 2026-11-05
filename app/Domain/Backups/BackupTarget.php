@@ -12,6 +12,8 @@ namespace App\Domain\Backups;
  *
  * Rules every implementation follows (tests/Contracts/BackupTargetContract.php):
  * - keys are relative paths checked by BackupKey; never absolute, never `..`;
+ * - keys the tool generates are lowercase: a case-insensitive destination
+ *   (Dropbox) refuses capital letters rather than mixing two keys;
  * - data is streamed: no archive is ever loaded whole into memory;
  * - an object is immutable once stored: put() never overwrites;
  * - checksum() is the SHA-256 of what the destination actually holds, computed

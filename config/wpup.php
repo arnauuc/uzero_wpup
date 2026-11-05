@@ -243,6 +243,36 @@ return [
             // Temporary files of the store older than this are removed on the next write.
             'stale_after_seconds' => 86_400,
         ],
+        // Dropbox destinations (UZEROWPUP-107): a Dropbox app with "App folder"
+        // access only; config.root of the backup_targets row is a folder inside
+        // it and credential_ref the SecretStore JSON {app_key, app_secret,
+        // refresh_token}.
+        'dropbox' => [
+            'api_url' => 'https://api.dropboxapi.com/2/',
+            'content_url' => 'https://content.dropboxapi.com/2/',
+            'token_url' => 'https://api.dropboxapi.com/oauth2/token',
+            // Upload-session chunk: a multiple of 4 MiB, at most 150 MiB.
+            'chunk_bytes' => 8 * 1024 * 1024,
+            // Retries of a call answered 429/5xx or cut off, and the longest pause.
+            'max_retries' => 3,
+            'max_retry_after_seconds' => 60,
+            // Downloads and chunks of non-seekable sources are buffered in
+            // unlinked files of staging_dir (never /tmp), read this much at a
+            // time; a source that gives nothing this many reads in a row is stuck.
+            'read_chunk_bytes' => 1_048_576,
+            'max_idle_reads' => 1000,
+            // Per request (an upload chunk, an API call). A download is one
+            // request however big: it only has the idle timeout and resumes
+            // with Range when cut.
+            'connect_timeout_seconds' => 10,
+            'timeout_seconds' => 600,
+            'read_timeout_seconds' => 120,
+            // What is read of an error or token response, and how much of a
+            // non-JSON error is quoted in the message.
+            'max_error_bytes' => 65_536,
+            'error_summary_chars' => 200,
+            'max_token_response_bytes' => 65_536,
+        ],
     ],
 
     'inventory' => [
