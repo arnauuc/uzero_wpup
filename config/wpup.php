@@ -169,9 +169,12 @@ return [
         // At most this many restore points per site: making one more purges the
         // oldest that nothing holds (protected, needed by a run...).
         'max_per_site' => 2,
+        // Daily purge of expired and surplus points (engine:prune-restore-points),
+        // after the default update window (ADR-0006).
+        'prune_time' => '06:30',
         // The backup step of a run: dump, archive, and copies to every destination.
         'step_timeout_seconds' => 3600,
-        // `wpup backup --json` and `wpup backup:list --json` document version (UZEROWPUP-45).
+        // `wpup backup --json`, `backup:list --json` (UZEROWPUP-45) and `backup:prune --json` document version.
         'report_version' => 1,
         // `wpup backup:list` shows this many files unless --limit says otherwise, and the
         // date format of the expiry in the terminal output of both backup commands.

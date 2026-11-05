@@ -40,6 +40,9 @@ use Throwable;
  *   complete local point whose bytes are still there is reused; an incomplete
  *   or altered one is discarded first. A destination that cannot be reached
  *   fails the step without discarding anything.
+ * - Once the point is made, the retention runs for the site
+ *   (RestorePointRetention::enforceAfterCreate): the surplus points go, never
+ *   this one.
  */
 final readonly class RestorePointService
 {
@@ -50,6 +53,7 @@ final readonly class RestorePointService
         private SiteLocalDestination $localDestination,
         private SecretRedactor $redactor,
         private AuditLogger $audit,
+        private RestorePointRetention $retention,
     ) {}
 
     /**
@@ -99,6 +103,9 @@ final readonly class RestorePointService
             'external_unverified' => count(array_filter($externalRows, static fn (Backup $b): bool => $b->verified_at === null)),
             'reused' => $point->reused,
         ]);
+
+        // ADR-0009: at most N points per site; never this one. A run holds the site lock already.
+        $this->retention->enforceAfterCreate($site, $directory, $actor, callerHoldsLock: $run !== null, targets: [$localRecord->id => $local]);
 
         return $point;
     }
