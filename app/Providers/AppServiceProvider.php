@@ -173,6 +173,7 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.backups.dropbox.max_error_bytes'),
             self::configInt('wpup.backups.dropbox.error_summary_chars'),
             self::configInt('wpup.backups.dropbox.max_token_response_bytes'),
+            self::configInt('wpup.backups.dropbox.read_timeout_seconds'),
         ));
         $this->app->bind(DropboxTargetFactory::class, static fn (Application $app): DropboxTargetFactory => new DropboxTargetFactory(
             $app->make(SecretStore::class),

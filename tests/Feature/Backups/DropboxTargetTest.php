@@ -75,6 +75,8 @@ it('refuses a destination without a valid root or credential', function (array $
     'no root' => [['config' => []], 'config.root'],
     'absolute root' => [['config' => ['root' => '/wpup']], 'config.root'],
     'escaping root' => [['config' => ['root' => 'wpup/../x']], 'config.root'],
+    'trailing newline' => [['config' => ['root' => "wpup\n"]], 'config.root'],
+    'capital letters' => [['config' => ['root' => 'WPUP']], 'config.root'],
     'no credential' => [['credential_ref' => null], 'credential_ref'],
 ]);
 
@@ -111,12 +113,18 @@ it('is resolved by the registry for a dropbox row', function (): void {
         ->and($target->checksum('site-1/r1/files.tar.gz'))->toBe(hash('sha256', 'files'));
 });
 
-it('creates folders idempotently but not over a file', function (): void {
-    $fake = FakeDropboxApi::inTemp();
+function dropboxAdapter(FakeDropboxApi $fake): DropboxAdapter
+{
     $http = new Client(['handler' => HandlerStack::create($fake(...))]);
     $redactor = app(SecretRedactor::class);
     $settings = FakeDropboxApi::settings();
-    $adapter = new DropboxAdapter(new DropboxClient($http, new DropboxTokenProvider($http, $fake->credential(), $redactor, $settings), $redactor, $settings), 'wpup');
+
+    return new DropboxAdapter(new DropboxClient($http, new DropboxTokenProvider($http, $fake->credential(), $redactor, $settings), $redactor, $settings), 'wpup');
+}
+
+it('creates folders idempotently but not over a file', function (): void {
+    $fake = FakeDropboxApi::inTemp();
+    $adapter = dropboxAdapter($fake);
     $adapter->write('file.gz', 'x', new Config);
 
     $adapter->createDirectory('d', new Config);
@@ -124,4 +132,29 @@ it('creates folders idempotently but not over a file', function (): void {
 
     expect($adapter->directoryExists('d'))->toBeTrue()
         ->and(fn () => $adapter->createDirectory('file.gz', new Config))->toThrow(UnableToCreateDirectory::class, 'conflict/file');
+});
+
+it('replaces the destination of a move or copy, like other adapters', function (): void {
+    $adapter = dropboxAdapter(FakeDropboxApi::inTemp());
+    $adapter->write('a.gz', 'new', new Config);
+    $adapter->write('b.gz', 'old', new Config);
+    $adapter->write('c.gz', 'old', new Config);
+
+    $adapter->copy('a.gz', 'c.gz', new Config);
+    $adapter->move('a.gz', 'b.gz', new Config);
+
+    expect($adapter->read('b.gz'))->toBe('new')
+        ->and($adapter->read('c.gz'))->toBe('new')
+        ->and($adapter->fileExists('a.gz'))->toBeFalse();
+});
+
+it('refuses capital letters and lists keys in lowercase', function (): void {
+    $fake = FakeDropboxApi::inTemp();
+    $target = dropboxTarget($fake);
+    // Something put there by hand: Dropbox would show it as "Site-1/R1".
+    mkdir($fake->dir.'/files/wpup/copies/Site-1/R1', 0700, true);
+    file_put_contents($fake->dir.'/files/wpup/copies/Site-1/R1/db.sql.gz', 'x');
+
+    expect(fn () => $target->put('Site-1/r2/db.sql.gz', BackupTargetContract::stream('x')))->toThrow(BackupTargetException::class, 'majúscules')
+        ->and(array_map(static fn ($o): string => $o->key, $target->list()))->toBe(['site-1/r1/db.sql.gz']);
 });

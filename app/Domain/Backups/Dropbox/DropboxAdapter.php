@@ -28,6 +28,11 @@ use League\Flysystem\Visibility;
  * FlysystemTarget does the rest: temporary write and move, SHA-256 and
  * redaction. Dropbox has no visibility (everything is private to the app)
  * nor MIME types.
+ *
+ * Dropbox paths are case-insensitive and path_display is not reliable above
+ * the last component, so paths with capital letters are refused (backup keys
+ * are generated in lowercase) and listings use path_lower. Like other
+ * adapters, move() and copy() replace what is at the destination.
  */
 final readonly class DropboxAdapter implements FilesystemAdapter
 {
@@ -178,6 +183,7 @@ final readonly class DropboxAdapter implements FilesystemAdapter
     public function move(string $source, string $destination, Config $config): void
     {
         try {
+            $this->clear($this->path($destination));
             $this->client->move($this->path($source), $this->path($destination));
         } catch (DropboxException $e) {
             throw UnableToMoveFile::because($e->getMessage(), $source, $destination);
@@ -187,15 +193,29 @@ final readonly class DropboxAdapter implements FilesystemAdapter
     public function copy(string $source, string $destination, Config $config): void
     {
         try {
+            $this->clear($this->path($destination));
             $this->client->copy($this->path($source), $this->path($destination));
         } catch (DropboxException $e) {
             throw UnableToCopyFile::because($e->getMessage(), $source, $destination);
         }
     }
 
+    private function clear(string $path): void
+    {
+        if ($this->client->metadata($path) !== null) {
+            $this->client->delete($path);
+        }
+    }
+
+    /**
+     * @throws DropboxException for a path with capital letters
+     */
     private function path(string $path): string
     {
         $path = trim($path, '/');
+        if (mb_strtolower($path) !== $path) {
+            throw new DropboxException("Dropbox no distingeix majúscules de minúscules: la ruta «{$path}» ha de ser en minúscules.");
+        }
 
         return $path === '' ? $this->root : $this->root.'/'.$path;
     }
@@ -218,12 +238,12 @@ final readonly class DropboxAdapter implements FilesystemAdapter
      */
     private function toAttributes(array $entry): FileAttributes|DirectoryAttributes|null
     {
-        $display = $entry['path_display'] ?? null;
+        $lower = $entry['path_lower'] ?? null;
         $prefix = $this->root.'/';
-        if (! is_string($display) || ! str_starts_with(mb_strtolower($display), mb_strtolower($prefix))) {
+        if (! is_string($lower) || ! str_starts_with($lower, $prefix)) {
             return null;
         }
-        $path = substr($display, strlen($prefix));
+        $path = substr($lower, strlen($prefix));
         if (($entry['.tag'] ?? null) === 'folder') {
             return new DirectoryAttributes($path);
         }

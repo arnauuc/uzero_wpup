@@ -258,9 +258,12 @@ return [
             'max_retry_after_seconds' => 60,
             // Chunks and downloads are buffered on disk beyond this.
             'buffer_memory_bytes' => 1_048_576,
-            // Per request; a download of a whole archive is one request.
+            // Per request (an upload chunk, an API call). A download is one
+            // request however big: it only has the idle timeout and resumes
+            // with Range when cut.
             'connect_timeout_seconds' => 10,
-            'timeout_seconds' => 3600,
+            'timeout_seconds' => 600,
+            'read_timeout_seconds' => 120,
             // What is read of an error or token response, and how much of a
             // non-JSON error is quoted in the message.
             'max_error_bytes' => 65_536,
