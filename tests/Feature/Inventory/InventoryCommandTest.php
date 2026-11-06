@@ -145,9 +145,9 @@ it('writes the CSV to stdout, one row per site, with status and failure', functi
 
     $unevaluated = "Sense còpia externa coneguda: no n'hi ha de declarada ni cap plugin de còpies actiu (la detecció de plugins no s'ha executat).";
 
-    expect($rows[0])->toBe(['site', 'url', 'core', 'woocommerce', 'php', 'php_source', 'db_server', 'pending_updates', 'unlicensed', 'blocked', 'blocked_reason', 'status', 'failure', 'external_backup_warnings'])
-        ->and($rows[1])->toBe(['blog', 'https://blog.test', '', '', '', '', '', '', '', 'no', '', 'failed', "No s'ha pogut fer l'inventari: connexió caiguda", $unevaluated])
-        ->and($rows[2])->toBe(['botiga-a', 'https://a.test', '6.8.3', '9.8.1', '8.2.20', 'plesk_handler', '11.4.2-MariaDB', '2', '1', 'no', '', 'succeeded', '', $unevaluated]);
+    expect($rows[0])->toBe(['site', 'url', 'core', 'woocommerce', 'php', 'php_source', 'db_server', 'pending_updates', 'unlicensed', 'blocked', 'blocked_reason', 'status', 'failure', 'external_backup_warnings', 'environment_warnings'])
+        ->and($rows[1])->toBe(['blog', 'https://blog.test', '', '', '', '', '', '', '', 'no', '', 'failed', "No s'ha pogut fer l'inventari: connexió caiguda", $unevaluated, ''])
+        ->and($rows[2])->toBe(['botiga-a', 'https://a.test', '6.8.3', '9.8.1', '8.2.20', 'plesk_handler', '11.4.2-MariaDB', '2', '1', 'no', '', 'succeeded', '', $unevaluated, '']);
 });
 
 it('protects the CSV against formula injection and strips line breaks', function (): void {
@@ -257,7 +257,8 @@ it('reports external backup warnings per site from the profile and the detection
     $json = inventoryJson(['sites' => ['botiga-a', 'mixt'], '--wait' => true]);
     $warnings = array_column($json['sites'], 'external_backup_warnings', 'site');
 
-    expect($warnings['botiga-a'])->toBe([])
+    expect($json['sites'][0])->toHaveKey('environment_warnings')
+        ->and($warnings['botiga-a'])->toBe([])
         ->and($warnings['mixt'])->toHaveCount(1)->and($warnings['mixt'][0])->toContain('Sense còpia externa coneguda');
 });
 

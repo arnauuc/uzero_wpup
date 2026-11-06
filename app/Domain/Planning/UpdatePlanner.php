@@ -82,6 +82,7 @@ final readonly class UpdatePlanner
         private PackageVersions $versions,
         private VulnerabilitySource $vulnerabilities,
         private int $quarantineDays,
+        private FutureMinimums $futureMinimums,
     ) {}
 
     public function plan(SiteSnapshot $snapshot, Site $site, ?SiteProfile $profile, string $phpVersion, PhpVersionSource $phpSource, PlanOptions $options = new PlanOptions): UpdatePlan
@@ -155,7 +156,8 @@ final readonly class UpdatePlanner
             $decided[] = $change;
         }
 
-        return new UpdatePlan($phpVersion, $phpSource, $phpSource !== PhpVersionSource::Cli, $blocked, $this->sorted($decided), $options);
+        return new UpdatePlan($phpVersion, $phpSource, $phpSource !== PhpVersionSource::Cli, $blocked, $this->sorted($decided), $options,
+            $this->futureMinimums->warnings($phpVersion, $phpSource !== PhpVersionSource::Cli, $snapshot->core_version, $woocommerce, CarbonImmutable::now('UTC')));
     }
 
     /**

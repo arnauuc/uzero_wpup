@@ -53,6 +53,7 @@ use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Notifications\LogSiteBlockNotifier;
 use App\Domain\Notifications\SiteBlockNotifier;
+use App\Domain\Planning\FutureMinimums;
 use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
@@ -282,7 +283,9 @@ class AppServiceProvider extends ServiceProvider
             $app->make(PackageVersions::class),
             $app->make(VulnerabilitySource::class),
             self::configInt('wpup.planning.quarantine_days'),
+            $app->make(FutureMinimums::class),
         ));
+        $this->app->bind(FutureMinimums::class, static fn (): FutureMinimums => FutureMinimums::fromConfig(config('wpup.future_minimums')));
         $this->app->bind(PendingUpdates::class, static fn (Application $app): PendingUpdates => new PendingUpdates(
             $app->make(HttpFactory::class),
             $app->make(CacheFactory::class)->store(),

@@ -108,8 +108,9 @@ it('plans from a fresh inventory and stores the plan in the step', function (): 
 
     expect($run->status)->toBe(RunStatus::Succeeded)
         ->and($step->summary)->toBe("2 s'actualitzarien, 2 s'ometrien");
-    /** @var array{changes: list<array{slug: string, action: string, reason: ?string}>} $result */
+    /** @var array{environment_warnings: list<string>, changes: list<array{slug: string, action: string, reason: ?string}>} $result */
     $result = $step->result;
+    expect($result['environment_warnings'])->toBeArray();
     expect(array_map(static fn (array $c): string => "{$c['slug']}:{$c['action']}:{$c['reason']}", $result['changes']))->toBe([
         'wordpress:update:', 'classic-editor:update:', 'hello:skip:frozen', 'premium:skip:no_license',
     ]);

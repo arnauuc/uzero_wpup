@@ -63,6 +63,20 @@ return [
     'min_site_php' => '7.4',
 
     /*
+     * Future minimums (UZEROWPUP-52, ADR-0007): releases that will require more than
+     * a site may have, so it will be frozen on the branch before. Editable table,
+     * read by `wpup inventory` and `wpup plan`; a site is warned when its component
+     * is older than `version` and its PHP is below `min_php` (or, for WooCommerce,
+     * its WordPress below `min_wp`). `effective` is `YYYY-MM` or null when unknown;
+     * `note` says where the value comes from. TODO: verify each row against the
+     * vendor's announcement before relying on it, and add new ones as they appear.
+     */
+    'future_minimums' => [
+        ['component' => 'wordpress', 'label' => 'WordPress', 'version' => '7.0', 'min_php' => '7.4', 'min_wp' => null, 'effective' => null, 'note' => 'ADR-0007: WordPress 7.0 requires PHP 7.4.'],
+        ['component' => 'woocommerce', 'label' => 'WooCommerce', 'version' => '11.6', 'min_php' => '8.1', 'min_wp' => null, 'effective' => '2027-02', 'note' => 'ADR-0007: WooCommerce 11.6 (February 2027) requires PHP 8.1.'],
+    ],
+
+    /*
      * Operator identity (ADR-0002). The tool always runs as the service user and
      * operators call it through `sudo -u wpup wpup ...`.
      *

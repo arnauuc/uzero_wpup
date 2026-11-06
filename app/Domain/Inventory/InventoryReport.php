@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace App\Domain\Inventory;
 
+use App\Domain\Planning\FutureMinimums;
 use App\Domain\Runs\ReportVersion;
 use App\Domain\Sites\BlockOutcome;
+use App\Enums\PhpVersionSource;
 use App\Models\Run;
 use App\Models\RunStep;
 use App\Models\SiteSnapshot;
@@ -17,12 +19,12 @@ use RuntimeException;
  */
 final class InventoryReport
 {
-    public function __construct(private readonly ExternalBackupStatus $externalBackups) {}
+    public function __construct(private readonly ExternalBackupStatus $externalBackups, private readonly FutureMinimums $futureMinimums) {}
 
     public const array CSV_COLUMNS = [
         'site', 'url', 'core', 'woocommerce', 'php', 'php_source', 'db_server',
         'pending_updates', 'unlicensed', 'blocked', 'blocked_reason', 'status', 'failure',
-        'external_backup_warnings',
+        'external_backup_warnings', 'environment_warnings',
     ];
 
     /** Cells starting with one of these would be run as a formula by a spreadsheet. */
@@ -134,10 +136,13 @@ final class InventoryReport
         ))) : null;
         $externalBackup = $this->externalBackups->assess($site?->profile?->external_backup, $detected, now()->toImmutable());
 
+        $wcVersion = $this->woocommerceVersion($snapshot);
+        $environment = $this->futureMinimums->warnings($snapshot->php_version, $snapshot->php_source !== PhpVersionSource::Cli, $snapshot->core_version, $wcVersion, now()->toImmutable());
+
         return new InventoryRow(
             $name, $url, $run->id, $run->status, $failure,
             $snapshot->core_version,
-            $this->woocommerceVersion($snapshot),
+            $wcVersion,
             $snapshot->php_version,
             $snapshot->php_source->value,
             array_values(array_filter(self::array($php['warnings'] ?? null), is_string(...))),
@@ -151,6 +156,7 @@ final class InventoryReport
             $blockedReason,
             $externalBackup->warnings,
             array_values(array_filter(self::array(self::array($backups)['warnings'] ?? null), is_string(...))),
+            $environment,
         );
     }
 
