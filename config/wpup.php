@@ -63,6 +63,21 @@ return [
     'min_site_php' => '7.4',
 
     /*
+     * Future minimums (UZEROWPUP-52, ADR-0007): releases that will require more than
+     * a site may have, so it will be frozen on the branch before. Editable table,
+     * read by `wpup inventory` and `wpup plan`; a site is warned when its component
+     * is older than `version` and its PHP is below `min_php` (or, for WooCommerce,
+     * its WordPress below `min_wp`). `effective` is `YYYY-MM` or null when unknown; `released` marks a release already
+     * out (the warning then says «Congelat», not «Quedarà congelat»);
+     * `note` says where the value comes from. TODO: verify each row against the
+     * vendor's announcement before relying on it, and add new ones as they appear.
+     */
+    'future_minimums' => [
+        ['component' => 'wordpress', 'label' => 'WordPress', 'version' => '7.0', 'min_php' => '7.4', 'min_wp' => null, 'effective' => null, 'released' => true, 'note' => 'ADR-0007: WordPress 7.0 (already released) requires PHP 7.4.'],
+        ['component' => 'woocommerce', 'label' => 'WooCommerce', 'version' => '11.6', 'min_php' => '8.1', 'min_wp' => null, 'effective' => '2027-02', 'released' => false, 'note' => 'ADR-0007: WooCommerce 11.6 (February 2027) requires PHP 8.1.'],
+    ],
+
+    /*
      * Operator identity (ADR-0002). The tool always runs as the service user and
      * operators call it through `sudo -u wpup wpup ...`.
      *
@@ -119,6 +134,34 @@ return [
      */
     'updates' => [
         'component_timeout_seconds' => 3900,
+        // After the updates (UZEROWPUP-55): database migrations (core, WooCommerce) and cache
+        // flushes. The step timeout must cover 2 × update_db + (4 + 2 × page caches) ×
+        // command + overhead (connecting, listing components, driver work), checked at build time.
+        'post_update' => [
+            'step_timeout_seconds' => 6600,
+            'update_db_timeout_seconds' => 1800,
+            // Every short command: flushes, has-command checks, the WooCommerce migration check.
+            'command_timeout_seconds' => 120,
+            'overhead_seconds' => 900,
+            // Page cache purge of the common caching plugins: slug => command name (as
+            // `wp cli has-command` takes it) + arguments. It only runs when the plugin is active
+            // AND the site has the command (checked with has-command; otherwise a warning and
+            // page_cache_purged=false in the step data). A failure is never an error.
+            // Checked against the plugins' source on WordPress.org: w3-total-cache (also
+            // registers total-cache and w3tc), litespeed-cache, sg-cachepress and
+            // wp-fastest-cache register their own commands. WP Super Cache registers none in
+            // its WordPress.org source (its CLI comes from a separate package) and WP Rocket is
+            // premium (source not checkable): both are kept here but only run if has-command
+            // finds the command.
+            'page_caches' => [
+                'wp-rocket' => ['command' => 'rocket clean', 'arguments' => ['--confirm']],
+                'w3-total-cache' => ['command' => 'w3-total-cache flush', 'arguments' => ['all']],
+                'litespeed-cache' => ['command' => 'litespeed-purge all', 'arguments' => []],
+                'wp-super-cache' => ['command' => 'super-cache flush', 'arguments' => []],
+                'sg-cachepress' => ['command' => 'sg purge', 'arguments' => []],
+                'wp-fastest-cache' => ['command' => 'fastest-cache clear', 'arguments' => ['all']],
+            ],
+        ],
     ],
 
     /*

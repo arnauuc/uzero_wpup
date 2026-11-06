@@ -15,9 +15,12 @@ use App\Domain\Planning\PlannedChange;
 use App\Domain\Planning\UpdatePlan;
 use App\Domain\Runs\Exceptions\StepTimedOut;
 use App\Domain\Runs\RunAuthorization;
+use App\Domain\Runs\Step;
 use App\Domain\Runs\StepContext;
 use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Updates\ComponentUpdateStep;
+use App\Domain\Updates\PostUpdateSettings;
+use App\Domain\Updates\PostUpdateStep;
 use App\Domain\Updates\UpdateChanges;
 use App\Domain\Updates\UpdateSteps;
 use App\Enums\ComponentType;
@@ -88,12 +91,13 @@ function updateBuilder(FakeDriver $driver, int $timeout = 60, int $minimum = 60)
 {
     return new UpdateSteps(
         app(ArtifactStore::class), static fn (Site $s, AuditActor $a): SiteDriver => $driver,
-        app(RunAuthorization::class), new UpdateChanges, app(SecretRedactor::class), $timeout, $minimum,
+        app(RunAuthorization::class), new UpdateChanges, app(SecretRedactor::class),
+        new PostUpdateSettings(6600, 1800, 120, 900, []), $timeout, $minimum,
     );
 }
 
 /**
- * @return list<ComponentUpdateStep>
+ * @return list<ComponentUpdateStep|PostUpdateStep>
  */
 function updateSteps(FakeDriver $driver): array
 {
@@ -101,7 +105,7 @@ function updateSteps(FakeDriver $driver): array
 }
 
 /** The classic-editor step. */
-function classicStep(FakeDriver $driver): ComponentUpdateStep
+function classicStep(FakeDriver $driver): Step
 {
     return updateSteps($driver)[2];
 }
@@ -117,9 +121,9 @@ function updateRows(Run $run): array
 }
 
 it('builds one step per planned update, in the plan order', function (): void {
-    $names = array_map(static fn (ComponentUpdateStep $s): string => $s->name(), updateSteps(new FakeDriver));
+    $names = array_map(static fn (Step $s): string => $s->name(), updateSteps(new FakeDriver));
 
-    expect($names)->toBe(['update:core:wordpress', 'update:woocommerce:woocommerce', 'update:plugin:classic-editor', 'update:theme:storefront']);
+    expect($names)->toBe(['update:core:wordpress', 'update:woocommerce:woocommerce', 'update:plugin:classic-editor', 'update:theme:storefront', 'post-update']);
 });
 
 it('refuses a step timeout shorter than the longest install', function (): void {

@@ -53,6 +53,7 @@ use App\Domain\Identity\ProcessIdentity;
 use App\Domain\Inventory\ExternalBackups;
 use App\Domain\Inventory\ExternalBackupStatus;
 use App\Domain\Inventory\HttpProbe;
+use App\Domain\Inventory\InventoryReport;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteInventory;
@@ -63,6 +64,7 @@ use App\Domain\Locks\SiteLockManager;
 use App\Domain\Notifications\LogSiteBlockNotifier;
 use App\Domain\Notifications\SiteBlockNotifier;
 use App\Domain\Planning\ChangeAnalyzer;
+use App\Domain\Planning\FutureMinimums;
 use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
@@ -92,6 +94,8 @@ use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
+use App\Domain\Updates\PageCacheCommand;
+use App\Domain\Updates\PostUpdateSettings;
 use App\Domain\Updates\UpdateChanges;
 use App\Domain\Updates\UpdateSteps;
 use App\Domain\Vulnerabilities\NoVulnerabilitySource;
@@ -112,6 +116,7 @@ use Illuminate\Database\DatabaseManager;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Redis\Connections\PhpRedisConnection;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\ServiceProvider;
 use LogicException;
@@ -315,6 +320,23 @@ class AppServiceProvider extends ServiceProvider
             $app->make(PackageVersions::class),
             $app->make(VulnerabilitySource::class),
             self::configInt('wpup.planning.quarantine_days'),
+            $app->make(FutureMinimums::class),
+        ));
+        // A malformed table must not break the inventory, the plan or the updates: the
+        // whole table is ignored and the error logged once (the singleton is built once).
+        $this->app->singleton(FutureMinimums::class, static function (): FutureMinimums {
+            try {
+                return FutureMinimums::fromConfig(config('wpup.future_minimums'));
+            } catch (\UnexpectedValueException $e) {
+                Log::error('Future minimums ignored: '.$e->getMessage());
+
+                return new FutureMinimums([]);
+            }
+        });
+        $this->app->bind(InventoryReport::class, static fn (Application $app): InventoryReport => new InventoryReport(
+            $app->make(ExternalBackupStatus::class),
+            $app->make(FutureMinimums::class),
+            self::configInt('wpup.planning.verified_php_max_age_seconds'),
         ));
         $this->app->bind(PendingUpdates::class, static fn (Application $app): PendingUpdates => new PendingUpdates(
             $app->make(HttpFactory::class),
@@ -482,6 +504,13 @@ class AppServiceProvider extends ServiceProvider
             $app->make(RunAuthorization::class),
             $app->make(UpdateChanges::class),
             $app->make(SecretRedactor::class),
+            new PostUpdateSettings(
+                self::configInt('wpup.updates.post_update.step_timeout_seconds'),
+                self::configInt('wpup.updates.post_update.update_db_timeout_seconds'),
+                self::configInt('wpup.updates.post_update.command_timeout_seconds'),
+                self::configInt('wpup.updates.post_update.overhead_seconds'),
+                self::configCommands('wpup.updates.post_update.page_caches'),
+            ),
             self::configInt('wpup.updates.component_timeout_seconds'),
             $app->make(SshSettings::class)->applyUpdateBudgetSeconds(),
         ));
@@ -640,6 +669,27 @@ class AppServiceProvider extends ServiceProvider
         $value = config($key);
 
         return is_array($value) ? array_values(array_filter($value, is_string(...))) : throw new \UnexpectedValueException($key.' must be a list of strings.');
+    }
+
+    /**
+     * @return array<string, PageCacheCommand>
+     */
+    private static function configCommands(string $key): array
+    {
+        $value = config($key);
+        if (! is_array($value)) {
+            throw new \UnexpectedValueException($key.' must be a map of page cache commands.');
+        }
+        $commands = [];
+        foreach ($value as $slug => $entry) {
+            $arguments = is_array($entry) ? ($entry['arguments'] ?? []) : null;
+            if (! is_string($slug) || ! is_array($entry) || ! is_string($entry['command'] ?? null) || ! is_array($arguments) || array_filter($arguments, is_string(...)) !== $arguments) {
+                throw new \UnexpectedValueException($key.' must map plugin slugs to a command name and a list of string arguments.');
+            }
+            $commands[$slug] = new PageCacheCommand($entry['command'], array_values($arguments));
+        }
+
+        return $commands;
     }
 
     private static function configInt(string $key): int

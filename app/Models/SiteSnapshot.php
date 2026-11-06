@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use Carbon\CarbonImmutable;
 use Database\Factories\SiteSnapshotFactory;
@@ -64,6 +65,22 @@ class SiteSnapshot extends Model
             ->when($maxAgeSeconds !== null, static fn ($query) => $query->where('taken_at', '>=', now()->subSeconds($maxAgeSeconds ?? 0)))
             ->latest('taken_at')
             ->first();
+    }
+
+    /**
+     * The version of the active WooCommerce, null when it is absent or inactive: an
+     * inactive one does not satisfy anyone's requirement. The planner and the
+     * inventory report share this notion.
+     */
+    public function installedWooCommerce(): ?string
+    {
+        foreach ($this->plugins as $plugin) {
+            if (is_array($plugin) && ($plugin['type'] ?? null) === ComponentType::Woocommerce->value && ($plugin['active'] ?? false) === true && is_string($plugin['version'] ?? null)) {
+                return $plugin['version'];
+            }
+        }
+
+        return null;
     }
 
     /**
