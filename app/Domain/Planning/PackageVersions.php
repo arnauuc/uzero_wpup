@@ -90,6 +90,14 @@ final readonly class PackageVersions
     }
 
     /**
+     * How many versions purge() would drop (for dry runs).
+     */
+    public function expired(CarbonImmutable $now): int
+    {
+        return PackageVersion::query()->where('last_seen_at', '<', $now->subDays($this->retentionDays))->count();
+    }
+
+    /**
      * Drops the versions that no inventory has offered for `retention_days`; the
      * number of rows removed. A version offered again later starts a new clock,
      * which only makes its quarantine longer.

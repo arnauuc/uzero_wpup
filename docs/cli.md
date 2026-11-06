@@ -189,6 +189,14 @@ Mai no s'esborra, sigui quina sigui l'edat: un punt protegit manualment (`backup
 
 El planificador fa la mateixa neteja cada dia a les `backups.prune_time` (per defecte, 06:30) amb `engine:prune-restore-points`, que no és accessible des del binari `wpup`. Totes dues tenen `--dry-run`, i cada lloc netejat deixa un resum a l'auditoria (`backups.pruned`).
 
+## Neteja de retenció (ADR-0009, punt 4)
+
+| Comanda | Què fa |
+| --- | --- |
+| `cleanup [--dry-run] [--force] [--json]` | Només `admin`. Aplica la taula de retenció: buida la sortida completa dels passos (`run_steps.output`) de les execucions correctes als 90 dies i de les fallides o revertides a l'any; esborra els artefactes de paquets (mentre existeixi el punt de restauració de l'execució i com a mínim 30 dies); esborra les versions de paquets no vistes en un any. Les captures (F4) tenen el punt d'extensió fet però encara no hi ha res a netejar. El resum, els canvis, les verificacions sense imatges i els informes es conserven sempre, i `audit_log` no es purga mai. Demana confirmació (o `--force`); amb `--json` cal `--dry-run` o `--force`. Surt amb error si alguna classe ha fallat; les altres s'executen igualment |
+
+Els punts de restauració tenen la seva pròpia neteja (`backup:prune`, 06:30). El planificador executa la resta cada dia a les `cleanup.time` (per defecte, 06:45, després dels punts de restauració) amb `engine:cleanup`, que no és accessible des del binari `wpup`. Cada classe que ha purgat o ha fallat deixa el seu resum a l'auditoria (`cleanup.run_output`, `artifacts.purged`, `cleanup.package_versions`); amb `--dry-run` no s'escriu res. Els períodes són a `config/wpup.php` (`cleanup`) i són mínims: no es pot posar un valor inferior als de l'ADR.
+
 ## Còpia de l'eina (ADR-0009, punt 3)
 
 | Comanda | Què fa |
