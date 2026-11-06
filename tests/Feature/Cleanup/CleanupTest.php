@@ -13,6 +13,7 @@ use App\Domain\Cleanup\CleanupTask;
 use App\Domain\Identity\CliCommandGate;
 use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
+use App\Enums\ChangeResult;
 use App\Enums\ComponentType;
 use App\Enums\RunStatus;
 use App\Enums\UserRole;
@@ -21,12 +22,14 @@ use App\Models\Backup;
 use App\Models\PackageVersion;
 use App\Models\Run;
 use App\Models\RunArtifact;
+use App\Models\RunChange;
 use App\Models\RunStep;
 use App\Models\User;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Scheduling\Event as ScheduledEvent;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Redis;
 
 /*
@@ -181,17 +184,81 @@ it('drops package versions no inventory offered for a year', function (): void {
     expect($audit->context['versions'])->toBe(1);
 });
 
-it('has a screenshots extension point that does nothing until F4 and refuses lower periods', function (): void {
+it('has a screenshots extension point that does nothing until F4', function (): void {
     $result = resultOf(app(CleanupService::class)->run(AuditActor::system(), cleanupNow(), false), 'screenshots');
     $settings = app(CleanupSettings::class);
 
     expect($result->count)->toBe(0)->and($result->note)->toContain('F4')
         ->and([$settings->screenshotsDays, $settings->screenshotsFlaggedDays])->toBe([30, 180])
-        ->and(AuditLogEntry::query()->where('action', 'cleanup.screenshots')->exists())->toBeFalse()
-        ->and(fn () => new CleanupSettings(89, 365, 30, 180))->toThrow(InvalidArgumentException::class)
-        ->and(fn () => new CleanupSettings(90, 364, 30, 180))->toThrow(InvalidArgumentException::class)
-        ->and(fn () => new CleanupSettings(90, 365, 29, 180))->toThrow(InvalidArgumentException::class)
-        ->and(fn () => new CleanupSettings(90, 365, 30, 179))->toThrow(InvalidArgumentException::class);
+        ->and(AuditLogEntry::query()->where('action', 'cleanup.screenshots')->exists())->toBeFalse();
+});
+
+it('fails only the class whose period is below the ADR-0009 floor, audited, and runs the rest', function (): void {
+    config(['wpup.cleanup.run_output_failed_days' => 100]);
+    $step = stepWithOutput(runFinished(RunStatus::Succeeded, 400));
+    PackageVersion::query()->create([
+        'component_type' => 'plugin', 'slug' => 'old', 'version' => '1.0', 'source' => 'wordpress.org:old',
+        'first_seen_at' => cleanupNow()->subDays(500), 'last_seen_at' => cleanupNow()->subDays(500), 'released_at' => null,
+    ]);
+
+    $results = app(CleanupService::class)->run(AuditActor::system(), cleanupNow(), false);
+
+    expect(resultOf($results, 'run_output')->failures[0])->toContain('run_output_failed_days')->toContain('365')
+        ->and(stepKept($step))->toBeTrue()
+        ->and(resultOf($results, 'package_versions')->count)->toBe(1)
+        ->and(resultOf($results, 'screenshots')->failed())->toBeFalse()
+        ->and(AuditLogEntry::query()->where('action', 'cleanup.run_output')->sole()->result)->toBe(AuditResult::Failure);
+
+    config(['wpup.cleanup.screenshots_days' => 29]);
+    expect(resultOf(app(CleanupService::class)->run(AuditActor::system(), cleanupNow(), true), 'screenshots')->failures[0])->toContain('screenshots_days');
+
+    actingAsOperator('admin1');
+    command('cleanup', ['--force' => true])->expectsOutputToContain('wpup.cleanup.run_output_failed_days')->assertFailed();
+});
+
+it('keeps for one year the output of a run with a reverted change, even if it succeeded', function (): void {
+    $viaResult = runFinished(RunStatus::Succeeded, 200);
+    RunChange::factory()->create(['run_id' => $viaResult->id, 'result' => ChangeResult::Reverted]);
+    $viaDate = runFinished(RunStatus::Succeeded, 200);
+    RunChange::factory()->create(['run_id' => $viaDate->id, 'result' => ChangeResult::Updated, 'reverted_at' => cleanupNow()->subDays(199)]);
+    $plain = runFinished(RunStatus::Succeeded, 200);
+    RunChange::factory()->create(['run_id' => $plain->id, 'result' => ChangeResult::Updated]);
+    $steps = [stepWithOutput($viaResult), stepWithOutput($viaDate), stepWithOutput($plain)];
+    $old = runFinished(RunStatus::Succeeded, 366);
+    RunChange::factory()->create(['run_id' => $old->id, 'result' => ChangeResult::Reverted]);
+    $oldStep = stepWithOutput($old);
+
+    app(CleanupService::class)->run(AuditActor::system(), cleanupNow(), false);
+
+    expect(stepKept($steps[0]))->toBeTrue()->and(stepKept($steps[1]))->toBeTrue()->and(stepKept($steps[2]))->toBeFalse()
+        ->and(stepKept($oldStep))->toBeFalse();
+});
+
+it('counts exactly what it emptied, in chunks', function (): void {
+    config(['wpup.cleanup.chunk_size' => 2]);
+    $run = runFinished(RunStatus::Succeeded, 100);
+    foreach ([1, 2, 3, 4, 5] as $n) {
+        RunStep::factory()->create(['run_id' => $run->id, 'sequence' => $n, 'output' => 'abcd']);
+    }
+    RunStep::factory()->create(['run_id' => $run->id, 'sequence' => 6, 'output' => null]);
+
+    $result = resultOf(app(CleanupService::class)->run(AuditActor::system(), cleanupNow(), false), 'run_output');
+
+    expect($result->count)->toBe(5)->and($result->bytes)->toBe(20)
+        ->and(AuditLogEntry::query()->where('action', 'cleanup.run_output')->sole()->context['steps'])->toBe(5);
+});
+
+it('does not run twice at once', function (): void {
+    $step = stepWithOutput(runFinished(RunStatus::Succeeded, 400));
+    $lock = Cache::lock(CleanupService::LOCK, 60);
+    expect($lock->get())->toBeTrue();
+
+    $results = app(CleanupService::class)->run(AuditActor::system(), cleanupNow(), false);
+    expect($results)->toHaveCount(1)->and($results[0]->note)->toContain('en curs')->and(stepKept($step))->toBeTrue();
+
+    $lock->release();
+    app(CleanupService::class)->run(AuditActor::system(), cleanupNow(), false);
+    expect(stepKept($step))->toBeFalse()->and(Cache::lock(CleanupService::LOCK, 1)->get())->toBeTrue();
 });
 
 it('never touches audit_log, however old the entries', function (): void {
@@ -282,7 +349,7 @@ it('is admin only, asks for confirmation and audits what it purges', function ()
         ->and(AuditLogEntry::query()->where('action', 'command.denied')->where('result', AuditResult::Denied->value)->exists())->toBeTrue();
 
     actingAsOperator('admin1');
-    command('cleanup')->expectsConfirmation('Aplicar la neteja de retenció? No es pot desfer.', 'no')->assertFailed();
+    command('cleanup')->expectsOutputToContain('Es netejarien')->expectsConfirmation('Aplicar la neteja de retenció? No es pot desfer.', 'no')->assertFailed();
     expect(stepKept($step))->toBeTrue();
 
     command('cleanup', ['--dry-run' => true])->assertSuccessful();
@@ -306,7 +373,7 @@ it('refuses --json without --dry-run or --force', function (): void {
 it('runs from the scheduler daily without asking, audited as the system', function (): void {
     $step = stepWithOutput(runFinished(RunStatus::Succeeded, 400));
 
-    command('engine:cleanup', ['--dry-run' => true])->assertSuccessful();
+    command('engine:cleanup', ['--dry-run' => true, '--json' => true])->expectsOutputToContain('"run_output"')->assertSuccessful();
     expect(stepKept($step))->toBeTrue();
 
     command('engine:cleanup')->assertSuccessful();

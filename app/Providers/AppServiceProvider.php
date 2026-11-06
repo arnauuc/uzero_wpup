@@ -298,13 +298,14 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.cleanup.run_output_failed_days'),
             self::configInt('wpup.cleanup.screenshots_days'),
             self::configInt('wpup.cleanup.screenshots_flagged_days'),
+            self::configInt('wpup.cleanup.chunk_size'),
         ));
         $this->app->bind(CleanupService::class, static fn (Application $app): CleanupService => new CleanupService([
             $app->make(RunOutputCleanup::class),
             $app->make(ArtifactCleanup::class),
             $app->make(PackageVersionCleanup::class),
             $app->make(ScreenshotCleanup::class),
-        ]));
+        ], self::configInt('wpup.cleanup.lock_seconds')));
         // The tool's own backup (UZEROWPUP-47, ADR-0009 §3).
         $this->app->bind(ToolBackupSettings::class, static fn (): ToolBackupSettings => new ToolBackupSettings(
             self::configStrings('wpup.tool_backup.age_recipients'),

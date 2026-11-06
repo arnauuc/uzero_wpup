@@ -6,6 +6,7 @@ namespace App\Domain\Cleanup;
 
 use App\Domain\Audit\AuditActor;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -17,15 +18,36 @@ use Throwable;
  */
 final readonly class CleanupService
 {
+    public const string LOCK = 'wpup:cleanup';
+
     /**
      * @param  list<CleanupTask>  $tasks
      */
-    public function __construct(private array $tasks) {}
+    public function __construct(private array $tasks, private int $lockSeconds = 3600) {}
 
     /**
      * @return list<CleanupResult>
      */
     public function run(AuditActor $actor, CarbonImmutable $now, bool $dryRun): array
+    {
+        // One cleanup at a time, whoever starts it (`wpup cleanup`, the scheduler).
+        // A dry run changes nothing and needs no lock.
+        $lock = $dryRun ? null : Cache::lock(self::LOCK, $this->lockSeconds);
+        if ($lock !== null && ! $lock->get()) {
+            return [new CleanupResult('cleanup', 0, 0, false, "Ja hi ha una altra neteja en curs: s'omet.")];
+        }
+
+        try {
+            return $this->runTasks($actor, $now, $dryRun);
+        } finally {
+            $lock?->release();
+        }
+    }
+
+    /**
+     * @return list<CleanupResult>
+     */
+    private function runTasks(AuditActor $actor, CarbonImmutable $now, bool $dryRun): array
     {
         $results = [];
         foreach ($this->tasks as $task) {

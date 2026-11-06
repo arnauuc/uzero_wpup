@@ -94,7 +94,7 @@ final readonly class PackageVersions
      */
     public function expired(CarbonImmutable $now): int
     {
-        return PackageVersion::query()->where('last_seen_at', '<', $now->subDays($this->retentionDays))->count();
+        return $this->expiredQuery($now)->count();
     }
 
     /**
@@ -104,8 +104,16 @@ final readonly class PackageVersions
      */
     public function purge(CarbonImmutable $now): int
     {
-        $deleted = PackageVersion::query()->where('last_seen_at', '<', $now->subDays($this->retentionDays))->delete();
+        $deleted = $this->expiredQuery($now)->delete();
 
         return is_int($deleted) ? $deleted : 0;
+    }
+
+    /**
+     * @return Builder<PackageVersion>
+     */
+    private function expiredQuery(CarbonImmutable $now): Builder
+    {
+        return PackageVersion::query()->where('last_seen_at', '<', $now->subDays($this->retentionDays));
     }
 }

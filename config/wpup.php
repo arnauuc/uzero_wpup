@@ -519,6 +519,10 @@ return [
         // Those of each site's last run are always kept.
         'screenshots_days' => 30,
         'screenshots_flagged_days' => 180,
+        // Rows handled per query when emptying step output.
+        'chunk_size' => 500,
+        // Lock shared by `wpup cleanup` and `engine:cleanup` (seconds, longer than any cleanup).
+        'lock_seconds' => 3600,
     ],
 
     /*

@@ -33,6 +33,11 @@ final readonly class ScreenshotCleanup implements CleanupTask
 
     public function run(AuditActor $actor, CarbonImmutable $now, bool $dryRun): CleanupResult
     {
+        $problem = $this->settings->problem(['screenshots_days', 'screenshots_flagged_days']);
+        if ($problem !== null) {
+            return new CleanupResult(self::TASK, 0, 0, $dryRun, null, [$problem]);
+        }
+
         return new CleanupResult(self::TASK, 0, 0, $dryRun, "Encara no hi ha captures (F4): res a netejar ({$this->settings->screenshotsDays}/{$this->settings->screenshotsFlaggedDays} dies).");
     }
 }
