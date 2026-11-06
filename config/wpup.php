@@ -351,8 +351,11 @@ return [
         'chunk_bytes' => 1_048_576,
         // WP-CLI reads of the site's update data (transients, core check-update).
         'command_timeout_seconds' => 60,
-        // sprintf(): WordPress.org slug, version.
+        // sprintf(): WordPress.org slug, version; core: (locale,) version. The core
+        // package is never taken from the site.
         'wordpress_org' => [
+            'core_url' => 'https://downloads.wordpress.org/release/wordpress-%s.zip',
+            'localized_core_url' => 'https://downloads.wordpress.org/release/%s/wordpress-%s.zip',
             'plugin_url' => 'https://downloads.wordpress.org/plugin/%s.%s.zip',
             'theme_url' => 'https://downloads.wordpress.org/theme/%s.%s.zip',
         ],

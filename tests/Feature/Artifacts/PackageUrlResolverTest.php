@@ -3,10 +3,17 @@
 declare(strict_types=1);
 
 use App\Domain\Artifacts\ArtifactException;
+use App\Domain\Artifacts\ArtifactStore;
+use App\Domain\Artifacts\PackageArtifacts;
+use App\Domain\Artifacts\PackageSource;
+use App\Domain\Artifacts\PackageUrlGuard;
 use App\Domain\Artifacts\PackageUrlResolver;
+use App\Domain\Drivers\Exceptions\ConnectionFailed;
+use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Inventory\PendingUpdate;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\ComponentType;
+use App\Models\Run;
 use Tests\Support\FakeDriver;
 
 function pendingFor(string $type, string $slug, string $version, string $source, ?string $wporg = null): PendingUpdate
@@ -43,13 +50,50 @@ it('reads premium package URLs from the site transient and registers their token
         ->and(app(SecretRedactor::class)->redact("failed: {$url} 9b1c7e2a5d3f8e6c"))->not->toContain('9b1c7e2a5d3f8e6c');
 });
 
-it('takes the core package URL of the planned version from check-update', function (): void {
+it('builds the core package URL from config with the site locale, never from the site', function (?string $wplang, string $url): void {
     $driver = new FakeDriver;
-    $driver->coreUpdates = [['version' => '6.9.0', 'update_type' => 'minor', 'package_url' => 'https://downloads.wordpress.org/release/ca/wordpress-6.9.zip']];
+    if ($wplang !== null) {
+        $driver->options['WPLANG'] = $wplang;
+    }
+    $driver->coreUpdates = [['version' => '6.9.0', 'update_type' => 'minor', 'package_url' => 'https://evil.example.com/wordpress-6.9.zip']];
 
     $source = app(PackageUrlResolver::class)->resolve($driver, pendingFor('core', 'wordpress', '6.9.0', PendingUpdate::SOURCE_WORDPRESS_ORG));
 
-    expect($source->url->reveal())->toBe('https://downloads.wordpress.org/release/ca/wordpress-6.9.zip')->and($source->type)->toBe(ComponentType::Core);
+    expect($source->url->reveal())->toBe($url)->and($source->type)->toBe(ComponentType::Core);
+})->with([
+    'localized' => ['ca', 'https://downloads.wordpress.org/release/ca/wordpress-6.9.0.zip'],
+    'with region' => ['pt_BR', 'https://downloads.wordpress.org/release/pt_BR/wordpress-6.9.0.zip'],
+    'english' => [null, 'https://downloads.wordpress.org/release/wordpress-6.9.0.zip'],
+    'not a locale' => ['../../evil', 'https://downloads.wordpress.org/release/wordpress-6.9.0.zip'],
+]);
+
+it('lets a lost connection propagate and turns other site failures into noPackage', function (): void {
+    $driver = new FakeDriver;
+    $driver->wpFailure = new ConnectionFailed('connexió perduda');
+    $premium = pendingFor('plugin', 'premium-thing', '2.1.0', PendingUpdate::SOURCE_TRANSIENT);
+    expect(fn () => app(PackageUrlResolver::class)->resolve($driver, $premium))->toThrow(ConnectionFailed::class);
+
+    $driver->wpFailure = new RemoteCommandFailed('wp ha fallat');
+    expect(fn () => app(PackageUrlResolver::class)->resolve($driver, $premium))->toThrow(ArtifactException::class, 'premium-thing');
+});
+
+it('reuses the artifact the run already holds without asking the site', function (): void {
+    config(['wpup.artifacts.dir' => sys_get_temp_dir().'/wpup-artifacts-'.bin2hex(random_bytes(6))]);
+    $run = Run::factory()->create();
+    $store = app(ArtifactStore::class);
+    $temporary = $store->temporaryFile($run->id);
+    file_put_contents($temporary, 'zip');
+    $source = PackageSource::create(ComponentType::Plugin, 'premium-thing', '2.1.0', 'https://shop.example.com/p.zip', app(PackageUrlGuard::class));
+    $stored = $store->commit($run->id, $source, $temporary, hash('sha256', 'zip'), 3);
+    $driver = new FakeDriver;
+    $driver->wpFailure = new ConnectionFailed('el lloc no respon');
+
+    try {
+        expect(app(PackageArtifacts::class)->obtain($run->id, $driver, pendingFor('plugin', 'premium-thing', '2.1.0', PendingUpdate::SOURCE_TRANSIENT)))->toEqual($stored)
+            ->and($driver->wpCalls)->toBe([]);
+    } finally {
+        exec('rm -rf '.escapeshellarg(artifactsRoot()));
+    }
 });
 
 it('fails without quoting the site output when the package is gone, changed or unlicensed', function (array $entry, string $error): void {

@@ -229,6 +229,8 @@ class AppServiceProvider extends ServiceProvider
             array_map(strtolower(...), self::configStrings('wpup.artifacts.url_secrets.query_keys')),
             self::configInt('wpup.artifacts.url_secrets.min_value_length'),
             self::configInt('wpup.artifacts.url_secrets.min_segment_length'),
+            self::configString('wpup.artifacts.wordpress_org.core_url'),
+            self::configString('wpup.artifacts.wordpress_org.localized_core_url'),
         ));
         $this->app->bind(HostResolver::class, DnsHostResolver::class);
         $this->app->bind(ArtifactFetcher::class, static fn (Application $app): ArtifactFetcher => new ArtifactFetcher(

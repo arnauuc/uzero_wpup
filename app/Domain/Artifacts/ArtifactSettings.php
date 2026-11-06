@@ -38,6 +38,8 @@ final readonly class ArtifactSettings
         public array $secretQueryKeys,
         public int $minSecretValueLength,
         public int $minSecretSegmentLength,
+        public string $wordpressOrgCoreUrl,
+        public string $wordpressOrgLocalizedCoreUrl,
     ) {
         if ($directory === '' || min($connectTimeoutSeconds, $timeoutSeconds, $readTimeoutSeconds, $maxBytes, $maxUnpackedBytes, $chunkBytes, $commandTimeoutSeconds, $minSecretValueLength, $minSecretSegmentLength) <= 0 || $maxRedirects < 0) {
             throw new InvalidArgumentException('wpup.artifacts: the directory, limits and timeouts must be set and positive.');
