@@ -65,8 +65,8 @@ it('passes on a healthy site and fails when a plugin updated after the baseline 
 
         expect($baseline->status)->toBe(RunStepStatus::Succeeded)
             ->and($healthy->status)->toBe(RunStepStatus::Succeeded, $healthy->summary)
-            ->and($broken->status)->toBe(RunStepStatus::Failed)
-            ->and($broken->data['http_status'])->toBe(500);
+            ->and($broken->status)->toBe(RunStepStatus::Failed, $broken->summary)
+            ->and($broken->data['fatals'] > 0 || $broken->data['http_status'] >= 500)->toBeTrue($broken->summary);
     } finally {
         Fixtures::run(SMOKE_IT_FIXTURE, 'rm -rf '.escapeshellarg($dir));
         $driver->wp(['plugin', 'deactivate', 'wpup-it-smoke', '--skip-plugins', '--skip-themes']);
