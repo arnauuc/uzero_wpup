@@ -32,7 +32,17 @@ use App\Models\SiteSnapshot;
  * would block it), excluded, frozen, unlicensed,
  * PHP required by the update above the site's, WordPress required above the
  * core the site will have, WooCommerce required above the one the site will have,
- * major version (ADR-0005, before F7: needs staging).
+ * a "Requires Plugins" entry not installed and active, major version (ADR-0005,
+ * before F7: needs staging).
+ *
+ * Dependencies over the whole plan (UZEROWPUP-48): versioned requirements only
+ * point at the core and WooCommerce, which are decided first, so one pass in the
+ * fixed order is already the fixed point. A requirement that only a skipped core
+ * or WooCommerce update would meet is skipped naming that update and its reason.
+ * "Requires Plugins" has no versions: it is met by the installed, active plugin
+ * whatever happens to that plugin's own update (updates never remove plugins).
+ * Versions are compared with WpVersion; a requirement or a site version that
+ * cannot be read is never taken as met.
  */
 final readonly class UpdatePlanner
 {
@@ -52,6 +62,9 @@ final readonly class UpdatePlanner
 
         /** @var array<string, string> $targets target version of core and WooCommerce after this plan */
         $targets = [ComponentType::Core->value => $snapshot->core_version, ComponentType::Woocommerce->value => $this->installedWooCommerce($snapshot) ?? ''];
+        /** @var array<string, PlannedChange> $skippedTargets skipped core or WooCommerce update, by type */
+        $skippedTargets = [];
+        $active = $this->activePlugins($snapshot);
         $decided = [];
 
         foreach ($candidates as $candidate) {
@@ -61,11 +74,16 @@ final readonly class UpdatePlanner
                 self::listed($excluded, $change) => [SkipReason::Excluded, 'El component és al perfil del lloc com a exclòs.'],
                 self::listed($frozen, $change) => [SkipReason::Frozen, 'El component és al perfil del lloc com a congelat.'],
                 $candidate['licensed'] === false => [SkipReason::NoLicense, 'No hi ha cap paquet descarregable: falta la llicència.'],
-                default => $this->incompatibility($candidate, $change, $phpVersion, $targets) ?? $this->majorChange($change),
+                default => $this->incompatibility($candidate, $phpVersion, $targets, $skippedTargets)
+                    ?? $this->missingPlugin($candidate['requires_plugins'], $active)
+                    ?? $this->majorChange($change),
             };
 
             if ($decision !== null) {
                 $change = PlannedChange::skip($change, $decision[0], $decision[1]);
+                if (isset($targets[$change->type->value])) {
+                    $skippedTargets[$change->type->value] = $change;
+                }
             } elseif (isset($targets[$change->type->value])) {
                 $targets[$change->type->value] = $change->targetVersion;
             }
@@ -76,7 +94,7 @@ final readonly class UpdatePlanner
     }
 
     /**
-     * @return list<array{change: PlannedChange, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string}>
+     * @return list<array{change: PlannedChange, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: list<string>}>
      */
     private function candidates(SiteSnapshot $snapshot): array
     {
@@ -100,6 +118,7 @@ final readonly class UpdatePlanner
                 'requires_php' => self::version($update['requires_php'] ?? null),
                 'requires_wp' => self::version($update['requires_wp'] ?? null),
                 'requires_wc' => self::version($update['requires_wc'] ?? null),
+                'requires_plugins' => is_array($update['requires_plugins'] ?? null) ? self::strings($update['requires_plugins']) : [],
             ];
             if ($type === ComponentType::Core) {
                 $cores[] = $row;
@@ -134,8 +153,8 @@ final readonly class UpdatePlanner
         $best = null;
         foreach ($pool as $offer) {
             $better = $best === null || ($minor === []
-                ? version_compare($offer['change']->targetVersion, $best['change']->targetVersion, '<')
-                : version_compare($offer['change']->targetVersion, $best['change']->targetVersion, '>'));
+                ? WpVersion::compareStrings($offer['change']->targetVersion, $best['change']->targetVersion) < 0
+                : WpVersion::compareStrings($offer['change']->targetVersion, $best['change']->targetVersion) > 0);
             if ($better) {
                 $best = $offer;
             }
@@ -172,35 +191,88 @@ final readonly class UpdatePlanner
     }
 
     /**
-     * @param  array{licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string}  $candidate
+     * @param  array{requires_php: ?string, requires_wp: ?string, requires_wc: ?string}  $candidate
      * @param  array<string, string>  $targets
+     * @param  array<string, PlannedChange>  $skippedTargets
      * @return array{SkipReason, string}|null
      */
-    private function incompatibility(array $candidate, PlannedChange $change, string $phpVersion, array $targets): ?array
+    private function incompatibility(array $candidate, string $phpVersion, array $targets, array $skippedTargets): ?array
     {
         $php = $candidate['requires_php'];
-        if ($php !== null && version_compare($phpVersion, $php, '<')) {
-            return [SkipReason::PhpIncompatible, "Requereix PHP {$php} i el lloc té PHP {$phpVersion}."];
+        if ($php !== null) {
+            $met = WpVersion::satisfies($phpVersion, $php);
+            if ($met !== true) {
+                return [SkipReason::PhpIncompatible, $met === null
+                    ? self::unreadable('PHP', $php, $phpVersion)
+                    : "Requereix PHP {$php} i el lloc té PHP {$phpVersion}."];
+            }
         }
 
         $wp = $candidate['requires_wp'];
         $core = $targets[ComponentType::Core->value];
-        if ($wp !== null && version_compare($core, $wp, '<')) {
-            return [SkipReason::WpIncompatible, "Requereix WordPress {$wp} i el lloc tindria {$core}."];
+        if ($wp !== null) {
+            $met = WpVersion::satisfies($core, $wp);
+            if ($met !== true) {
+                return [SkipReason::WpIncompatible, $met === null
+                    ? self::unreadable('WordPress', $wp, $core)
+                    : "Requereix WordPress {$wp} i el lloc tindria {$core}.".self::because($skippedTargets[ComponentType::Core->value] ?? null, $wp)];
+            }
         }
 
         $wc = $candidate['requires_wc'];
         if ($wc !== null) {
             $installed = $targets[ComponentType::Woocommerce->value];
             if ($installed === '') {
-                return [SkipReason::Dependency, "Requereix WooCommerce {$wc} i no està instal·lat."];
+                return [SkipReason::Dependency, "Requereix WooCommerce {$wc} i no està instal·lat o no està actiu."];
             }
-            if (version_compare($installed, $wc, '<')) {
-                return [SkipReason::Dependency, "Requereix WooCommerce {$wc} i el lloc tindria {$installed}."];
+            $met = WpVersion::satisfies($installed, $wc);
+            if ($met !== true) {
+                return [SkipReason::Dependency, $met === null
+                    ? self::unreadable('WooCommerce', $wc, $installed)
+                    : "Requereix WooCommerce {$wc} i el lloc tindria {$installed}.".self::because($skippedTargets[ComponentType::Woocommerce->value] ?? null, $wc)];
             }
         }
 
         return null;
+    }
+
+    /**
+     * @param  list<string>  $required
+     * @param  array<string, bool>  $plugins  installed plugins by slug: active or not
+     * @return array{SkipReason, string}|null
+     */
+    private function missingPlugin(array $required, array $plugins): ?array
+    {
+        foreach ($required as $slug) {
+            if (($plugins[$slug] ?? null) !== true) {
+                return [SkipReason::Dependency, isset($plugins[$slug])
+                    ? "Requereix el plugin «{$slug}», que està instal·lat però no està actiu."
+                    : "Requereix el plugin «{$slug}», que no està instal·lat."];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Why the requirement is not met when a skipped update would have met it.
+     */
+    private static function because(?PlannedChange $skipped, string $need): string
+    {
+        if ($skipped === null || WpVersion::satisfies($skipped->targetVersion, $need) !== true) {
+            return '';
+        }
+        $name = $skipped->type === ComponentType::Core ? 'WordPress' : 'WooCommerce';
+        $why = $skipped->reason === null ? '' : ': '.$skipped->reason->label();
+
+        return " L'actualització de {$name} a {$skipped->targetVersion} s'omet{$why}.";
+    }
+
+    private static function unreadable(string $what, string $need, string $have): string
+    {
+        return WpVersion::isValid($need)
+            ? "La versió de {$what} del lloc («{$have}») no es pot llegir: no es pot comprovar el requisit {$need}."
+            : "El requisit de {$what} «{$need}» no és una versió llegible: no es pot comprovar.";
     }
 
     /**
@@ -233,6 +305,21 @@ final readonly class UpdatePlanner
         $index = array_search($type, self::ORDER, true);
 
         return $index === false ? count(self::ORDER) : $index;
+    }
+
+    /**
+     * @return array<string, bool> installed plugins (WooCommerce too) by slug: whether active
+     */
+    private function activePlugins(SiteSnapshot $snapshot): array
+    {
+        $plugins = [];
+        foreach ($snapshot->plugins as $plugin) {
+            if (is_array($plugin) && is_string($plugin['slug'] ?? null)) {
+                $plugins[$plugin['slug']] = ($plugin['active'] ?? false) === true;
+            }
+        }
+
+        return $plugins;
     }
 
     private function installedWooCommerce(SiteSnapshot $snapshot): ?string

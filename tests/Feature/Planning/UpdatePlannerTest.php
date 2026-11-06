@@ -28,15 +28,19 @@ function pending(string $type, string $slug, string $from, string $to, array $ex
  * @param  array<string, mixed>  $site
  * @param  array<string, mixed>  $profile
  * @param  list<array<string, mixed>>  $prerequisites
+ * @param  array<string, bool>  $plugins  other installed plugins: slug => active
  */
-function planFor(array $updates, array $site = [], array $profile = [], string $php = '8.2.20', string $core = '6.8.1', string $woocommerce = '10.1.0', PhpVersionSource $source = PhpVersionSource::HttpProbe, bool $wcActive = true, array $prerequisites = []): UpdatePlan
+function planFor(array $updates, array $site = [], array $profile = [], string $php = '8.2.20', string $core = '6.8.1', string $woocommerce = '10.1.0', PhpVersionSource $source = PhpVersionSource::HttpProbe, bool $wcActive = true, array $prerequisites = [], array $plugins = []): UpdatePlan
 {
     $siteModel = Site::factory()->create($site);
     $profileModel = $profile === [] ? null : SiteProfile::factory()->create(['site_id' => $siteModel->id] + $profile);
     $snapshot = SiteSnapshot::factory()->create([
         'site_id' => $siteModel->id,
         'core_version' => $core,
-        'plugins' => [['slug' => 'woocommerce', 'version' => $woocommerce, 'active' => $wcActive, 'title' => null, 'type' => 'woocommerce']],
+        'plugins' => [
+            ['slug' => 'woocommerce', 'version' => $woocommerce, 'active' => $wcActive, 'title' => null, 'type' => 'woocommerce'],
+            ...array_map(static fn (string $slug, bool $active): array => ['slug' => $slug, 'version' => '1.0', 'active' => $active, 'title' => null, 'type' => 'plugin'], array_keys($plugins), $plugins),
+        ],
         'environment' => ['prerequisites' => $prerequisites],
         'pending_updates' => $updates,
     ]);
@@ -211,6 +215,12 @@ it('classifies major versions per component type', function (string $type, strin
     ['plugin', '2.9.1', '3.0.0', true],
     ['plugin', '2.1', '2.9', false],
     ['theme', '1.0', 'dev-main', true],
+    ['core', '6.9', '6.9.1', false],
+    ['core', '7', '7.0.1', false],
+    ['core', '6.9.4', '6.9-RC1', false],
+    ['woocommerce', '10.9.0', '10.10.0', false],
+    ['plugin', 'v2.1', '2.2', false],
+    ['plugin', '2.1', 'v3.0', true],
 ]);
 
 it('matches WooCommerce as a plugin, as woocommerce and by slug', function (string $entry): void {
@@ -286,3 +296,99 @@ it('refuses unknown values when reading a stored plan', function (array $mutatio
     'action' => [['changes' => [['action' => 'nope']]]],
     'reason' => [['changes' => [['reason' => 'nope']]]],
 ]);
+
+it('compares requirements as WordPress versions, not as strings', function (): void {
+    // version_compare() says 6.8 < 6.8.0 and a string comparison says 6.10 < 6.9.
+    $plan = planFor([
+        pending('plugin', 'same', '1.0', '1.1', ['requires_wp' => '6.8.0']),
+        pending('plugin', 'php', '1.0', '1.1', ['requires_php' => '8.2.20.0']),
+    ], core: '6.8');
+    expect(changeOf($plan, 'same')->action)->toBe(PlanAction::Update)
+        ->and(changeOf($plan, 'php')->action)->toBe(PlanAction::Update);
+
+    $plan = planFor([pending('plugin', 'p', '1.0', '1.1', ['requires_wp' => '6.9'])], core: '6.10.1');
+    expect(changeOf($plan, 'p')->action)->toBe(PlanAction::Update);
+
+    // A release candidate does not meet the release.
+    $plan = planFor([pending('plugin', 'p', '1.0', '1.1', ['requires_wp' => '6.9'])], core: '6.9-RC2');
+    expect(changeOf($plan, 'p')->reason)->toBe(SkipReason::WpIncompatible);
+});
+
+it('never takes an unreadable requirement or site version as met', function (string $key, string $value, SkipReason $reason): void {
+    $change = changeOf(planFor([pending('plugin', 'p', '1.0', '1.1', [$key => $value])]), 'p');
+
+    expect($change->reason)->toBe($reason)
+        ->and($change->detail)->toContain("«{$value}»")->toContain('no és una versió llegible');
+})->with([
+    'php' => ['requires_php', '>= 7.4', SkipReason::PhpIncompatible],
+    'wordpress' => ['requires_wp', '6.x', SkipReason::WpIncompatible],
+    'woocommerce' => ['requires_wc', 'latest', SkipReason::Dependency],
+]);
+
+it('skips a requirement when the site version itself cannot be read', function (): void {
+    $change = changeOf(planFor([pending('plugin', 'p', '1.0', '1.1', ['requires_php' => '7.4'])], php: 'unknown'), 'p');
+
+    expect($change->reason)->toBe(SkipReason::PhpIncompatible)
+        ->and($change->detail)->toContain('«unknown»')->toContain('no es pot llegir');
+});
+
+it('names the skipped WooCommerce update an extension depended on', function (): void {
+    // WooCommerce 11.0 is a major: skipped before F7, so the extension that needs it is skipped too.
+    $plan = planFor([
+        pending('woocommerce', 'woocommerce', '10.9.0', '11.0.0'),
+        pending('plugin', 'ext', '1.0', '1.1', ['requires_wc' => '11.0']),
+        pending('plugin', 'older', '1.0', '1.1', ['requires_wc' => '10.5']),
+    ], woocommerce: '10.9.0');
+
+    expect(changeOf($plan, 'woocommerce')->reason)->toBe(SkipReason::MajorRequiresStaging)
+        ->and(changeOf($plan, 'ext')->reason)->toBe(SkipReason::Dependency)
+        ->and(changeOf($plan, 'ext')->detail)->toBe("Requereix WooCommerce 11.0 i el lloc tindria 10.9.0. L'actualització de WooCommerce a 11.0.0 s'omet: major pendent: cal staging (F7).")
+        ->and(changeOf($plan, 'older')->action)->toBe(PlanAction::Update);
+});
+
+it('names the skipped core update a plugin depended on, whatever the reason', function (): void {
+    $plan = planFor([pending('core', 'wordpress', '6.8.1', '6.8.3', ['requires_php' => '8.3']), pending('plugin', 'p', '1.0', '1.1', ['requires_wp' => '6.8.2'])]);
+
+    expect(changeOf($plan, 'wordpress')->reason)->toBe(SkipReason::PhpIncompatible)
+        ->and(changeOf($plan, 'p')->detail)->toContain("L'actualització de WordPress a 6.8.3 s'omet: PHP incompatible.");
+});
+
+it('does not blame a skipped update that would not have met the requirement either', function (): void {
+    $plan = planFor([pending('woocommerce', 'woocommerce', '10.1.0', '10.2.0', ['requires_php' => '9.0']), pending('plugin', 'ext', '1.0', '1.1', ['requires_wc' => '10.5'])]);
+
+    expect(changeOf($plan, 'ext')->detail)->toBe('Requereix WooCommerce 10.5 i el lloc tindria 10.1.0.');
+});
+
+it('skips an update whose required plugins are not installed and active', function (): void {
+    $plan = planFor([
+        pending('plugin', 'needs-active', '1.0', '1.1', ['requires_plugins' => ['helper']]),
+        pending('plugin', 'needs-inactive', '1.0', '1.1', ['requires_plugins' => ['sleeper']]),
+        pending('plugin', 'needs-missing', '1.0', '1.1', ['requires_plugins' => ['helper', 'ghost']]),
+        pending('plugin', 'needs-wc', '1.0', '1.1', ['requires_plugins' => ['woocommerce']]),
+        pending('plugin', 'unknown', '1.0', '1.1', ['requires_plugins' => null]),
+    ], plugins: ['helper' => true, 'sleeper' => false]);
+
+    expect(changeOf($plan, 'needs-active')->action)->toBe(PlanAction::Update)
+        ->and(changeOf($plan, 'needs-wc')->action)->toBe(PlanAction::Update)
+        ->and(changeOf($plan, 'unknown')->action)->toBe(PlanAction::Update)
+        ->and(changeOf($plan, 'needs-inactive')->reason)->toBe(SkipReason::Dependency)
+        ->and(changeOf($plan, 'needs-inactive')->detail)->toBe('Requereix el plugin «sleeper», que està instal·lat però no està actiu.')
+        ->and(changeOf($plan, 'needs-missing')->detail)->toBe('Requereix el plugin «ghost», que no està instal·lat.');
+});
+
+it('keeps a required plugin as met even when its own update is skipped', function (): void {
+    // Requires Plugins has no versions, and a skipped update leaves the plugin installed.
+    $plan = planFor([
+        pending('plugin', 'helper', '1.0', '2.0'),
+        pending('plugin', 'addon', '1.0', '1.1', ['requires_plugins' => ['helper']]),
+    ], plugins: ['helper' => true, 'addon' => true]);
+
+    expect(changeOf($plan, 'helper')->reason)->toBe(SkipReason::MajorRequiresStaging)
+        ->and(changeOf($plan, 'addon')->action)->toBe(PlanAction::Update);
+});
+
+it('needs an active WooCommerce for a Requires Plugins on it', function (): void {
+    $plan = planFor([pending('plugin', 'ext', '1.0', '1.1', ['requires_plugins' => ['woocommerce']])], wcActive: false);
+
+    expect(changeOf($plan, 'ext')->detail)->toBe('Requereix el plugin «woocommerce», que està instal·lat però no està actiu.');
+});

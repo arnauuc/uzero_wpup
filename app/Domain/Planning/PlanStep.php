@@ -9,12 +9,17 @@ use App\Domain\Inventory\InventoryStep;
 use App\Domain\Runs\ReadOnlyStep;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
+use App\Enums\ChangeResult;
 use App\Enums\PhpVersionSource;
+use App\Models\Run;
 use App\Models\SiteSnapshot;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Second step of a plan run: plans from the snapshot the inventory step just
- * took. It touches neither the site nor the tool's state.
+ * took. It touches neither the site nor the tool's state; it only records, in
+ * the run's own run_changes, each skipped component with its reason
+ * (UZEROWPUP-48).
  */
 final readonly class PlanStep implements ReadOnlyStep
 {
@@ -60,7 +65,34 @@ final readonly class PlanStep implements ReadOnlyStep
         }
 
         $plan = $this->planner->plan($snapshot, $site->refresh(), $site->profile, $php, $source);
+        $this->recordSkips($context->run, $plan);
 
         return StepOutcome::succeeded($plan->summary(), '', $plan->toArray());
+    }
+
+    /**
+     * One run_changes row per skipped component. version_after is the target that
+     * was not applied. A retried step replaces its own rows.
+     */
+    private function recordSkips(Run $run, UpdatePlan $plan): void
+    {
+        DB::transaction(static function () use ($run, $plan): void {
+            $run->changes()->where('result', ChangeResult::Skipped->value)->delete();
+            foreach ($plan->changes as $change) {
+                if ($change->action !== PlanAction::Skip) {
+                    continue;
+                }
+                $run->changes()->create([
+                    'component_type' => $change->type,
+                    'slug' => $change->slug,
+                    'version_before' => $change->currentVersion,
+                    'version_after' => $change->targetVersion,
+                    'result' => ChangeResult::Skipped,
+                    'reason' => $change->reason,
+                    'reason_detail' => $change->detail,
+                    'is_major' => VersionChange::isMajor($change->type, $change->currentVersion, $change->targetVersion),
+                ]);
+            }
+        });
     }
 }

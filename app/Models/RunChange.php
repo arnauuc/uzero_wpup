@@ -18,7 +18,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property ComponentType $component_type
  * @property string $slug
  * @property string|null $version_before
- * @property string|null $version_after
+ * @property string|null $version_after for a skipped change, the target that was not applied
  * @property ChangeResult $result
  * @property SkipReason|null $reason
  * @property string|null $reason_detail

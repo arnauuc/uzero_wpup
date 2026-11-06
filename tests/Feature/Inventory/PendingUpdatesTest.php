@@ -205,3 +205,61 @@ it('lets a lost connection fail the read but turns a failed command into a warni
     expect($result->warnings)->not->toBe([])
         ->and(implode(' ', $result->warnings))->not->toContain('hunter2');
 });
+
+it('reads Requires Plugins from the transient, then WordPress.org, then the installed header', function (): void {
+    Http::fake([
+        'api.wordpress.org/plugins/*' => Http::response(['requires' => '6.7', 'requires_php' => '7.4', 'requires_plugins' => ['akismet', 'Bad Slug!', 'woocommerce']]),
+        'api.wordpress.org/themes/*' => Http::response(['requires' => '6.5', 'requires_php' => '7.4']),
+    ]);
+    $driver = pendingDriver();
+    $driver->transients['update_plugins'] = ['last_checked' => time(), 'response' => [
+        'woocommerce/woocommerce.php' => ['id' => 'w.org/plugins/woocommerce', 'slug' => 'woocommerce', 'new_version' => '10.2.0', 'package' => 'https://downloads.wordpress.org/plugin/woocommerce.10.2.0.zip'],
+        'premium-thing/premium-thing.php' => ['slug' => 'premium-thing', 'new_version' => '3.0.0', 'package' => 'https://shop.test/x.zip', 'requires_php' => '7.4', 'requires' => '6.0'],
+        'nolicence/nolicence.php' => ['slug' => 'nolicence', 'new_version' => '2.0.0', 'package' => ''],
+        'hello.php' => ['id' => 'w.org/plugins/hello-dolly', 'slug' => 'hello-dolly', 'new_version' => '1.7.2', 'package' => 'https://downloads.wordpress.org/plugin/hello-dolly.1.7.2.zip', 'requires' => '6.0', 'requires_php' => '7.0', 'requires_plugins' => ['woocommerce', 'hello']],
+    ]];
+    $driver->requiresPluginsHeaders = ['premium-thing/premium-thing.php' => ' WooCommerce , woocommerce-subscriptions,,'];
+
+    $result = pendingUpdates()->read($driver, $driver->installedComponents(), time());
+    $by = [];
+    foreach ($result->updates as $update) {
+        $by[$update->slug] = $update->toArray();
+    }
+
+    expect($result->warnings)->toBe([])
+        // Transient; the plugin itself is dropped.
+        ->and($by['hello']['requires_plugins'])->toBe(['woocommerce'])
+        // WordPress.org; invalid slugs and the plugin itself dropped, as WordPress does.
+        ->and($by['woocommerce']['requires_plugins'])->toBe(['akismet'])
+        // Premium: the header of the installed version.
+        ->and($by['premium-thing']['requires_plugins'])->toBe(['woocommerce', 'woocommerce-subscriptions'])
+        ->and($by['nolicence']['requires_plugins'])->toBe([])
+        ->and($by['storefront']['requires_plugins'])->toBe([])
+        ->and($by['wordpress']['requires_plugins'])->toBe([])
+        ->and($driver->wpCalls)->toContain(['eval', PendingUpdates::REQUIRES_PLUGINS_SNIPPET]);
+});
+
+it('does not read the installed headers when every update already has its Requires Plugins', function (): void {
+    Http::fake();
+    $driver = new FakeDriver;
+    $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'addon', '1.0'));
+    $driver->transients['update_plugins'] = ['response' => ['addon/addon.php' => ['slug' => 'addon', 'new_version' => '1.1', 'package' => 'https://shop.test/a.zip', 'requires_plugins' => []]]];
+
+    $updates = pendingUpdates()->read($driver, $driver->installedComponents(), time())->updates;
+
+    expect($updates[0]->requiresPlugins)->toBe([])
+        ->and($driver->wpCalls)->not->toContain(['eval', PendingUpdates::REQUIRES_PLUGINS_SNIPPET]);
+});
+
+it('leaves Requires Plugins unknown, with a warning, when the installed headers cannot be read', function (): void {
+    Http::fake();
+    $driver = new FakeDriver;
+    $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'addon', '1.0'));
+    $driver->transients['update_plugins'] = ['response' => ['addon/addon.php' => ['slug' => 'addon', 'new_version' => '1.1', 'package' => 'https://shop.test/a.zip']]];
+    $driver->failingCommands = ['eval'];
+
+    $result = pendingUpdates()->read($driver, $driver->installedComponents(), time());
+
+    expect($result->updates[0]->requiresPlugins)->toBeNull()
+        ->and(implode(' ', $result->warnings))->toContain('requereixen');
+});

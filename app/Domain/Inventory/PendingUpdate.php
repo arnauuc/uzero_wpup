@@ -16,6 +16,9 @@ final readonly class PendingUpdate
 
     public const string SOURCE_TRANSIENT = 'transient';
 
+    /**
+     * @param  list<string>|null  $requiresPlugins
+     */
     public function __construct(
         public string $type,
         /** The installed name, as `wp plugin list` / `wp theme list` report it. */
@@ -31,10 +34,12 @@ final readonly class PendingUpdate
         public string $source,
         /** False for a premium package without download URL («sense llicència»). */
         public bool $licensed,
+        /** Slugs in the "Requires Plugins" of the new version (WP 6.5+); null if unknown. */
+        public ?array $requiresPlugins = null,
     ) {}
 
     /**
-     * @return array{type: string, slug: string, wporg_slug: ?string, current_version: string, new_version: string, package_host: ?string, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, source: string, licensed: bool}
+     * @return array{type: string, slug: string, wporg_slug: ?string, current_version: string, new_version: string, package_host: ?string, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, source: string, licensed: bool, requires_plugins: list<string>|null}
      */
     public function toArray(): array
     {
@@ -50,6 +55,7 @@ final readonly class PendingUpdate
             'requires_wc' => $this->requiresWc,
             'source' => $this->source,
             'licensed' => $this->licensed,
+            'requires_plugins' => $this->requiresPlugins,
         ];
     }
 }
