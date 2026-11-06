@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Contracts;
 
+use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Data\UpdatePackage;
 use App\Domain\Drivers\Exceptions\DriverException;
+use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\Exceptions\WorkFileNotFound;
 use App\Domain\Drivers\SiteDriver;
 use App\Enums\CheckResult;
@@ -186,9 +188,7 @@ final class SiteDriverContract
 
                 try {
                     expect($driver->archiveExcludes($stored))->toContain('wp-content/uploads');
-                    $remote = $driver->upload($zip, SiteDriverContract::remoteName('wpup-contract-plugin.zip'));
-                    $driver->applyUpdate(new UpdatePackage(ComponentType::Plugin, 'wpup-contract-plugin', '1.2.0', $remote));
-                    $driver->remove($remote->path);
+                    $driver->applyUpdate(SiteDriverContract::package($zip, '1.2.0'));
                     expect(fn () => $driver->restoreFiles(new RemoteFile($stored->path, $stored->sizeBytes, str_repeat('0', 64))))->toThrow(DriverException::class)
                         ->and($driver->installedComponents()->find(ComponentType::Plugin, 'wpup-contract-plugin'))->not->toBeNull();
 
@@ -202,27 +202,59 @@ final class SiteDriverContract
                 }
             });
 
-            it('installs an uploaded package idempotently and restores the files', function () use ($factory): void {
+            it('installs a package of the tool server idempotently, keeping its activation and no upload', function () use ($factory): void {
                 $driver = $factory();
                 $archive = $driver->archiveFiles(SiteDriverContract::remoteName('files.tar.gz'), ['wp-content/uploads']);
-                $zip = SiteDriverContract::contractPluginZip('1.1.0');
+                $zips = [SiteDriverContract::contractPluginZip('1.1.0'), SiteDriverContract::contractPluginZip('1.2.0'), SiteDriverContract::contractPluginZip('1.3.0')];
+                $installed = static fn (): ?ComponentVersion => $driver->installedComponents()->find(ComponentType::Plugin, 'wpup-contract-plugin');
 
                 try {
-                    $remote = $driver->upload($zip, SiteDriverContract::remoteName('wpup-contract-plugin.zip'));
-                    $package = new UpdatePackage(ComponentType::Plugin, 'wpup-contract-plugin', '1.1.0', $remote);
+                    $first = $driver->applyUpdate(SiteDriverContract::package($zips[0], '1.1.0'));
+                    expect($first->result->successful())->toBeTrue()
+                        ->and($first->alreadyInstalled)->toBeFalse()
+                        ->and($first->installed->version)->toBe('1.1.0')
+                        ->and($installed()?->version)->toBe('1.1.0')
+                        ->and($installed()?->active)->toBeFalse()
+                        ->and($driver->wp(['plugin', 'activate', 'wpup-contract-plugin'])->successful())->toBeTrue();
 
-                    expect($driver->applyUpdate($package)->successful())->toBeTrue()
-                        ->and($driver->applyUpdate($package)->successful())->toBeTrue()
-                        ->and($driver->installedComponents()->find(ComponentType::Plugin, 'wpup-contract-plugin')?->version)->toBe('1.1.0');
+                    $update = SiteDriverContract::package($zips[1], '1.2.0');
+                    expect($driver->applyUpdate($update)->installed->active)->toBeTrue()
+                        ->and($driver->applyUpdate($update)->alreadyInstalled)->toBeTrue()
+                        ->and($installed()?->version)->toBe('1.2.0')
+                        ->and($installed()?->active)->toBeTrue()
+                        ->and($driver->installedState(ComponentType::Plugin, 'wpup-contract-plugin'))->toEqual($installed());
 
+                    // Other bytes than the artifact's: nothing is uploaded nor changed.
+                    $tampered = new UpdatePackage(ComponentType::Plugin, 'wpup-contract-plugin', '1.3.0', $zips[2], str_repeat('0', 64), (int) filesize($zips[2]));
+                    expect(fn () => $driver->applyUpdate($tampered))->toThrow(IntegrityCheckFailed::class)
+                        ->and($installed()?->version)->toBe('1.2.0')
+                        ->and(fn () => $driver->applyUpdate(new UpdatePackage(ComponentType::Translation, 'ca', '1.0', $zips[2], (string) hash_file('sha256', $zips[2]), (int) filesize($zips[2]))))
+                        ->toThrow(DriverException::class)
+                        ->and(SiteDriverContract::packageTemporaries($driver))->toBe([]);
+
+                    // A package that holds another version than the target fails, and leaves no upload either.
+                    expect(fn () => $driver->applyUpdate(SiteDriverContract::package($zips[2], '1.4.0')))->toThrow(DriverException::class)
+                        ->and(SiteDriverContract::packageTemporaries($driver))->toBe([]);
+
+                    $driver->wp(['plugin', 'deactivate', 'wpup-contract-plugin']);
                     $driver->restoreFiles($archive);
 
-                    expect($driver->installedComponents()->find(ComponentType::Plugin, 'wpup-contract-plugin'))->toBeNull();
-                    $driver->remove($remote->path);
+                    expect($installed())->toBeNull();
                 } finally {
-                    @unlink($zip);
+                    array_map(unlink(...), $zips);
                     $driver->remove($archive->path);
                 }
+            });
+
+            it('reads one component as the inventory reports it', function () use ($factory): void {
+                $driver = $factory();
+                $all = $driver->installedComponents();
+                $plugin = array_values(array_filter($all->components, static fn (ComponentVersion $c): bool => $c->type === ComponentType::Plugin))[0];
+
+                expect($driver->installedState(ComponentType::Core, 'wordpress')?->version)->toBe($all->coreVersion)
+                    ->and($driver->installedState(ComponentType::Plugin, $plugin->slug))->toEqual($plugin)
+                    ->and($driver->installedState(ComponentType::Plugin, 'wpup-contract-not-installed'))->toBeNull()
+                    ->and(fn () => $driver->installedState(ComponentType::Translation, 'ca'))->toThrow(DriverException::class);
             });
 
             it('toggles maintenance mode', function () use ($factory): void {
@@ -398,6 +430,27 @@ final class SiteDriverContract
             array_map(static fn ($f): string => $f->path, $driver->listWorkFiles('')),
             static fn (string $path): bool => preg_match(SiteDriver::RESTORE_TEMP_PATTERN, basename($path)) === 1 || str_contains($path, '.restore.'),
         ));
+    }
+
+    /**
+     * Packages applyUpdate() uploaded and left in the work directory.
+     *
+     * @return list<string>
+     */
+    public static function packageTemporaries(SiteDriver $driver): array
+    {
+        return array_values(array_filter(
+            array_map(static fn ($f): string => $f->path, $driver->listWorkFiles('')),
+            static fn (string $path): bool => preg_match(SiteDriver::PACKAGE_TEMP_PATTERN, basename($path)) === 1,
+        ));
+    }
+
+    /**
+     * The contract plugin's package as the tool server holds it.
+     */
+    public static function package(string $zip, string $version): UpdatePackage
+    {
+        return new UpdatePackage(ComponentType::Plugin, 'wpup-contract-plugin', $version, $zip, (string) hash_file('sha256', $zip), (int) filesize($zip));
     }
 
     public static function remoteName(string $suffix): string

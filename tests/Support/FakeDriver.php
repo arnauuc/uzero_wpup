@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Support;
 
+use App\Domain\Backups\OrderWatermark;
+use App\Domain\Backups\ShopWritesReader;
+use App\Domain\Drivers\Data\AppliedUpdate;
 use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
@@ -169,8 +172,29 @@ class FakeDriver implements SiteDriver
     /** @var list<string> names of the driver methods that change the site, in call order (UZEROWPUP-36) */
     public array $writeCalls = [];
 
+    /** @var list<string> work-directory names of every package applyUpdate() uploaded */
+    public array $uploadedPackages = [];
+
+    /** Thrown by applyUpdate() after the upload, as a failed installer would. */
+    public ?\Throwable $installFailure = null;
+
+    /** The version applyUpdate() really installs; null: the target (a package with another version inside). */
+    public ?string $installsVersion = null;
+
+    /** @var list<string> every installedState() read, "type:slug" */
+    public array $stateReads = [];
+
     /** @var list<list<string>> every WP-CLI call, for assertions */
     public array $wpCalls = [];
+
+    /** @var list<array{id: int, type: string, status: string, created: string, modified: string}> orders (HPOS wc_orders), in the dump */
+    public array $orders = [];
+
+    /** @var list<array{id: int, registered: string, roles: list<string>}> users, in the dump */
+    public array $users = [];
+
+    /** Raw stdout of ShopWritesReader::SNIPPET instead of the modelled answer. */
+    public ?string $shopWritesOutput = null;
 
     public function __construct(
         public string $coreVersion = '6.8.3',
@@ -260,6 +284,7 @@ class FakeDriver implements SiteDriver
 
         return match (true) {
             $args === ['eval', SiteState::SNIPPET] => $this->ok($this->snippetOutput ?? $this->stateSnippet()),
+            count($args) === 4 && $args[0] === 'eval' && str_ends_with($args[1], ShopWritesReader::SNIPPET) && array_slice($args, 2) === ['--skip-plugins', '--skip-themes'] => $this->ok($this->shopWritesOutput ?? $this->shopWrites($args[1])),
             $args === ['eval', PendingUpdates::REQUIRES_PLUGINS_SNIPPET] => $this->ok("\n".json_encode((object) $this->requiresPluginsHeaders)."\n"),
             $args === ['db', 'size', '--size_format=b', '--all-tables-with-prefix', '--format=json'] => $this->ok((string) json_encode(array_map(
                 static fn (string $name, int $bytes): array => ['Name' => $name, 'Size' => "{$bytes} B"],
@@ -291,8 +316,43 @@ class FakeDriver implements SiteDriver
                 : new CommandResult(1, '', "Error: Could not get '{$args[2]}' option.\n", 1),
             count($args) === 4 && $args[0] === 'option' && $args[1] === 'update' => $this->updateOption($args[2], $args[3]),
             count($args) === 2 && $args[0] === 'eval' && preg_match('/^error_log\("(.*)"\);$/', $args[1], $m) === 1 => $this->logLine($m[1]),
+            count($args) === 3 && $args[0] === 'plugin' && in_array($args[1], ['activate', 'deactivate'], true) => $this->togglePlugin($args[2], $args[1] === 'activate'),
             default => new CommandResult(1, '', 'Error: FakeDriver does not support: '.implode(' ', $args)."\n", 1),
         };
+    }
+
+    /**
+     * The "Version:" header inside a package zip, as the real installer would
+     * install it; null when it is not a readable zip with one.
+     */
+    private static function zipVersion(string $path): ?string
+    {
+        $zip = new \ZipArchive;
+        if ($zip->open($path, \ZipArchive::RDONLY) !== true) {
+            return null;
+        }
+        try {
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                if (preg_match('/^\s*\*?\s*Version:\s*(\S+)/m', (string) $zip->getFromIndex($i), $m) === 1) {
+                    return $m[1];
+                }
+            }
+        } finally {
+            $zip->close();
+        }
+
+        return null;
+    }
+
+    private function togglePlugin(string $slug, bool $active): CommandResult
+    {
+        $plugin = $this->components[ComponentType::Plugin->value.':'.$slug] ?? null;
+        if ($plugin === null) {
+            return new CommandResult(1, '', "Error: The '{$slug}' plugin could not be found.\n", 1);
+        }
+        $this->addComponent(new ComponentVersion($plugin->type, $plugin->slug, $plugin->version, $active, $plugin->title));
+
+        return $this->ok("Success: done.\n");
     }
 
     /**
@@ -315,6 +375,8 @@ class FakeDriver implements SiteDriver
         return $this->store($remotePath, (string) json_encode([
             'options' => $this->options,
             'tables' => array_values(array_diff(array_keys($this->dbTables), $this->dumpOmits)),
+            'orders' => $this->orders,
+            'users' => $this->users,
         ]));
     }
 
@@ -370,22 +432,61 @@ class FakeDriver implements SiteDriver
         return $this->store($remotePath, (string) file_get_contents($localPath));
     }
 
-    public function applyUpdate(UpdatePackage $package): CommandResult
+    public function installedState(ComponentType $type, string $slug): ?ComponentVersion
     {
+        $this->stateReads[] = "{$type->value}:{$slug}";
+        if ($this->installedFailure !== null) {
+            throw $this->installedFailure;
+        }
+
+        return match ($type) {
+            ComponentType::Core => new ComponentVersion(ComponentType::Core, 'wordpress', $this->coreVersion),
+            ComponentType::Woocommerce, ComponentType::Plugin, ComponentType::Theme => $this->components["{$type->value}:{$slug}"] ?? null,
+            default => throw new DriverException("El driver no llegeix components de tipus «{$type->value}» un per un."),
+        };
+    }
+
+    public function applyUpdate(UpdatePackage $package): AppliedUpdate
+    {
+        if (! in_array($package->type, [ComponentType::Core, ComponentType::Woocommerce, ComponentType::Plugin, ComponentType::Theme], true)) {
+            throw new DriverException("El driver no instal·la paquets de tipus «{$package->type->value}».");
+        }
+        $key = $package->type->value.':'.$package->slug;
+        $before = $this->installedState($package->type, $package->slug);
+        if ($before?->version === $package->targetVersion) {
+            return new AppliedUpdate($this->ok("{$package->slug} ja és a la versió {$package->targetVersion}.\n"), $before, true);
+        }
+
+        // As the bytes that reach the site are checked there.
+
+        $content = is_file($package->localPath) ? (string) file_get_contents($package->localPath) : '';
+        if (! hash_equals($package->sha256, hash('sha256', $content)) || strlen($content) !== $package->sizeBytes) {
+            throw IntegrityCheckFailed::checksumMismatch(basename($package->localPath));
+        }
+
         $this->writeCalls[] = 'applyUpdate';
-        $content = $this->files[$package->file->path] ?? throw new RemoteCommandFailed('El paquet no és al lloc.');
-
-        if (hash('sha256', $content) !== $package->file->sha256) {
-            throw IntegrityCheckFailed::checksumMismatch($package->file->path);
+        $name = 'package-'.bin2hex(random_bytes(8)).'.zip';
+        $this->uploadedPackages[] = $name;
+        $this->files[$name] = $content;
+        try {
+            if ($this->installFailure !== null) {
+                throw $this->installFailure;
+            }
+            $installed = $this->installsVersion ?? self::zipVersion($package->localPath) ?? $package->targetVersion;
+            if ($package->type === ComponentType::Core) {
+                $this->coreVersion = $installed;
+            } else {
+                // Activation is kept, as the real installers do.
+                $this->addComponent(new ComponentVersion($package->type, $package->slug, $installed, $this->components[$key]->active ?? false, $this->components[$key]->title ?? null));
+            }
+        } finally {
+            unset($this->files[$name]);
+        }
+        if ($installed !== $package->targetVersion) {
+            throw new RemoteCommandFailed("No s'ha pogut instal·lar {$package->slug} {$package->targetVersion} (ara: «{$installed}»).");
         }
 
-        if ($package->type === ComponentType::Core) {
-            $this->coreVersion = $package->targetVersion;
-        } else {
-            $this->addComponent(new ComponentVersion($package->type, $package->slug, $package->targetVersion));
-        }
-
-        return $this->ok("Success: {$package->slug} {$package->targetVersion}\n");
+        return new AppliedUpdate($this->ok("Success: {$package->slug} {$package->targetVersion}\n"), $this->installedState($package->type, $package->slug) ?? throw new RemoteCommandFailed('El component no és al lloc.'), false);
     }
 
     public function setMaintenanceMode(bool $enabled): void
@@ -408,6 +509,9 @@ class FakeDriver implements SiteDriver
         }
 
         $this->options = $restored;
+        /** @var array{orders?: list<array{id: int, type: string, status: string, created: string, modified: string}>, users?: list<array{id: int, registered: string, roles: list<string>}>} $data */
+        $this->orders = $data['orders'] ?? [];
+        $this->users = $data['users'] ?? [];
     }
 
     public function archiveExcludes(RemoteFile $archive): array
@@ -596,6 +700,50 @@ class FakeDriver implements SiteDriver
             ],
             'woocommerce' => $woocommerce,
         ]);
+    }
+
+    /**
+     * What ShopWritesReader::SNIPPET prints: only wc_orders and users exist,
+     * and a row is written after the watermark by a higher ID or a later date.
+     */
+    private function shopWrites(string $code): string
+    {
+        /** @var array{mode: string, limit?: int, since?: array<string, array{max_id: int, max: array<string, string|null>}>} $in */
+        $in = preg_match("/^\\\$in = json_decode\\(base64_decode\\('([A-Za-z0-9+\\/=]*)'\\), true\\);\n/", $code, $m) === 1
+            ? json_decode((string) base64_decode($m[1]), true) : ['mode' => 'watermark'];
+        $now = $this->siteTime ?? time();
+        $max = static function (array $rows, string $key): mixed {
+            $values = array_column($rows, $key);
+
+            return $values === [] ? null : max($values);
+        };
+        // Any change of a user row, also in place (the fake keeps the roles there).
+        $fingerprint = count($this->users).':'.crc32((string) json_encode($this->users));
+        $tables = array_fill_keys(OrderWatermark::TABLES, ['present' => false]);
+        if (($in['since'] ?? null) === null) {
+            $tables['wc_orders'] = ['present' => true, 'max_id' => $max($this->orders, 'id'), 'max' => ['date_created_gmt' => $max($this->orders, 'created'), 'date_updated_gmt' => $max($this->orders, 'modified')]];
+            $tables['users'] = ['present' => true, 'max_id' => $max($this->users, 'id'), 'max' => ['user_registered' => $max($this->users, 'registered')], 'fingerprint' => $fingerprint];
+
+            return "\n".json_encode(['v' => 1, 'now' => gmdate('Y-m-d H:i:s', $now), 'unix' => $now, 'tables' => $tables])."\n";
+        }
+
+        $since = static fn (string $table, string $column): string => $in['since'][$table]['max'][$column] ?? '';
+        $orders = array_values(array_filter($this->orders, static fn (array $o): bool => $o['id'] > ($in['since']['wc_orders']['max_id'] ?? 0)
+            || $o['created'] > $since('wc_orders', 'date_created_gmt') || $o['modified'] > $since('wc_orders', 'date_updated_gmt')));
+        $users = array_values(array_filter($this->users, static fn (array $u): bool => $u['id'] > ($in['since']['users']['max_id'] ?? 0)
+            || $u['registered'] > $since('users', 'user_registered')));
+        usort($orders, static fn (array $a, array $b): int => $b['id'] <=> $a['id']);
+        usort($users, static fn (array $a, array $b): int => $b['id'] <=> $a['id']);
+        $tables['wc_orders'] = ['present' => true, 'changed' => count($orders)];
+        $tables['users'] = ['present' => true, 'changed' => count($users), 'fingerprint' => $fingerprint];
+
+        return "\n".json_encode(['v' => 1, 'now' => gmdate('Y-m-d H:i:s', $now), 'unix' => $now, 'tables' => $tables,
+            'orders_total' => count($orders),
+            'users_total' => count($users),
+            'truncated' => false,
+            'orders' => array_slice($orders, 0, $in['limit'] ?? 0),
+            'users' => array_slice($users, 0, $in['limit'] ?? 0),
+        ])."\n";
     }
 
     private function ok(string $stdout): CommandResult

@@ -101,11 +101,67 @@ return [
      * has offered for this long are purged (PackageVersions::purge, UZEROWPUP-134).
      */
     'planning' => [
-        'step_timeout_seconds' => 60,
+        // Includes downloading and analysing the new packages (static_analysis):
+        // keep it above static_analysis.step_budget_seconds.
+        'step_timeout_seconds' => 3600,
         'report_version' => 1,
         'verified_php_max_age_seconds' => 604800,
         'quarantine_days' => 7,
         'package_versions_retention_days' => 365,
+    ],
+
+    /*
+     * Applying the updates (UZEROWPUP-54): one step per component, installed
+     * from the run's analysed artifact. Step timeout in seconds; it must be at
+     * least SshSettings::applyUpdateBudgetSeconds() (connect + 3 ×
+     * ssh.package_timeout_seconds + 6 × ssh.command_timeout_seconds, 3615 s
+     * by default), checked when the steps are built.
+     */
+    'updates' => [
+        'component_timeout_seconds' => 3900,
+    ],
+
+    /*
+     * Compatibility, layer 2 (UZEROWPUP-50): every new plugin or theme package
+     * goes through PHP_CodeSniffer + PHPCompatibility with testVersion equal to
+     * the site's PHP minor. An error blocks that component's update; warnings go
+     * to the report. The package is extracted (only *.php) into a private
+     * directory that is always removed afterwards.
+     */
+    'static_analysis' => [
+        'work_dir' => env('WPUP_STATIC_ANALYSIS_DIR', storage_path('app/static-analysis')),
+        'phpcs_binary' => base_path('vendor/bin/phpcs'),
+        'standard_path' => base_path('vendor/phpcompatibility/php-compatibility'),
+        // One scan. Each package also has its own download timeout (artifacts.timeout_seconds).
+        'timeout_seconds' => 300,
+        // The step's budget for all the packages, and the least that must be left to
+        // start another one (a download plus a scan). When it is not enough the
+        // remaining packages are skipped, so the plan step ends instead of timing out.
+        'step_budget_seconds' => 3000,
+        'min_remaining_seconds' => 900,
+        'memory_limit' => '512M',
+        // phpcs JSON report; more than this is a failure of the analysis.
+        'max_output_bytes' => 20 * 1024 * 1024,
+        'max_files' => 20000,
+        // phpcs --ignore patterns (matched against the path; * is a wildcard, no commas):
+        // vendored libraries and known polyfills, whose code is guarded by version
+        // checks and gives false positives.
+        'ignore' => [
+            '*/vendor/*',
+            '*/node_modules/*',
+            '*/symfony/polyfill-*/*',
+            '*/polyfill-*/*',
+            '*/random_compat/*',
+            '*/paragonie/*',
+            '*/ralouphie/getallheaders/*',
+        ],
+        // What is kept of a scan (cache and plan): findings, path and message sizes.
+        'summary_max_findings' => 20,
+        'summary_max_path_length' => 160,
+        'summary_max_message_length' => 200,
+        // Findings quoted in a skip detail and in the warnings of the plan.
+        'detail_max_findings' => 3,
+        'warnings_max' => 5,
     ],
 
     /*
@@ -201,6 +257,25 @@ return [
         // Database dump (UZEROWPUP-38). sprintf(): run label, random suffix.
         'database' => [
             'file_name' => 'db-%s-%s.sql.gz',
+        ],
+        // Order and user watermark of a database copy (UZEROWPUP-58, AGENTS.md rule 4):
+        // read right before the dump and compared before restoring it.
+        'watermark' => [
+            'timeout_seconds' => 120,
+            // Post types of orders in the classic posts storage (HPOS keeps every type in wc_orders).
+            'order_types' => ['shop_order', 'shop_order_refund', 'shop_order_placehold', 'shop_subscription'],
+            // A row created or modified this long before the read also counts as written:
+            // a transaction that reserved a lower ID may commit after the read.
+            'margin_seconds' => 300,
+            // At most this many distinct orders (and users) are collected per table;
+            // more makes the count "at least".
+            'scan_cap' => 1000,
+            // Orders and users listed to the operator (newest first; the rest are counted),
+            // and roles per user.
+            'max_listed' => 50,
+            'max_roles' => 5,
+            // Characters of WP-CLI's error kept in the reason.
+            'error_chars' => 300,
         ],
         // Code archive (UZEROWPUP-39, ADR-0009): core, plugins, themes, mu-plugins,
         // drop-ins and wp-config.php. Paths relative to the WordPress root; tar and
@@ -456,6 +531,8 @@ return [
         'connect_timeout_seconds' => 15,
         'command_timeout_seconds' => 300,
         'transfer_timeout_seconds' => 3600,
+        // Each of the upload, the on-site checksum and the install of a package (UZEROWPUP-54).
+        'package_timeout_seconds' => 600,
         'work_dir' => '.wpup',
         'wp_cli' => [
             'phar' => storage_path('app/tools/wp-cli-2.12.0.phar'),

@@ -24,7 +24,8 @@ use Illuminate\Support\Facades\Log;
  * Decides, from a fresh snapshot, the site's block and its profile, which pending
  * updates would be applied and which skipped. It reads no site and writes nothing
  * (UZEROWPUP-36). It applies the declared requirements, the profile and the
- * version policy of ADR-0005 (UZEROWPUP-127); static analysis (F3) comes later.
+ * version policy of ADR-0005 (UZEROWPUP-127) and, when given a ChangeAnalyzer, the
+ * static analysis of the new package (UZEROWPUP-50).
  *
  * Profile components (frozen_components, excluded_components) are written as
  * `slug` or `type:slug` (e.g. `akismet`, `plugin:akismet`, `theme:storefront`);
@@ -39,7 +40,8 @@ use Illuminate\Support\Facades\Log;
  * PHP required by the update above the site's, WordPress required above the
  * core the site will have, WooCommerce required above the one the site will have,
  * a "Requires Plugins" entry not installed and active, quarantine, major version
- * (ADR-0005, before F7: needs staging).
+ * (ADR-0005, before F7: needs staging), and last the static analysis of the package
+ * (an error, or an analysis that could not run, skips it; warnings are kept).
  *
  * Version policy (ADR-0005, UZEROWPUP-127): a version waits `quarantine_days` from
  * when it is known to exist (PackageVersions: the earliest of its first sighting
@@ -62,7 +64,7 @@ use Illuminate\Support\Facades\Log;
  * Versions are compared with WpVersion; a requirement or a site version that
  * cannot be read is never taken as met.
  *
- * @phpstan-type Candidate array{change: PlannedChange, package: PackageVersionKey, from_org: bool, wporg_slug: ?string, vulnerabilities: list<string>, unverified_fix: ?string, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}
+ * @phpstan-type Candidate array{change: PlannedChange, pending: ?PendingUpdate, package: PackageVersionKey, from_org: bool, wporg_slug: ?string, vulnerabilities: list<string>, unverified_fix: ?string, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}
  */
 final readonly class UpdatePlanner
 {
@@ -84,7 +86,7 @@ final readonly class UpdatePlanner
         private int $quarantineDays,
     ) {}
 
-    public function plan(SiteSnapshot $snapshot, Site $site, ?SiteProfile $profile, string $phpVersion, PhpVersionSource $phpSource, PlanOptions $options = new PlanOptions): UpdatePlan
+    public function plan(SiteSnapshot $snapshot, Site $site, ?SiteProfile $profile, string $phpVersion, PhpVersionSource $phpSource, PlanOptions $options = new PlanOptions, ?ChangeAnalyzer $analyzer = null): UpdatePlan
     {
         $blocked = $site->blocked_reason ?? $this->wouldBlock($snapshot);
         $frozen = $profile === null ? [] : self::strings($profile->frozen_components);
@@ -136,6 +138,15 @@ final readonly class UpdatePlanner
                     ?? ($quarantine === null || $options->skipQuarantine ? null : [SkipReason::Quarantine, $quarantine[1], $quarantine[0]])
                     ?? $this->majorChange($change, $options),
             };
+
+            // Last, and only for what is still going to be applied: it downloads the package.
+            $analysis = $decision === null ? $analyzer?->analyze($change, $candidate['pending']) : null;
+            if ($analysis?->skip !== null) {
+                $decision = [$analysis->skip, $analysis->detail ?? ''];
+            }
+            if ($analysis !== null && $analysis->warnings !== []) {
+                $change = $change->withWarnings($analysis->warnings);
+            }
 
             if ($decision !== null) {
                 $change = PlannedChange::skip($change, $decision[0], $decision[1], $decision[2] ?? null);
@@ -298,6 +309,7 @@ final readonly class UpdatePlanner
                 // Core x.y.z within its branch never waits for the quarantine (ADR-0005).
                 'change' => new PlannedChange($type, $slug, $current, $target, PlanAction::Update, major: $major,
                     bypass: $type === ComponentType::Core && ! $major ? QuarantineBypass::CoreMaintenance : null),
+                'pending' => PendingUpdate::fromArray($update),
                 'package' => PackageVersionKey::of($type, $slug, $target, self::version($update['source'] ?? null), self::version($update['wporg_slug'] ?? null), self::version($update['package_host'] ?? null)),
                 'from_org' => ($update['source'] ?? null) === PendingUpdate::SOURCE_WORDPRESS_ORG,
                 'wporg_slug' => self::version($update['wporg_slug'] ?? null),

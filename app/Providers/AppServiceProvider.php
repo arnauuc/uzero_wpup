@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Artifacts\ArtifactException;
 use App\Domain\Artifacts\ArtifactFetcher;
 use App\Domain\Artifacts\ArtifactSettings;
 use App\Domain\Artifacts\ArtifactStore;
 use App\Domain\Artifacts\DnsHostResolver;
 use App\Domain\Artifacts\HostResolver;
+use App\Domain\Artifacts\PackageArtifacts;
 use App\Domain\Artifacts\PackageUrlGuard;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
@@ -20,6 +22,7 @@ use App\Domain\Backups\Dropbox\DropboxCredentialVerifier;
 use App\Domain\Backups\Dropbox\DropboxSettings;
 use App\Domain\Backups\Dropbox\DropboxTargetFactory;
 use App\Domain\Backups\FilesBackup;
+use App\Domain\Backups\NewWritesDetector;
 use App\Domain\Backups\PreRestoreBackupStep;
 use App\Domain\Backups\RestoreCheckStep;
 use App\Domain\Backups\RestoreMaintenanceStep;
@@ -27,9 +30,14 @@ use App\Domain\Backups\RestorePointGate;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\RestoreStep;
+use App\Domain\Backups\ShopWritesReader;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\SiteRestore;
+use App\Domain\Compatibility\CompatSettings;
+use App\Domain\Compatibility\MemoizedDriver;
+use App\Domain\Compatibility\PackageCompatibilityAnalyzer;
+use App\Domain\Compatibility\StaticCompatibility;
 use App\Domain\Credentials\KeyRotationStep;
 use App\Domain\Credentials\SecretsRekey;
 use App\Domain\Credentials\SecretsRekeyStep;
@@ -38,6 +46,7 @@ use App\Domain\Drivers\DriverFactory;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\Ssh\SshSettings;
+use App\Domain\Identity\Ability;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
@@ -53,6 +62,7 @@ use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Notifications\LogSiteBlockNotifier;
 use App\Domain\Notifications\SiteBlockNotifier;
+use App\Domain\Planning\ChangeAnalyzer;
 use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
@@ -82,11 +92,14 @@ use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
+use App\Domain\Updates\UpdateChanges;
+use App\Domain\Updates\UpdateSteps;
 use App\Domain\Vulnerabilities\NoVulnerabilitySource;
 use App\Domain\Vulnerabilities\VulnerabilitySource;
 use App\Enums\BackupTargetType;
 use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
+use App\Models\Run;
 use App\Models\Site;
 use App\Support\Logging\RedactSecretsTap;
 use Closure;
@@ -239,6 +252,24 @@ class AppServiceProvider extends ServiceProvider
             self::configString('wpup.artifacts.wordpress_org.core_url'),
             self::configString('wpup.artifacts.wordpress_org.localized_core_url'),
         ));
+        $this->app->bind(CompatSettings::class, static fn (): CompatSettings => new CompatSettings(
+            self::configString('wpup.static_analysis.work_dir'),
+            self::configString('wpup.static_analysis.phpcs_binary'),
+            self::configString('wpup.static_analysis.standard_path'),
+            self::configInt('wpup.static_analysis.timeout_seconds'),
+            self::configString('wpup.static_analysis.memory_limit'),
+            self::configInt('wpup.static_analysis.max_output_bytes'),
+            self::configInt('wpup.static_analysis.max_files'),
+            self::configStrings('wpup.static_analysis.ignore'),
+            self::configInt('wpup.static_analysis.summary_max_findings'),
+            self::configInt('wpup.static_analysis.summary_max_path_length'),
+            self::configInt('wpup.static_analysis.summary_max_message_length'),
+            self::configInt('wpup.static_analysis.detail_max_findings'),
+            self::configInt('wpup.static_analysis.warnings_max'),
+            self::configInt('wpup.artifacts.max_unpacked_bytes'),
+            self::configInt('wpup.static_analysis.step_budget_seconds'),
+            self::configInt('wpup.static_analysis.min_remaining_seconds'),
+        ));
         $this->app->bind(HostResolver::class, DnsHostResolver::class);
         $this->app->bind(ArtifactFetcher::class, static fn (Application $app): ArtifactFetcher => new ArtifactFetcher(
             new GuzzleClient,
@@ -297,6 +328,16 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.wordpress_org.max_lookups'),
             self::configInt('wpup.inventory.wordpress_org.stale_after_seconds'),
             self::configInt('wpup.inventory.wordpress_org.cache_ttl_seconds'),
+        ));
+        $this->app->bind(ShopWritesReader::class, static fn (Application $app): ShopWritesReader => new ShopWritesReader(
+            $app->make(WpCliReader::class),
+            self::configInt('wpup.backups.watermark.timeout_seconds'),
+            array_values(array_filter(config()->array('wpup.backups.watermark.order_types'), is_string(...))),
+            self::configInt('wpup.backups.watermark.scan_cap'),
+            self::configInt('wpup.backups.watermark.max_listed'),
+            self::configInt('wpup.backups.watermark.max_roles'),
+            self::configInt('wpup.backups.watermark.margin_seconds'),
+            self::configInt('wpup.backups.watermark.error_chars'),
         ));
         $this->app->bind(SiteState::class, static fn (Application $app): SiteState => new SiteState(
             $app->make(WpCliReader::class),
@@ -384,7 +425,7 @@ class AppServiceProvider extends ServiceProvider
 
                 return new Pipeline([
                     new InventoryStep($app->make(SiteInventory::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.inventory.step_timeout_seconds'), readOnlySite: true, advisory: true),
-                    new RestoreCheckStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.restore.check_timeout_seconds')),
+                    new RestoreCheckStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $app->make(NewWritesDetector::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.restore.check_timeout_seconds')),
                     $maintenance,
                     new PreRestoreBackupStep($app->make(RestorePointService::class), $maintenance, $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.step_timeout_seconds')),
                     new RestoreStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(RestorePointGate::class), $maintenance, $driverFor,
@@ -405,9 +446,45 @@ class AppServiceProvider extends ServiceProvider
                     self::configInt('wpup.inventory.step_timeout_seconds'),
                     readOnlySite: true,
                 ),
-                new PlanStep($app->make(UpdatePlanner::class), $app->make(RunAuthorization::class), self::configInt('wpup.planning.step_timeout_seconds'), self::configInt('wpup.planning.verified_php_max_age_seconds')),
+                new PlanStep(
+                    $app->make(UpdatePlanner::class),
+                    $app->make(RunAuthorization::class),
+                    self::configInt('wpup.planning.step_timeout_seconds'),
+                    self::configInt('wpup.planning.verified_php_max_age_seconds'),
+                    // Static analysis of the new packages (UZEROWPUP-50). The site is only reached,
+                    // as whoever launched the run, to read the package URL of premium updates.
+                    static function (Run $run, ?string $webPhp) use ($app): ChangeAnalyzer {
+                        return new PackageCompatibilityAnalyzer(
+                            $run->id,
+                            $webPhp,
+                            // One driver for the whole plan (see MemoizedDriver).
+                            (new MemoizedDriver(static function () use ($app, $run): SiteDriver {
+                                $actor = $app->make(RunAuthorization::class)->actorFor($run, Ability::RunOperations)
+                                    ?? throw new ArtifactException(RunAuthorization::deniedMessage($run));
+                                $site = $run->site ?? throw new ArtifactException("L'execució no té cap lloc.");
+
+                                return $app->make(DriverFactory::class)->forSite($site, $actor);
+                            }))(...),
+                            $app->make(PackageArtifacts::class),
+                            $app->make(StaticCompatibility::class),
+                            $app->make(CompatSettings::class),
+                            $app->make(SecretRedactor::class),
+                        );
+                    },
+                ),
             ]));
         });
+        // The update steps of a plan (UZEROWPUP-54); the update run that uses them is UZEROWPUP-60.
+        // Its step timeout must cover the slowest applyUpdate() of the SSH driver (checked there).
+        $this->app->bind(UpdateSteps::class, static fn (Application $app): UpdateSteps => new UpdateSteps(
+            $app->make(ArtifactStore::class),
+            static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+            $app->make(RunAuthorization::class),
+            $app->make(UpdateChanges::class),
+            $app->make(SecretRedactor::class),
+            self::configInt('wpup.updates.component_timeout_seconds'),
+            $app->make(SshSettings::class)->applyUpdateBudgetSeconds(),
+        ));
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(
             runTimeoutSeconds: self::configInt('wpup.runs.timeout_seconds'),
             heartbeatSeconds: self::configInt('wpup.runs.heartbeat_seconds'),
@@ -434,6 +511,7 @@ class AppServiceProvider extends ServiceProvider
             wpCliPhar: self::configString('wpup.ssh.wp_cli.phar'),
             wpCliSha256: self::configString('wpup.ssh.wp_cli.sha256'),
             stagingDir: self::configString('wpup.backups.staging_dir'),
+            packageTimeoutSeconds: self::configInt('wpup.ssh.package_timeout_seconds'),
         ));
         $this->app->bind(SshKeyManager::class, static fn (Application $app): SshKeyManager => new SshKeyManager(
             $app->make(SecretStore::class),
