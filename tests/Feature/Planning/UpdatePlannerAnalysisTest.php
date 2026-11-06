@@ -33,7 +33,7 @@ function analysedPlan(array $updates, ChangeAnalyzer $analyzer, array $profile =
         'pending_updates' => $updates,
     ]);
 
-    return app(UpdatePlanner::class)->plan($snapshot, $site, $profileModel, '8.2.20', PhpVersionSource::HttpProbe, $analyzer);
+    return app(UpdatePlanner::class)->plan($snapshot, $site, $profileModel, '8.2.20', PhpVersionSource::HttpProbe, analyzer: $analyzer);
 }
 
 /**
@@ -99,7 +99,7 @@ it('does not analyse anything on a blocked site', function (): void {
     $site = Site::factory()->create(['blocked_reason' => 'bloquejat']);
     $snapshot = SiteSnapshot::factory()->create(['site_id' => $site->id, 'core_version' => '6.8.1', 'plugins' => [], 'environment' => ['prerequisites' => []], 'pending_updates' => [analysedPending('a')]]);
 
-    app(UpdatePlanner::class)->plan($snapshot, $site, null, '8.2.20', PhpVersionSource::HttpProbe, $analyzer);
+    app(UpdatePlanner::class)->plan($snapshot, $site, null, '8.2.20', PhpVersionSource::HttpProbe, analyzer: $analyzer);
 
     expect($analyzer->asked)->toBe([]);
 });
