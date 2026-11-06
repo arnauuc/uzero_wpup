@@ -9,6 +9,8 @@ use App\Domain\Backups\BackupTargetException;
 use App\Domain\Backups\BackupTargetRegistry;
 use App\Domain\Backups\FilesBackup;
 use App\Domain\Backups\FlysystemTarget;
+use App\Domain\Backups\NewWritesDetector;
+use App\Domain\Backups\OrderWatermark;
 use App\Domain\Backups\PreRestoreBackupStep;
 use App\Domain\Backups\RestoreCheckStep;
 use App\Domain\Backups\RestoreMaintenanceStep;
@@ -131,7 +133,7 @@ function restoreRunPipeline(FakeDriver $driver): void
 
         return new Pipeline([
             new InventoryStep(app(SiteInventory::class), $driverFor, app(RunAuthorization::class), 60, readOnlySite: true, advisory: true),
-            new RestoreCheckStep(app(RestoreSelection::class), app(SiteRestore::class), app(FilesBackup::class), $driverFor, app(RunAuthorization::class), 60),
+            new RestoreCheckStep(app(RestoreSelection::class), app(SiteRestore::class), app(FilesBackup::class), app(NewWritesDetector::class), $driverFor, app(RunAuthorization::class), 60),
             $maintenance,
             new PreRestoreBackupStep(app(RestorePointService::class), $maintenance, $driverFor, app(RunAuthorization::class), 60),
             new RestoreStep(app(RestoreSelection::class), app(SiteRestore::class), app(RestorePointGate::class), $maintenance, $driverFor,
@@ -250,6 +252,64 @@ it('refuses a shop database without --accept-data-loss before writing anything',
         ->and(restoreStepOf($run, RestoreCheckStep::NAME)->error)->toContain('botiga')->toContain('--accept-data-loss')->toContain('--force no ho salta')
         ->and($driver->writeCalls)->not->toContain('dumpDatabase', 'restoreDatabase')
         ->and(Backup::query()->where('run_id', $run->id)->count())->toBe(0);
+});
+
+it('tells which orders and users were written since the copy when it refuses a shop database (UZEROWPUP-58)', function (): void {
+    $site = restoreRunSite();
+    $driver = new FakeDriver;
+    $driver->orders = [['id' => 7, 'type' => 'shop_order', 'status' => 'wc-processing', 'created' => '2026-11-01 10:00:00', 'modified' => '2026-11-01 10:00:00']];
+    restoreRunPipeline($driver);
+    $point = restoreRunPoint($site, $driver);
+    expect(OrderWatermark::fromArray($point->local(BackupKind::Database)?->order_watermark)?->tables['wc_orders']->maxId)->toBe(7);
+
+    $driver->orders[0]['modified'] = '2026-11-02 09:00:00';
+    $driver->orders[] = ['id' => 8, 'type' => 'shop_order', 'status' => 'wc-on-hold', 'created' => '2026-11-02 09:10:00', 'modified' => '2026-11-02 09:10:00'];
+    $driver->users[] = ['id' => 5, 'registered' => '2026-11-02 09:09:00', 'roles' => ['customer']];
+
+    $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Database]));
+
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and(restoreStepOf($run, RestoreCheckStep::NAME)->error)->toContain('--accept-data-loss')
+        ->toContain('2 comandes: #8 (nova, comanda, on-hold, 2026-11-02 09:10:00), #7 (modificada, comanda, processing, 2026-11-02 09:00:00)')
+        ->toContain('1 usuari: #5 (nou, customer')
+        ->and($driver->writeCalls)->not->toContain('restoreDatabase');
+});
+
+it('keeps asking for the confirmation when nothing was written, and treats a copy without watermark as written', function (bool $withWatermark, string $message): void {
+    $site = restoreRunSite();
+    $driver = new FakeDriver;
+    restoreRunPipeline($driver);
+    $point = restoreRunPoint($site, $driver);
+    if (! $withWatermark) {
+        Backup::query()->whereKey($point->local(BackupKind::Database)?->id)->update(['order_watermark' => null]);
+    }
+
+    $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Database]));
+
+    // Restoring without the confirmation when nothing was written is UZEROWPUP-59.
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and(restoreStepOf($run, RestoreCheckStep::NAME)->error)->toContain('--accept-data-loss')->toContain($message)
+        ->and($driver->writeCalls)->not->toContain('restoreDatabase');
+})->with([
+    'nothing written' => [true, 'No hi ha escriptures noves a les comandes ni als usuaris des de la còpia.'],
+    'no watermark' => [false, "No es pot saber si hi ha escriptures noves a les comandes i als usuaris des de la còpia (la còpia no té marca d'aigua de comandes i usuaris): es tracta com si n'hi hagués."],
+]);
+
+it('records what an accepted restore of a shop database loses', function (): void {
+    $site = restoreRunSite();
+    $driver = new FakeDriver;
+    restoreRunPipeline($driver);
+    $point = restoreRunPoint($site, $driver);
+    $driver->orders[] = ['id' => 3, 'type' => 'shop_order', 'status' => 'wc-pending', 'created' => '2026-11-02 09:10:00', 'modified' => '2026-11-02 09:10:00'];
+
+    $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Database], acceptDataLoss: true));
+    $check = restoreStepOf($run, RestoreCheckStep::NAME);
+
+    expect($run->status)->toBe(RunStatus::Succeeded)
+        ->and($driver->orders)->toBe([])
+        ->and($check->output)->toContain('Restauració acceptada amb pèrdua de dades. Des de la còpia hi ha escriptures noves: 1 comanda: #3 (nova')
+        ->and(data_get($check->result, 'new_writes.status'))->toBe('found')
+        ->and(data_get($check->result, 'new_writes.orders.0.id'))->toBe(3);
 });
 
 it('restores the database of a site without WooCommerce without the extra flag', function (): void {

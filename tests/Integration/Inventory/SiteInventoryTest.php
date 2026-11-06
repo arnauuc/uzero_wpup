@@ -167,6 +167,8 @@ foreach (['wp74', 'wp83'] as $fixture) {
             $stale = $read();
         } finally {
             $driver->setMaintenanceMode(false);
+            // A stale file is not "active", so deactivating leaves it: remove it.
+            Fixtures::run($fixture, 'rm -f '.escapeshellarg($file));
         }
 
         expect($fresh)->toBeTrue()

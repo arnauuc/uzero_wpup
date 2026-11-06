@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Support;
 
+use App\Domain\Backups\OrderWatermark;
+use App\Domain\Backups\ShopWritesReader;
 use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
@@ -172,6 +174,15 @@ class FakeDriver implements SiteDriver
     /** @var list<list<string>> every WP-CLI call, for assertions */
     public array $wpCalls = [];
 
+    /** @var list<array{id: int, type: string, status: string, created: string, modified: string}> orders (HPOS wc_orders), in the dump */
+    public array $orders = [];
+
+    /** @var list<array{id: int, registered: string, roles: list<string>}> users, in the dump */
+    public array $users = [];
+
+    /** Raw stdout of ShopWritesReader::SNIPPET instead of the modelled answer. */
+    public ?string $shopWritesOutput = null;
+
     public function __construct(
         public string $coreVersion = '6.8.3',
         public string $phpVersion = '8.3.14',
@@ -260,6 +271,7 @@ class FakeDriver implements SiteDriver
 
         return match (true) {
             $args === ['eval', SiteState::SNIPPET] => $this->ok($this->snippetOutput ?? $this->stateSnippet()),
+            count($args) === 4 && $args[0] === 'eval' && str_ends_with($args[1], ShopWritesReader::SNIPPET) && array_slice($args, 2) === ['--skip-plugins', '--skip-themes'] => $this->ok($this->shopWritesOutput ?? $this->shopWrites($args[1])),
             $args === ['eval', PendingUpdates::REQUIRES_PLUGINS_SNIPPET] => $this->ok("\n".json_encode((object) $this->requiresPluginsHeaders)."\n"),
             $args === ['db', 'size', '--size_format=b', '--all-tables-with-prefix', '--format=json'] => $this->ok((string) json_encode(array_map(
                 static fn (string $name, int $bytes): array => ['Name' => $name, 'Size' => "{$bytes} B"],
@@ -315,6 +327,8 @@ class FakeDriver implements SiteDriver
         return $this->store($remotePath, (string) json_encode([
             'options' => $this->options,
             'tables' => array_values(array_diff(array_keys($this->dbTables), $this->dumpOmits)),
+            'orders' => $this->orders,
+            'users' => $this->users,
         ]));
     }
 
@@ -408,6 +422,9 @@ class FakeDriver implements SiteDriver
         }
 
         $this->options = $restored;
+        /** @var array{orders?: list<array{id: int, type: string, status: string, created: string, modified: string}>, users?: list<array{id: int, registered: string, roles: list<string>}>} $data */
+        $this->orders = $data['orders'] ?? [];
+        $this->users = $data['users'] ?? [];
     }
 
     public function archiveExcludes(RemoteFile $archive): array
@@ -596,6 +613,50 @@ class FakeDriver implements SiteDriver
             ],
             'woocommerce' => $woocommerce,
         ]);
+    }
+
+    /**
+     * What ShopWritesReader::SNIPPET prints: only wc_orders and users exist,
+     * and a row is written after the watermark by a higher ID or a later date.
+     */
+    private function shopWrites(string $code): string
+    {
+        /** @var array{mode: string, limit?: int, since?: array<string, array{max_id: int, max: array<string, string|null>}>} $in */
+        $in = preg_match("/^\\\$in = json_decode\\(base64_decode\\('([A-Za-z0-9+\\/=]*)'\\), true\\);\n/", $code, $m) === 1
+            ? json_decode((string) base64_decode($m[1]), true) : ['mode' => 'watermark'];
+        $now = $this->siteTime ?? time();
+        $max = static function (array $rows, string $key): mixed {
+            $values = array_column($rows, $key);
+
+            return $values === [] ? null : max($values);
+        };
+        // Any change of a user row, also in place (the fake keeps the roles there).
+        $fingerprint = count($this->users).':'.crc32((string) json_encode($this->users));
+        $tables = array_fill_keys(OrderWatermark::TABLES, ['present' => false]);
+        if (($in['since'] ?? null) === null) {
+            $tables['wc_orders'] = ['present' => true, 'max_id' => $max($this->orders, 'id'), 'max' => ['date_created_gmt' => $max($this->orders, 'created'), 'date_updated_gmt' => $max($this->orders, 'modified')]];
+            $tables['users'] = ['present' => true, 'max_id' => $max($this->users, 'id'), 'max' => ['user_registered' => $max($this->users, 'registered')], 'fingerprint' => $fingerprint];
+
+            return "\n".json_encode(['v' => 1, 'now' => gmdate('Y-m-d H:i:s', $now), 'unix' => $now, 'tables' => $tables])."\n";
+        }
+
+        $since = static fn (string $table, string $column): string => $in['since'][$table]['max'][$column] ?? '';
+        $orders = array_values(array_filter($this->orders, static fn (array $o): bool => $o['id'] > ($in['since']['wc_orders']['max_id'] ?? 0)
+            || $o['created'] > $since('wc_orders', 'date_created_gmt') || $o['modified'] > $since('wc_orders', 'date_updated_gmt')));
+        $users = array_values(array_filter($this->users, static fn (array $u): bool => $u['id'] > ($in['since']['users']['max_id'] ?? 0)
+            || $u['registered'] > $since('users', 'user_registered')));
+        usort($orders, static fn (array $a, array $b): int => $b['id'] <=> $a['id']);
+        usort($users, static fn (array $a, array $b): int => $b['id'] <=> $a['id']);
+        $tables['wc_orders'] = ['present' => true, 'changed' => count($orders)];
+        $tables['users'] = ['present' => true, 'changed' => count($users), 'fingerprint' => $fingerprint];
+
+        return "\n".json_encode(['v' => 1, 'now' => gmdate('Y-m-d H:i:s', $now), 'unix' => $now, 'tables' => $tables,
+            'orders_total' => count($orders),
+            'users_total' => count($users),
+            'truncated' => false,
+            'orders' => array_slice($orders, 0, $in['limit'] ?? 0),
+            'users' => array_slice($users, 0, $in['limit'] ?? 0),
+        ])."\n";
     }
 
     private function ok(string $stdout): CommandResult
