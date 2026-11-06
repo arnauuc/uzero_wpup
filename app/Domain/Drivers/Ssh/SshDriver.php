@@ -539,23 +539,22 @@ final class SshDriver implements SiteDriver
         $siblingRead = false;
         if ($rotated) {
             // Logrotate renames the old file to .1: what was written between the
-            // cursor and the rotation is there (best effort, errors ignored).
+            // cursor and the rotation is there (best effort: an error here only
+            // means that sibling is not read).
             $sibling = $this->usableLogPath($log.'.1');
             if ($sibling !== null && $cursor->offset > 0) {
-                $result = $this->exec($this->fatalGrep($sibling, $cursor->offset, $maxLines + 1));
-                if ($result->exitCode <= 1) {
-                    $lines = $this->candidates($result->stdout);
+                try {
+                    $lines = $this->fatalLines($sibling, $cursor->offset, $maxLines + 1);
                     $siblingRead = true;
+                } catch (DriverException) {
+                    $lines = [];
                 }
             }
         }
         $offset = $rotated ? 0 : $cursor->offset;
         if ($size > $offset) {
-            $result = $this->exec($this->fatalGrep($log, $offset, $maxLines + 1));
-            if ($result->exitCode > 1) {
-                throw self::failure('La lectura del log de PHP', $result);
-            }
-            $lines = [...$lines, ...$this->candidates($result->stdout)];
+            // An error here must never look like "no fatal lines".
+            $lines = [...$lines, ...$this->fatalLines($log, $offset, $maxLines + 1)];
         }
 
         return new LogScan(array_slice($lines, 0, $maxLines), count($lines) > $maxLines, $rotated, $siblingRead);
@@ -567,33 +566,25 @@ final class SshDriver implements SiteDriver
             return [];
         }
         $start = max(0, $cursor->offset - max(1, $windowBytes));
-        $result = $this->exec($this->fatalGrep($cursor->path, $start, $maxLines, $cursor->offset - $start));
-        if ($result->exitCode > 1) {
-            throw self::failure('La lectura del log de PHP', $result);
-        }
 
-        return array_slice($this->candidates($result->stdout), 0, $maxLines);
+        return array_slice($this->fatalLines($cursor->path, $start, $maxLines, $cursor->offset - $start), 0, $maxLines);
     }
 
     /**
-     * Reads $path from byte $from (0-based), at most $length bytes when given,
-     * and prints at most $maxLines candidate lines, each cut to a bounded
-     * length. grep exits 1 when nothing matches, which is not an error.
-     */
-    private function fatalGrep(string $path, int $from, int $maxLines, ?int $length = null): string
-    {
-        return 'tail -c +'.($from + 1).' '.escapeshellarg($path)
-            .($length === null ? '' : ' | head -c '.max(1, $length))
-            .' | grep -a -E -m '.max(1, $maxLines).' '.escapeshellarg(self::LOG_PREFILTER)
-            .' | cut -c1-'.self::LOG_LINE_BYTES;
-    }
-
-    /**
+     * The candidate fatal lines of $path from byte $from (0-based), at most
+     * $length bytes when given and $maxLines lines, each cut to a bounded length.
+     * The exit status of tail and grep is verified (LogGrepResult), so an
+     * unreadable log is an error, never an empty result.
+     *
      * @return list<string>
+     *
+     * @throws DriverException
      */
-    private function candidates(string $output): array
+    private function fatalLines(string $path, int $from, int $maxLines, ?int $length = null): array
     {
-        return array_values(array_filter(explode("\n", $output), static fn (string $line): bool => $line !== ''));
+        $result = $this->exec(LogGrepResult::command('tail -c +'.($from + 1).' '.escapeshellarg($path), self::LOG_PREFILTER, $maxLines, self::LOG_LINE_BYTES, $length));
+
+        return LogGrepResult::parse($result->stdout, $result->stderr)->lines;
     }
 
     /**
