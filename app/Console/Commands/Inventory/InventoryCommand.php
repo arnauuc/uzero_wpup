@@ -97,6 +97,8 @@ final class InventoryCommand extends WpupCommand implements ChangesState
             ['Actualitzacions pendents', (string) $row->pendingUpdates.($row->unlicensed > 0 ? " ({$row->unlicensed} sense llicència)" : '')],
             ['Estat', self::notes($row)],
             ['Bloquejat', $row->blocked ? "sí: {$row->blockedReason}" : 'no'],
+            ['Còpia externa', $row->externalBackupWarnings === [] ? 'ok' : 'AVÍS: '.implode(' ', $row->externalBackupWarnings)],
+            ...($row->externalBackupDetectionWarnings === [] ? [] : [['Detecció de còpies', implode(' ', $row->externalBackupDetectionWarnings)]]),
         ];
         $this->table(['Camp', 'Valor'], $lines);
     }

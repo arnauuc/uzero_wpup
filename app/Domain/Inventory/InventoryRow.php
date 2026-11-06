@@ -14,6 +14,8 @@ final readonly class InventoryRow
 {
     /**
      * @param  list<string>  $phpWarnings
+     * @param  list<string>  $externalBackupWarnings  ExternalBackupStatus warnings (UZEROWPUP-133)
+     * @param  list<string>  $externalBackupDetectionWarnings  why the detection could not read something
      */
     public function __construct(
         public string $site,
@@ -34,6 +36,8 @@ final readonly class InventoryRow
         public int $outdatedTemplates,
         public bool $blocked,
         public ?string $blockedReason,
+        public array $externalBackupWarnings = [],
+        public array $externalBackupDetectionWarnings = [],
     ) {}
 
     public function hasSnapshot(): bool
@@ -65,6 +69,8 @@ final readonly class InventoryRow
             ],
             'blocked' => $this->blocked,
             'blocked_reason' => $this->blockedReason,
+            'external_backup_warnings' => $this->externalBackupWarnings,
+            'external_backup_detection_warnings' => $this->externalBackupDetectionWarnings,
         ];
     }
 
@@ -76,6 +82,7 @@ final readonly class InventoryRow
         return [
             $this->site, $this->url, $this->core, $this->woocommerce, $this->php, $this->phpSource, $this->dbServer,
             $this->pendingUpdates, $this->unlicensed, $this->blocked ? 'yes' : 'no', $this->blockedReason, $this->runStatus->value, $this->failure,
+            implode(' ', $this->externalBackupWarnings),
         ];
     }
 }

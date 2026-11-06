@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Artifacts\ArtifactFetcher;
+use App\Domain\Artifacts\ArtifactSettings;
+use App\Domain\Artifacts\ArtifactStore;
+use App\Domain\Artifacts\DnsHostResolver;
+use App\Domain\Artifacts\HostResolver;
+use App\Domain\Artifacts\PackageUrlGuard;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\BackupStep;
@@ -35,6 +41,8 @@ use App\Domain\Drivers\Ssh\SshSettings;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
+use App\Domain\Inventory\ExternalBackups;
+use App\Domain\Inventory\ExternalBackupStatus;
 use App\Domain\Inventory\HttpProbe;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\PendingUpdates;
@@ -80,6 +88,7 @@ use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Site;
 use App\Support\Logging\RedactSecretsTap;
 use Closure;
+use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
@@ -207,6 +216,34 @@ class AppServiceProvider extends ServiceProvider
             $app->make(DropboxSettings::class),
             self::configInt('wpup.backups.hash_chunk_bytes'),
         ));
+        // Package artifacts of a run (UZEROWPUP-49).
+        $this->app->bind(ArtifactSettings::class, static fn (): ArtifactSettings => new ArtifactSettings(
+            self::configString('wpup.artifacts.dir'),
+            self::configInt('wpup.artifacts.connect_timeout_seconds'),
+            self::configInt('wpup.artifacts.timeout_seconds'),
+            self::configInt('wpup.artifacts.read_timeout_seconds'),
+            self::configInt('wpup.artifacts.max_bytes'),
+            self::configInt('wpup.artifacts.max_unpacked_bytes'),
+            self::configInt('wpup.artifacts.max_redirects'),
+            self::configInt('wpup.artifacts.chunk_bytes'),
+            self::configInt('wpup.artifacts.command_timeout_seconds'),
+            self::configString('wpup.artifacts.wordpress_org.plugin_url'),
+            self::configString('wpup.artifacts.wordpress_org.theme_url'),
+            self::configInt('wpup.artifacts.min_retention_days'),
+            array_values(array_filter((array) config('wpup.artifacts.allowed_ports'), is_int(...))),
+            array_map(strtolower(...), self::configStrings('wpup.artifacts.url_secrets.query_keys')),
+            self::configInt('wpup.artifacts.url_secrets.min_value_length'),
+            self::configInt('wpup.artifacts.url_secrets.min_segment_length'),
+            self::configString('wpup.artifacts.wordpress_org.core_url'),
+            self::configString('wpup.artifacts.wordpress_org.localized_core_url'),
+        ));
+        $this->app->bind(HostResolver::class, DnsHostResolver::class);
+        $this->app->bind(ArtifactFetcher::class, static fn (Application $app): ArtifactFetcher => new ArtifactFetcher(
+            new GuzzleClient,
+            $app->make(ArtifactStore::class),
+            $app->make(PackageUrlGuard::class),
+            $app->make(ArtifactSettings::class),
+        ));
         // The tool's own backup (UZEROWPUP-47, ADR-0009 §3).
         $this->app->bind(ToolBackupSettings::class, static fn (): ToolBackupSettings => new ToolBackupSettings(
             self::configStrings('wpup.tool_backup.age_recipients'),
@@ -272,9 +309,22 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.prerequisites.command_timeout_seconds'),
             self::configInt('wpup.inventory.prerequisites.du_timeout_seconds'),
         ));
+        $this->app->bind(ExternalBackups::class, static function (Application $app): ExternalBackups {
+            /** @var array<string, array{name: string, last_backup: array{option: string, time_key: string, success_key: string}|null}> $known */
+            $known = config('wpup.inventory.external_backups.plugins');
+
+            return new ExternalBackups(
+                $app->make(WpCliReader::class),
+                $known,
+                self::configInt('wpup.inventory.external_backups.command_timeout_seconds'),
+                self::configInt('wpup.inventory.external_backups.max_future_seconds'),
+                self::configInt('wpup.inventory.external_backups.max_output_bytes'),
+            );
+        });
+        $this->app->bind(ExternalBackupStatus::class, static fn (): ExternalBackupStatus => new ExternalBackupStatus(self::configInt('wpup.inventory.external_backups.max_age_days')));
         // Until the notification channels exist (F5), blocks only reach the log.
         $this->app->bind(SiteBlockNotifier::class, LogSiteBlockNotifier::class);
-        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class), $app->make(PackageVersions::class)));
+        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class), $app->make(ExternalBackups::class), $app->make(PackageVersions::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
             $resolver->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([
