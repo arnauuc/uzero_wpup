@@ -78,14 +78,18 @@ it('passes on a healthy site and fails when a plugin updated after the baseline 
         Fixtures::run(SMOKE_IT_FIXTURE, "printf '<?php\\n/* Plugin Name: wpup-it-smoke */\\nthrow new Error(\\\"wpup-it-smoke fatal {$token}\\\");\\n' > {$file}");
         $active = $driver->wp(['plugin', 'is-active', 'wpup-it-smoke', '--skip-plugins', '--skip-themes'])->successful();
 
-        // A long-lived web worker may take a moment to see the new file: a few tries, like an operator's retry.
+        // Retries are only for diagnosis: needing one is a failure too (a broken site that
+        // a later request would reveal is exactly what the check must not pass).
+        $attempts = [];
         $broken = $steps->check()->run($context);
+        $attempts[] = $broken->summary;
         for ($try = 1; $try < 4 && $broken->status !== RunStepStatus::Failed; $try++) {
             sleep(3);
             $broken = $steps->check()->run($context);
+            $attempts[] = $broken->summary;
         }
 
-        $diagnosis = $broken->summary
+        $diagnosis = 'intents: '.json_encode($attempts, JSON_UNESCAPED_UNICODE)
             .' | activació: '.trim($activation->stdout.' '.$activation->stderr)
             .' | activat: '.($active ? 'sí' : 'no')
             .' | log: '.trim(Fixtures::run(SMOKE_IT_FIXTURE, 'tail -n 3 '.escapeshellarg((string) $probe->errorLog).' 2>&1 | cut -c1-200'));
@@ -94,6 +98,7 @@ it('passes on a healthy site and fails when a plugin updated after the baseline 
         expect($baseline->summary)->not->toContain('no verificat');
         expect($healthy->status)->toBe(RunStepStatus::Succeeded, $healthy->summary);
         expect($active)->toBeTrue($diagnosis);
+        expect(count($attempts))->toBe(1, 'el check ha necessitat reintents: '.$diagnosis);
         expect($broken->status)->toBe(RunStepStatus::Failed, $diagnosis);
         expect($broken->data['fatals'] > 0 || $broken->data['http_status'] >= 500)->toBeTrue($diagnosis);
     } finally {
