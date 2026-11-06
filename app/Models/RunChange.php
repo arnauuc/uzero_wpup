@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 /**
  * @property int $id
  * @property int $run_id
+ * @property string|null $step the step that wrote it (null for older rows)
  * @property ComponentType $component_type
  * @property string $slug
  * @property string|null $version_before

@@ -25,6 +25,9 @@ final readonly class PlanStep implements ReadOnlyStep
 {
     public const string NAME = 'plan';
 
+    /** Size of the string columns of run_changes. */
+    private const int COLUMN_LENGTH = 255;
+
     public function __construct(private UpdatePlanner $planner, private int $timeoutSeconds, private int $verifiedPhpMaxAgeSeconds) {}
 
     public function name(): string
@@ -72,21 +75,23 @@ final readonly class PlanStep implements ReadOnlyStep
 
     /**
      * One run_changes row per skipped component. version_after is the target that
-     * was not applied. A retried step replaces its own rows.
+     * was not applied. A retried step replaces only its own rows (step = plan).
+     * Slug and versions come from the site: cut to the column size, never failing.
      */
     private function recordSkips(Run $run, UpdatePlan $plan): void
     {
         DB::transaction(static function () use ($run, $plan): void {
-            $run->changes()->where('result', ChangeResult::Skipped->value)->delete();
+            $run->changes()->where('step', self::NAME)->delete();
             foreach ($plan->changes as $change) {
                 if ($change->action !== PlanAction::Skip) {
                     continue;
                 }
                 $run->changes()->create([
+                    'step' => self::NAME,
                     'component_type' => $change->type,
-                    'slug' => $change->slug,
-                    'version_before' => $change->currentVersion,
-                    'version_after' => $change->targetVersion,
+                    'slug' => self::column($change->slug),
+                    'version_before' => self::column($change->currentVersion),
+                    'version_after' => self::column($change->targetVersion),
                     'result' => ChangeResult::Skipped,
                     'reason' => $change->reason,
                     'reason_detail' => $change->detail,
@@ -94,5 +99,11 @@ final readonly class PlanStep implements ReadOnlyStep
                 ]);
             }
         });
+    }
+
+    /** Fits a site-provided value in a varchar(255) column (valid UTF-8, at most 255 bytes). */
+    private static function column(string $value): string
+    {
+        return mb_strcut(mb_scrub($value, 'UTF-8'), 0, self::COLUMN_LENGTH, 'UTF-8');
     }
 }

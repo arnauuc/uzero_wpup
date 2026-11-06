@@ -29,6 +29,13 @@ it('compares WordPress-style versions tolerantly', function (string $a, string $
     'build metadata ignored' => ['7.4+build.5', '7.4', 0],
     'distribution suffix ignored' => ['8.1.2-1ubuntu2.14', '8.1.2', 0],
     'unreadable sorts below readable' => ['dev-main', '0.1', -1],
+    'not a beta: b2b' => ['2.0.0-b2b', '2.0.0', 0],
+    'not an alpha: a1b2c3' => ['1.0.0-a1b2c3', '1.0.0', 0],
+    'underscore patch suffix' => ['1.2.3_patch1', '1.2.3', 0],
+    'pre is a pre-release' => ['1.0-pre2', '1.0', -1],
+    'uppercase rc' => ['6.5RC3', '6.5-rc3', 0],
+    'very long components' => ['1.123456789012345678901234567890', '1.123456789012345678901234567891', -1],
+    'long component above short' => ['1.10000000000000000000', '1.9', 1],
 ]);
 
 it('refuses what is not a version', function (?string $value): void {
@@ -38,7 +45,7 @@ it('refuses what is not a version', function (?string $value): void {
 
 it('accepts surrounding spaces, a trailing plus and a single number', function (string $value): void {
     expect(WpVersion::isValid($value))->toBeTrue();
-})->with([' 7.4 ', '7.4+', '7', '10.3.0.1']);
+})->with([' 7.4 ', '7.4+', '7', '10.3.0.1', '1.2.3_patch1', '2.0.0-b2b', '99999999999999999999.1']);
 
 it('checks a minimum and never takes an unreadable value as met', function (?string $have, ?string $need, ?bool $met): void {
     expect(WpVersion::satisfies($have, $need))->toBe($met);
@@ -55,6 +62,6 @@ it('checks a minimum and never takes an unreadable value as met', function (?str
 ]);
 
 it('gives the first components zero-padded', function (): void {
-    expect(WpVersion::parse('7')?->head(2))->toBe([7, 0])
-        ->and(WpVersion::parse('6.9.1')?->head(1))->toBe([6]);
+    expect(WpVersion::parse('7')?->head(2))->toBe(['7', '0'])
+        ->and(WpVersion::parse('6.09.1')?->head(2))->toBe(['6', '9']);
 });

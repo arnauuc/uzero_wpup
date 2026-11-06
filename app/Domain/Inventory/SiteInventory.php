@@ -29,7 +29,7 @@ use App\Models\SiteSnapshot;
  * - pending_updates: list<array{type: 'core'|'plugin'|'theme'|'woocommerce', slug: string, wporg_slug: ?string,
  *   current_version: string, new_version: string, package_host: ?string, requires_php: ?string,
  *   requires_wp: ?string, requires_wc: ?string, source: 'wordpress.org'|'transient', licensed: bool,
- *   requires_plugins: ?list<string>}>
+ *   requires_plugins: ?list<string>, requires_plugins_inferred: bool}>
  *   (UZEROWPUP-32, see PendingUpdates; slug is the installed name; package URLs are never stored;
  *   licensed=false is a premium package without download URL)
  * - environment.updates: array{warnings: list<string>}

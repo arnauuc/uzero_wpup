@@ -19,10 +19,12 @@ use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\RunEngine;
 use App\Domain\Runs\StepContext;
 use App\Domain\Sites\SiteBlocking;
+use App\Enums\ChangeResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Enums\RunStatus;
 use App\Enums\RunType;
+use App\Enums\SkipReason;
 use App\Enums\UserRole;
 use App\Models\AuditLogEntry;
 use App\Models\Run;
@@ -113,7 +115,8 @@ it('records each skipped component with its precise reason in run_changes, once 
     $driver = plannedDriver(helloTarget: '2.0.0', classicRequiresPlugins: ['woocommerce-subscriptions']);
 
     $run = planRun($driver, $site);
-    // A retried plan step replaces its rows instead of adding more.
+    // A row written by a later step survives a retried plan step, which replaces only its own rows.
+    RunChange::factory()->create(['run_id' => $run->id, 'step' => 'update', 'slug' => 'zz-later', 'result' => ChangeResult::Skipped, 'reason' => SkipReason::Other]);
     (new PlanStep(app(UpdatePlanner::class), 60, 604800))->run(new StepContext($run->refresh(), false, ['inventory' => ['snapshot_id' => SiteSnapshot::query()->where('run_id', $run->id)->value('id')]]));
 
     $rows = $run->changes()->orderBy('slug')->get()->map(static fn (RunChange $c): array => [
@@ -124,7 +127,20 @@ it('records each skipped component with its precise reason in run_changes, once 
         ['classic-editor', 'skipped', 'dependency', '1.6.3', '1.6.4', false, 'Requereix el plugin «woocommerce-subscriptions», que no està instal·lat.'],
         ['hello', 'skipped', 'major_requires_staging', '1.6', '2.0.0', true, 'Canvi major (1.6 → 2.0.0): cal staging primer.'],
         ['premium', 'skipped', 'no_license', '2.0.0', '2.1.0', false, 'No hi ha cap paquet descarregable: falta la llicència.'],
+        ['zz-later', 'skipped', 'other', '1.0.0', '1.0.1', false, null],
     ]);
+    expect($run->changes()->where('step', 'plan')->count())->toBe(3);
+});
+
+it('cuts a site-provided version that does not fit run_changes instead of failing', function (): void {
+    $target = '2.'.str_repeat('0', 300);
+
+    $run = planRun(plannedDriver(helloTarget: $target), Site::factory()->create());
+    $hello = $run->changes()->where('slug', 'hello')->firstOrFail();
+
+    expect($run->status)->toBe(RunStatus::Succeeded)
+        ->and($hello->version_after)->toBe(substr($target, 0, 255))
+        ->and($hello->reason)->toBe(SkipReason::MajorRequiresStaging);
 });
 
 it('uses a recent web-verified PHP of the same minor in place of the CLI guess', function (): void {

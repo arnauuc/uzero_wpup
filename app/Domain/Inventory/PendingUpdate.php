@@ -36,10 +36,12 @@ final readonly class PendingUpdate
         public bool $licensed,
         /** Slugs in the "Requires Plugins" of the new version (WP 6.5+); null if unknown. */
         public ?array $requiresPlugins = null,
+        /** True when $requiresPlugins comes from the installed version, not the new one. */
+        public bool $requiresPluginsInferred = false,
     ) {}
 
     /**
-     * @return array{type: string, slug: string, wporg_slug: ?string, current_version: string, new_version: string, package_host: ?string, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, source: string, licensed: bool, requires_plugins: list<string>|null}
+     * @return array{type: string, slug: string, wporg_slug: ?string, current_version: string, new_version: string, package_host: ?string, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, source: string, licensed: bool, requires_plugins: list<string>|null, requires_plugins_inferred: bool}
      */
     public function toArray(): array
     {
@@ -56,6 +58,7 @@ final readonly class PendingUpdate
             'source' => $this->source,
             'licensed' => $this->licensed,
             'requires_plugins' => $this->requiresPlugins,
+            'requires_plugins_inferred' => $this->requiresPluginsInferred,
         ];
     }
 }

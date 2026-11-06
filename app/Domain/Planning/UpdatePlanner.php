@@ -49,6 +49,9 @@ final readonly class UpdatePlanner
     /** Update order; a safety rule, not configuration. */
     private const array ORDER = [ComponentType::Core, ComponentType::Woocommerce, ComponentType::Plugin, ComponentType::Theme, ComponentType::Translation];
 
+    /** Note on an update whose "Requires Plugins" comes from the installed version. */
+    public const string INFERRED_PLUGINS = "Dependències deduïdes de la versió instal·lada: no s'han pogut confirmar les de la versió nova.";
+
     /** Prefix of the block a real run would apply, as opposed to one the site already has. */
     public const string WOULD_BLOCK_PREFIX = 'es bloquejaria: ';
 
@@ -58,10 +61,13 @@ final readonly class UpdatePlanner
         $frozen = $profile === null ? [] : self::strings($profile->frozen_components);
         $excluded = $profile === null ? [] : self::strings($profile->excluded_components);
 
-        $candidates = $this->candidates($snapshot);
+        [$candidates, $otherCoreOffers] = $this->candidates($snapshot);
 
+        // Only an active WooCommerce can become a target: updating an inactive one
+        // does not make it meet anyone's requirement.
+        $woocommerce = $this->installedWooCommerce($snapshot);
         /** @var array<string, string> $targets target version of core and WooCommerce after this plan */
-        $targets = [ComponentType::Core->value => $snapshot->core_version, ComponentType::Woocommerce->value => $this->installedWooCommerce($snapshot) ?? ''];
+        $targets = [ComponentType::Core->value => $snapshot->core_version, ComponentType::Woocommerce->value => $woocommerce ?? ''];
         /** @var array<string, PlannedChange> $skippedTargets skipped core or WooCommerce update, by type */
         $skippedTargets = [];
         $active = $this->activePlugins($snapshot);
@@ -74,7 +80,7 @@ final readonly class UpdatePlanner
                 self::listed($excluded, $change) => [SkipReason::Excluded, 'El component és al perfil del lloc com a exclòs.'],
                 self::listed($frozen, $change) => [SkipReason::Frozen, 'El component és al perfil del lloc com a congelat.'],
                 $candidate['licensed'] === false => [SkipReason::NoLicense, 'No hi ha cap paquet descarregable: falta la llicència.'],
-                default => $this->incompatibility($candidate, $phpVersion, $targets, $skippedTargets)
+                default => $this->incompatibility($candidate, $phpVersion, $targets, $skippedTargets, $otherCoreOffers)
                     ?? $this->missingPlugin($candidate['requires_plugins'], $active)
                     ?? $this->majorChange($change),
             };
@@ -84,8 +90,13 @@ final readonly class UpdatePlanner
                 if (isset($targets[$change->type->value])) {
                     $skippedTargets[$change->type->value] = $change;
                 }
-            } elseif (isset($targets[$change->type->value])) {
-                $targets[$change->type->value] = $change->targetVersion;
+            } else {
+                if ($change->type === ComponentType::Core || ($change->type === ComponentType::Woocommerce && $woocommerce !== null)) {
+                    $targets[$change->type->value] = $change->targetVersion;
+                }
+                if ($candidate['requires_plugins_inferred']) {
+                    $change = new PlannedChange($change->type, $change->slug, $change->currentVersion, $change->targetVersion, PlanAction::Update, null, self::INFERRED_PLUGINS);
+                }
             }
             $decided[] = $change;
         }
@@ -94,7 +105,9 @@ final readonly class UpdatePlanner
     }
 
     /**
-     * @return list<array{change: PlannedChange, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: list<string>}>
+     * The candidates in update order, and the core offers that were not chosen.
+     *
+     * @return array{0: list<array{change: PlannedChange, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}>, 1: list<string>}
      */
     private function candidates(SiteSnapshot $snapshot): array
     {
@@ -118,7 +131,9 @@ final readonly class UpdatePlanner
                 'requires_php' => self::version($update['requires_php'] ?? null),
                 'requires_wp' => self::version($update['requires_wp'] ?? null),
                 'requires_wc' => self::version($update['requires_wc'] ?? null),
-                'requires_plugins' => is_array($update['requires_plugins'] ?? null) ? self::strings($update['requires_plugins']) : [],
+                // Null: unknown (could not be read), never taken as "none".
+                'requires_plugins' => is_array($update['requires_plugins'] ?? null) ? self::strings($update['requires_plugins']) : null,
+                'requires_plugins_inferred' => ($update['requires_plugins_inferred'] ?? false) === true,
             ];
             if ($type === ComponentType::Core) {
                 $cores[] = $row;
@@ -128,13 +143,19 @@ final readonly class UpdatePlanner
         }
         // The core is one component: only one of its offers is planned.
         $core = $this->chosenCore($cores);
+        $others = [];
+        foreach ($cores as $offer) {
+            if ($offer !== $core) {
+                $others[] = $offer['change']->targetVersion;
+            }
+        }
         if ($core !== null) {
             $rows[] = $core;
         }
 
         usort($rows, fn (array $a, array $b): int => $this->rank($a['change']->type) <=> $this->rank($b['change']->type));
 
-        return $rows;
+        return [$rows, $others];
     }
 
     /**
@@ -194,9 +215,10 @@ final readonly class UpdatePlanner
      * @param  array{requires_php: ?string, requires_wp: ?string, requires_wc: ?string}  $candidate
      * @param  array<string, string>  $targets
      * @param  array<string, PlannedChange>  $skippedTargets
+     * @param  list<string>  $otherCoreOffers
      * @return array{SkipReason, string}|null
      */
-    private function incompatibility(array $candidate, string $phpVersion, array $targets, array $skippedTargets): ?array
+    private function incompatibility(array $candidate, string $phpVersion, array $targets, array $skippedTargets, array $otherCoreOffers): ?array
     {
         $php = $candidate['requires_php'];
         if ($php !== null) {
@@ -215,7 +237,7 @@ final readonly class UpdatePlanner
             if ($met !== true) {
                 return [SkipReason::WpIncompatible, $met === null
                     ? self::unreadable('WordPress', $wp, $core)
-                    : "Requereix WordPress {$wp} i el lloc tindria {$core}.".self::because($skippedTargets[ComponentType::Core->value] ?? null, $wp)];
+                    : "Requereix WordPress {$wp} i el lloc tindria {$core}.".(self::because($skippedTargets[ComponentType::Core->value] ?? null, $wp) ?: self::pendingCore($otherCoreOffers, $core, $wp))];
             }
         }
 
@@ -237,12 +259,15 @@ final readonly class UpdatePlanner
     }
 
     /**
-     * @param  list<string>  $required
+     * @param  list<string>|null  $required  null: could not be read
      * @param  array<string, bool>  $plugins  installed plugins by slug: active or not
      * @return array{SkipReason, string}|null
      */
-    private function missingPlugin(array $required, array $plugins): ?array
+    private function missingPlugin(?array $required, array $plugins): ?array
     {
+        if ($required === null) {
+            return [SkipReason::Dependency, "No s'han pogut llegir les dependències (Requires Plugins) de la versió nova: no es pot comprovar."];
+        }
         foreach ($required as $slug) {
             if (($plugins[$slug] ?? null) !== true) {
                 return [SkipReason::Dependency, isset($plugins[$slug])
@@ -266,6 +291,28 @@ final readonly class UpdatePlanner
         $why = $skipped->reason === null ? '' : ': '.$skipped->reason->label();
 
         return " L'actualització de {$name} a {$skipped->targetVersion} s'omet{$why}.";
+    }
+
+    /**
+     * A core offer that was not planned (the planner picks one) and would meet the
+     * requirement: the lowest such offer, with why it is pending.
+     *
+     * @param  list<string>  $offers
+     */
+    private static function pendingCore(array $offers, string $current, string $need): string
+    {
+        $best = null;
+        foreach ($offers as $offer) {
+            if (WpVersion::satisfies($offer, $need) === true && ($best === null || WpVersion::compareStrings($offer, $best) < 0)) {
+                $best = $offer;
+            }
+        }
+        if ($best === null) {
+            return '';
+        }
+        $why = VersionChange::isMajor(ComponentType::Core, $current, $best) ? SkipReason::MajorRequiresStaging->label() : 'no es planifica en aquesta execució';
+
+        return " WordPress {$best} és pendent: {$why}.";
     }
 
     private static function unreadable(string $what, string $need, string $have): string

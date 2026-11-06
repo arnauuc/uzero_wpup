@@ -54,7 +54,7 @@ function pendingDriver(): FakeDriver
                 'requires_php' => '7.4', 'requires' => '6.0', 'wc_requires' => '9.0',
             ],
             'nolicence/nolicence.php' => ['slug' => 'nolicence', 'new_version' => '2.0.0', 'package' => ''],
-            'hello.php' => ['id' => 'w.org/plugins/hello-dolly', 'slug' => 'hello-dolly', 'new_version' => '1.7.2', 'package' => 'https://downloads.wordpress.org/plugin/hello-dolly.1.7.2.zip', 'requires' => '6.0', 'requires_php' => '7.0'],
+            'hello.php' => ['id' => 'w.org/plugins/hello-dolly', 'slug' => 'hello-dolly', 'new_version' => '1.7.2', 'package' => 'https://downloads.wordpress.org/plugin/hello-dolly.1.7.2.zip', 'requires' => '6.0', 'requires_php' => '7.0', 'requires_plugins' => []],
         ],
     ];
     $driver->transients['update_themes'] = [
@@ -89,7 +89,10 @@ it('combines site transients with WordPress.org requirements only where they are
     $result = pendingUpdates()->read($driver, $driver->installedComponents(), time());
     $by = pendingBySlug(pendingUpdates(), $driver);
 
-    expect($result->warnings)->toBe([])
+    // No source for the new version's Requires Plugins: the premium ones, and WooCommerce
+    // because this WordPress.org answer leaves it out.
+    expect($result->warnings)->toHaveCount(3)
+        ->and(implode(' ', $result->warnings))->toContain('«premium-thing»')->toContain('«nolicence»')->toContain('«woocommerce»')
         ->and($by['woocommerce'])->toMatchArray(['type' => 'woocommerce', 'wporg_slug' => 'woocommerce', 'current_version' => '10.1.0', 'new_version' => '10.2.0', 'requires_php' => '7.4', 'requires_wp' => '6.7', 'requires_wc' => null, 'source' => 'wordpress.org', 'licensed' => true, 'package_host' => 'downloads.wordpress.org'])
         ->and($by['storefront'])->toMatchArray(['type' => 'theme', 'requires_wp' => '6.5', 'source' => 'wordpress.org'])
         ->and($by['premium-thing'])->toMatchArray(['type' => 'plugin', 'source' => 'transient', 'requires_php' => '7.4', 'requires_wp' => '6.0', 'requires_wc' => '9.0', 'licensed' => true])
@@ -215,10 +218,10 @@ it('reads Requires Plugins from the transient, then WordPress.org, then the inst
     $driver->transients['update_plugins'] = ['last_checked' => time(), 'response' => [
         'woocommerce/woocommerce.php' => ['id' => 'w.org/plugins/woocommerce', 'slug' => 'woocommerce', 'new_version' => '10.2.0', 'package' => 'https://downloads.wordpress.org/plugin/woocommerce.10.2.0.zip'],
         'premium-thing/premium-thing.php' => ['slug' => 'premium-thing', 'new_version' => '3.0.0', 'package' => 'https://shop.test/x.zip', 'requires_php' => '7.4', 'requires' => '6.0'],
-        'nolicence/nolicence.php' => ['slug' => 'nolicence', 'new_version' => '2.0.0', 'package' => ''],
+        'nolicence/nolicence.php' => ['slug' => 'nolicence', 'new_version' => '2.0.0', 'package' => '', 'requires_plugins' => 'Akismet, akismet'],
         'hello.php' => ['id' => 'w.org/plugins/hello-dolly', 'slug' => 'hello-dolly', 'new_version' => '1.7.2', 'package' => 'https://downloads.wordpress.org/plugin/hello-dolly.1.7.2.zip', 'requires' => '6.0', 'requires_php' => '7.0', 'requires_plugins' => ['woocommerce', 'hello']],
     ]];
-    $driver->requiresPluginsHeaders = ['premium-thing/premium-thing.php' => ' WooCommerce , woocommerce-subscriptions,,'];
+    $driver->requiresPluginsHeaders = ['premium-thing/premium-thing.php' => ' WooCommerce , woocommerce-subscriptions,,', 'nolicence/nolicence.php' => 'ignored'];
 
     $result = pendingUpdates()->read($driver, $driver->installedComponents(), time());
     $by = [];
@@ -226,14 +229,16 @@ it('reads Requires Plugins from the transient, then WordPress.org, then the inst
         $by[$update->slug] = $update->toArray();
     }
 
-    expect($result->warnings)->toBe([])
+    expect($result->warnings)->toBe(["No s'han pogut confirmar els plugins que requereix la versió nova de «premium-thing»: es fan servir els de la versió instal·lada."])
         // Transient; the plugin itself is dropped.
-        ->and($by['hello']['requires_plugins'])->toBe(['woocommerce'])
+        ->and($by['hello'])->toMatchArray(['requires_plugins' => ['woocommerce'], 'requires_plugins_inferred' => false])
         // WordPress.org; invalid slugs and the plugin itself dropped, as WordPress does.
-        ->and($by['woocommerce']['requires_plugins'])->toBe(['akismet'])
-        // Premium: the header of the installed version.
-        ->and($by['premium-thing']['requires_plugins'])->toBe(['woocommerce', 'woocommerce-subscriptions'])
-        ->and($by['nolicence']['requires_plugins'])->toBe([])
+        ->and($by['woocommerce'])->toMatchArray(['requires_plugins' => ['akismet'], 'requires_plugins_inferred' => false])
+        // Premium without it: the header of the installed version, marked as inferred and
+        // never lowercased (WordPress drops "WooCommerce").
+        ->and($by['premium-thing'])->toMatchArray(['requires_plugins' => ['woocommerce-subscriptions'], 'requires_plugins_inferred' => true])
+        // A transient header string, cleaned the same way.
+        ->and($by['nolicence'])->toMatchArray(['requires_plugins' => ['akismet'], 'requires_plugins_inferred' => false])
         ->and($by['storefront']['requires_plugins'])->toBe([])
         ->and($by['wordpress']['requires_plugins'])->toBe([])
         ->and($driver->wpCalls)->toContain(['eval', PendingUpdates::REQUIRES_PLUGINS_SNIPPET]);
@@ -262,4 +267,32 @@ it('leaves Requires Plugins unknown, with a warning, when the installed headers 
 
     expect($result->updates[0]->requiresPlugins)->toBeNull()
         ->and(implode(' ', $result->warnings))->toContain('requereixen');
+});
+
+it('asks WordPress.org for a plugin whose transient has requirements but no Requires Plugins', function (): void {
+    Http::fake(['api.wordpress.org/*' => Http::response(['requires' => '6.0', 'requires_php' => '7.0', 'requires_plugins' => ['woocommerce']])]);
+    $driver = new FakeDriver;
+    $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'addon', '1.0'));
+    $driver->transients['update_plugins'] = ['response' => ['addon/addon.php' => ['id' => 'w.org/plugins/addon', 'slug' => 'addon', 'new_version' => '1.1', 'package' => 'https://downloads.wordpress.org/a.zip', 'requires' => '6.0', 'requires_php' => '7.0']]];
+
+    $result = pendingUpdates()->read($driver, $driver->installedComponents(), time());
+
+    Http::assertSentCount(1);
+    expect($result->updates[0]->requiresPlugins)->toBe(['woocommerce'])
+        ->and($result->updates[0]->requiresPluginsInferred)->toBeFalse()
+        ->and($driver->wpCalls)->not->toContain(['eval', PendingUpdates::REQUIRES_PLUGINS_SNIPPET]);
+});
+
+it('treats a cached WordPress.org answer without requires_plugins as a miss', function (): void {
+    Http::fake(['api.wordpress.org/*' => Http::response(['requires' => '6.0', 'requires_php' => '7.0', 'requires_plugins' => []])]);
+    $cache = new Repository(new ArrayStore);
+    $cache->put('wpup:wporg:plugin:addon:1.1', ['requires' => '6.0', 'requires_php' => '7.0'], 600);
+    $driver = new FakeDriver;
+    $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'addon', '1.0'));
+    $driver->transients['update_plugins'] = ['response' => ['addon/addon.php' => ['id' => 'w.org/plugins/addon', 'slug' => 'addon', 'new_version' => '1.1', 'package' => 'https://downloads.wordpress.org/a.zip']]];
+
+    $result = pendingUpdates($cache)->read($driver, $driver->installedComponents(), time());
+
+    Http::assertSentCount(1);
+    expect($result->updates[0]->requiresPlugins)->toBe([]);
 });

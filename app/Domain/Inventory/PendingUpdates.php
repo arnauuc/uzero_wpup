@@ -42,8 +42,12 @@ use Illuminate\Support\Facades\Log;
  * if a licence server adds `wc_requires` / `wc_requires_at_least` to its
  * transient entry, otherwise null. `requires_plugins` (the "Requires Plugins"
  * header, WP 6.5+) comes from the transient entry, else from the WordPress.org
- * answer, else from the header of the installed version (one `wp eval` for all
- * plugins; a plugin rarely drops a dependency in an update), else null.
+ * answer (looked up for a WordPress.org plugin whenever the transient lacks it).
+ * Only when neither has it (premium plugins) it is inferred from the header of
+ * the installed version (one `wp eval` for all plugins) and marked
+ * requires_plugins_inferred, with a warning: a dependency that only the new
+ * version adds is missed. If that cannot be read either it stays null (unknown,
+ * which the planner never takes as met).
  * Licences are not managed: a package without
  * download URL is reported with licensed=false.
  *
@@ -110,19 +114,25 @@ PHP;
         }
 
         $info = $this->lookups($pending, $warnings);
+        $found = [];
         $requiresPlugins = [];
         foreach ($pending as $i => $row) {
-            $found = $info[$this->cacheKey($row['kind'], (string) $row['wporg'], $row['new'])] ?? [];
-            $requiresPlugins[$i] = $row['plugins'] ?? self::slugList($found['requires_plugins'] ?? null, $row['slug']);
+            $found[$i] = $info[$this->cacheKey($row['kind'], (string) $row['wporg'], $row['new'])] ?? [];
+            $requiresPlugins[$i] = $row['plugins'] ?? self::slugList($found[$i]['requires_plugins'] ?? null, $row['slug']);
         }
+        $inferred = [];
         $headers = in_array(null, $requiresPlugins, true) ? $this->installedRequiresPlugins($driver, $warnings) : null;
         foreach ($headers === null ? [] : $requiresPlugins as $i => $slugs) {
-            $requiresPlugins[$i] = $slugs ?? self::slugList($headers[$pending[$i]['slug']] ?? '', $pending[$i]['slug']);
+            if ($slugs === null) {
+                $slug = $pending[$i]['slug'];
+                $requiresPlugins[$i] = self::slugList($headers[$slug] ?? '', $slug);
+                $inferred[$i] = true;
+                $warnings[] = "No s'han pogut confirmar els plugins que requereix la versió nova de «{$slug}»: es fan servir els de la versió instal·lada.";
+            }
         }
 
         foreach ($pending as $i => $row) {
             $kind = $row['kind'];
-            $found = $info[$this->cacheKey($kind, (string) $row['wporg'], $row['new'])] ?? [];
             [$host, $licensed] = $this->package($row['entry']['package'] ?? null);
             $type = $kind === ComponentType::Theme ? 'theme' : ($row['slug'] === 'woocommerce' ? 'woocommerce' : 'plugin');
 
@@ -133,12 +143,13 @@ PHP;
                 $row['current'],
                 $row['new'],
                 $host,
-                $row['php'] ?? $this->reader->text($found['requires_php'] ?? null),
-                $row['wp'] ?? $this->reader->text($found['requires'] ?? null),
+                $row['php'] ?? $this->reader->text($found[$i]['requires_php'] ?? null),
+                $row['wp'] ?? $this->reader->text($found[$i]['requires'] ?? null),
                 $this->reader->text($row['entry']['wc_requires'] ?? null) ?? $this->reader->text($row['entry']['wc_requires_at_least'] ?? null),
                 $row['from_org'] ? PendingUpdate::SOURCE_WORDPRESS_ORG : PendingUpdate::SOURCE_TRANSIENT,
                 $licensed,
                 $requiresPlugins[$i],
+                $inferred[$i] ?? false,
             );
         }
 
@@ -247,12 +258,14 @@ PHP;
         $toFetch = [];
 
         foreach ($pending as $row) {
-            if (! $row['from_org'] || $row['wporg'] === null || ($row['php'] !== null && $row['wp'] !== null)) {
+            $complete = $row['php'] !== null && $row['wp'] !== null && $row['plugins'] !== null;
+            if (! $row['from_org'] || $row['wporg'] === null || $complete) {
                 continue;
             }
             $key = $this->cacheKey($row['kind'], $row['wporg'], $row['new']);
             $cached = $this->cache->get($key);
-            if (is_array($cached)) {
+            // An entry cached before requires_plugins was kept is a miss.
+            if (is_array($cached) && array_key_exists('requires_plugins', $cached)) {
                 $found[$key] = $this->stringKeys($cached);
             } elseif (count($toFetch) >= $this->maxLookups) {
                 $warnings[] = "S'ha superat el límit de consultes a WordPress.org: «{$row['slug']}» només té les dades del lloc.";
@@ -330,8 +343,9 @@ PHP;
     }
 
     /**
-     * Slugs of a "Requires Plugins" value, cleaned as WordPress does (comma-separated
-     * header or WordPress.org list; invalid slugs and the plugin itself dropped),
+     * Slugs of a "Requires Plugins" value, cleaned as WordPress does
+     * (WP_Plugin_Dependencies::sanitize_dependency_slugs: trimmed, anything that is not
+     * a lowercase slug dropped, never lowercased; the plugin itself dropped too),
      * sorted. Null when there is no value at all (unknown, not "none").
      *
      * @return list<string>|null
@@ -349,7 +363,7 @@ PHP;
 
         $slugs = [];
         foreach ($items as $item) {
-            $slug = strtolower(trim($item));
+            $slug = trim($item);
             if ($slug !== $self && preg_match('/^[a-z0-9]+(-[a-z0-9]+)*$/', $slug) === 1) {
                 $slugs[$slug] = true;
             }

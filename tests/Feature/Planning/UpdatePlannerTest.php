@@ -20,7 +20,7 @@ use App\Models\SiteSnapshot;
  */
 function pending(string $type, string $slug, string $from, string $to, array $extra = []): array
 {
-    return $extra + ['type' => $type, 'slug' => $slug, 'current_version' => $from, 'new_version' => $to, 'requires_php' => null, 'requires_wp' => null, 'requires_wc' => null, 'licensed' => true];
+    return $extra + ['type' => $type, 'slug' => $slug, 'current_version' => $from, 'new_version' => $to, 'requires_php' => null, 'requires_wp' => null, 'requires_wc' => null, 'requires_plugins' => [], 'licensed' => true];
 }
 
 /**
@@ -365,12 +365,10 @@ it('skips an update whose required plugins are not installed and active', functi
         pending('plugin', 'needs-inactive', '1.0', '1.1', ['requires_plugins' => ['sleeper']]),
         pending('plugin', 'needs-missing', '1.0', '1.1', ['requires_plugins' => ['helper', 'ghost']]),
         pending('plugin', 'needs-wc', '1.0', '1.1', ['requires_plugins' => ['woocommerce']]),
-        pending('plugin', 'unknown', '1.0', '1.1', ['requires_plugins' => null]),
     ], plugins: ['helper' => true, 'sleeper' => false]);
 
     expect(changeOf($plan, 'needs-active')->action)->toBe(PlanAction::Update)
         ->and(changeOf($plan, 'needs-wc')->action)->toBe(PlanAction::Update)
-        ->and(changeOf($plan, 'unknown')->action)->toBe(PlanAction::Update)
         ->and(changeOf($plan, 'needs-inactive')->reason)->toBe(SkipReason::Dependency)
         ->and(changeOf($plan, 'needs-inactive')->detail)->toBe('Requereix el plugin «sleeper», que està instal·lat però no està actiu.')
         ->and(changeOf($plan, 'needs-missing')->detail)->toBe('Requereix el plugin «ghost», que no està instal·lat.');
@@ -391,4 +389,52 @@ it('needs an active WooCommerce for a Requires Plugins on it', function (): void
     $plan = planFor([pending('plugin', 'ext', '1.0', '1.1', ['requires_plugins' => ['woocommerce']])], wcActive: false);
 
     expect(changeOf($plan, 'ext')->detail)->toBe('Requereix el plugin «woocommerce», que està instal·lat però no està actiu.');
+});
+
+it('never takes unknown Requires Plugins as met', function (mixed $value): void {
+    $change = changeOf(planFor([pending('plugin', 'p', '1.0', '1.1', ['requires_plugins' => $value])]), 'p');
+
+    expect($change->reason)->toBe(SkipReason::Dependency)
+        ->and($change->detail)->toContain("No s'han pogut llegir les dependències");
+})->with([
+    'null' => [null],
+    'not a list' => ['woocommerce'],
+]);
+
+it('notes on the update when Requires Plugins was inferred from the installed version', function (): void {
+    $plan = planFor([
+        pending('plugin', 'premium', '1.0', '1.1', ['requires_plugins_inferred' => true]),
+        pending('plugin', 'known', '1.0', '1.1'),
+    ]);
+
+    expect(changeOf($plan, 'premium')->action)->toBe(PlanAction::Update)
+        ->and(changeOf($plan, 'premium')->detail)->toBe(UpdatePlanner::INFERRED_PLUGINS)
+        ->and(changeOf($plan, 'known')->detail)->toBeNull();
+});
+
+it('does not let an update of an inactive WooCommerce meet requires_wc', function (): void {
+    $plan = planFor([
+        pending('woocommerce', 'woocommerce', '10.1.0', '10.2.0'),
+        pending('plugin', 'ext', '1.0', '1.1', ['requires_wc' => '10.2']),
+    ], wcActive: false);
+
+    expect(changeOf($plan, 'woocommerce')->action)->toBe(PlanAction::Update)
+        ->and(changeOf($plan, 'ext')->reason)->toBe(SkipReason::Dependency)
+        ->and(changeOf($plan, 'ext')->detail)->toContain('no està actiu');
+});
+
+it('names a higher core offer that was not planned when it would meet requires_wp', function (): void {
+    // 6.8.3 is planned; 6.9.1 would meet the plugin but is a major pending staging.
+    $plan = planFor([
+        pending('core', 'wordpress', '6.8.1', '6.8.3'),
+        pending('core', 'wordpress', '6.8.1', '6.9.1'),
+        pending('core', 'wordpress', '6.8.1', '6.9.0'),
+        pending('plugin', 'p', '1.0', '1.1', ['requires_wp' => '6.9']),
+    ]);
+
+    expect(changeOf($plan, 'wordpress')->targetVersion)->toBe('6.8.3')
+        ->and(changeOf($plan, 'p')->detail)->toBe('Requereix WordPress 6.9 i el lloc tindria 6.8.3. WordPress 6.9.0 és pendent: major pendent: cal staging (F7).');
+
+    $plan = planFor([pending('core', 'wordpress', '6.8.1', '6.8.3'), pending('plugin', 'p', '1.0', '1.1', ['requires_wp' => '6.9'])]);
+    expect(changeOf($plan, 'p')->detail)->toBe('Requereix WordPress 6.9 i el lloc tindria 6.8.3.');
 });
