@@ -6,13 +6,17 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\Data\LogCursor;
 use App\Domain\Drivers\DriverFactory;
 use App\Domain\Drivers\Exceptions\DriverException;
+use App\Domain\Inventory\HttpProbe;
+use App\Domain\Inventory\InventoryStep;
 use App\Domain\Runs\StepContext;
 use App\Domain\Updates\PhpLogBaselineStep;
 use App\Domain\Updates\SmokeCheckSteps;
 use App\Enums\AuditChannel;
+use App\Enums\PhpVersionSource;
 use App\Enums\RunStepStatus;
 use App\Enums\UserRole;
 use App\Models\Run;
+use App\Models\SiteSnapshot;
 use App\Models\User;
 use Tests\Support\Fixtures;
 
@@ -45,7 +49,7 @@ function smokeIntegrationRun(): array
 }
 
 it('passes on a healthy site and fails when a plugin updated after the baseline breaks it', function (): void {
-    [$run, $context] = smokeIntegrationRun();
+    [$run] = smokeIntegrationRun();
     $site = $run->site()->firstOrFail();
     $driver = app(DriverFactory::class)->forSite($site, AuditActor::system('tests'));
     $steps = app(SmokeCheckSteps::class);
@@ -55,20 +59,43 @@ it('passes on a healthy site and fails when a plugin updated after the baseline 
     $token = bin2hex(random_bytes(6));
 
     try {
+        // As in production, the log is the one the WEB's PHP reported to the HTTP probe.
+        $probe = app(HttpProbe::class)->run($site, $driver);
+        expect($probe->errorLog)->not->toBeNull('el probe no ha informat de cap error_log');
+        $snapshot = SiteSnapshot::factory()->create([
+            'site_id' => $site->id, 'php_source' => PhpVersionSource::HttpProbe,
+            'environment' => ['php' => ['error_log' => $probe->errorLog]],
+        ]);
+        $context = new StepContext($run, false, [InventoryStep::NAME => ['snapshot_id' => $snapshot->id]]);
+
         $baseline = $steps->baseline()->run($context);
-        $context = new StepContext($run, false, [PhpLogBaselineStep::NAME => $baseline->data]);
+        $context = new StepContext($run, false, [InventoryStep::NAME => ['snapshot_id' => $snapshot->id], PhpLogBaselineStep::NAME => $baseline->data]);
         $healthy = $steps->check()->run($context);
 
         // The "update" breaks the site: every request now dies with a fatal.
         Fixtures::run(SMOKE_IT_FIXTURE, 'mkdir -p '.escapeshellarg($dir)." && printf '<?php\\n/* Plugin Name: wpup-it-smoke */\\n' > {$file}");
-        $driver->wp(['plugin', 'activate', 'wpup-it-smoke']);
-        Fixtures::run(SMOKE_IT_FIXTURE, "printf '<?php\\n/* Plugin Name: wpup-it-smoke */\\nthrow new Error(\"wpup-it-smoke fatal {$token}\");\\n' > {$file}");
-        $broken = $steps->check()->run($context);
+        $activation = $driver->wp(['plugin', 'activate', 'wpup-it-smoke']);
+        Fixtures::run(SMOKE_IT_FIXTURE, "printf '<?php\\n/* Plugin Name: wpup-it-smoke */\\nthrow new Error(\\\"wpup-it-smoke fatal {$token}\\\");\\n' > {$file}");
+        $active = $driver->wp(['plugin', 'is-active', 'wpup-it-smoke', '--skip-plugins', '--skip-themes'])->successful();
 
-        expect($baseline->status)->toBe(RunStepStatus::Succeeded)
-            ->and($healthy->status)->toBe(RunStepStatus::Succeeded, $healthy->summary)
-            ->and($broken->status)->toBe(RunStepStatus::Failed, $broken->summary)
-            ->and($broken->data['fatals'] > 0 || $broken->data['http_status'] >= 500)->toBeTrue($broken->summary);
+        // A long-lived web worker may take a moment to see the new file: a few tries, like an operator's retry.
+        $broken = $steps->check()->run($context);
+        for ($try = 1; $try < 4 && $broken->status !== RunStepStatus::Failed; $try++) {
+            sleep(3);
+            $broken = $steps->check()->run($context);
+        }
+
+        $diagnosis = $broken->summary
+            .' | activació: '.trim($activation->stdout.' '.$activation->stderr)
+            .' | activat: '.($active ? 'sí' : 'no')
+            .' | log: '.trim(Fixtures::run(SMOKE_IT_FIXTURE, 'tail -n 3 '.escapeshellarg((string) $probe->errorLog).' 2>&1 | cut -c1-200'));
+
+        expect($baseline->status)->toBe(RunStepStatus::Succeeded);
+        expect($baseline->summary)->not->toContain('no verificat');
+        expect($healthy->status)->toBe(RunStepStatus::Succeeded, $healthy->summary);
+        expect($active)->toBeTrue($diagnosis);
+        expect($broken->status)->toBe(RunStepStatus::Failed, $diagnosis);
+        expect($broken->data['fatals'] > 0 || $broken->data['http_status'] >= 500)->toBeTrue($diagnosis);
     } finally {
         Fixtures::run(SMOKE_IT_FIXTURE, 'rm -rf '.escapeshellarg($dir));
         $driver->wp(['plugin', 'deactivate', 'wpup-it-smoke', '--skip-plugins', '--skip-themes']);
