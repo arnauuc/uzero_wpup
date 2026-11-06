@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace App\Domain\Planning;
 
+use App\Domain\Inventory\PendingUpdate;
 use App\Domain\Inventory\PrerequisiteCheck;
 use App\Domain\Sites\SiteBlocking;
+use App\Domain\Vulnerabilities\VulnerabilitySource;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Enums\PrerequisiteName;
@@ -40,7 +42,12 @@ use Carbon\CarbonImmutable;
  * when it is known to exist (PackageVersions: the earliest of its first sighting
  * and its WordPress.org date; a version never recorded waits the whole period).
  * The counter is the offered version's own, so a corrective 3.0.1 restarts it.
- * Core x.y.z within the installed branch never waits (ADR-0005 section 3).
+ * Exceptions: core x.y.z within the installed branch, and an update that fixes a
+ * known vulnerability of the installed version (VulnerabilitySource): it targets
+ * the first version that fixes them all (WordPress.org plugins and themes; others
+ * only offer their latest) and keeps the major rules. --skip-quarantine applies
+ * versions in quarantine; --allow-major applies majors in place (before F7). Both
+ * are marked on the change so the report can show them.
  *
  * Dependencies over the whole plan (UZEROWPUP-48): versioned requirements only
  * point at the core and WooCommerce, which are decided first, so one pass in the
@@ -51,7 +58,7 @@ use Carbon\CarbonImmutable;
  * Versions are compared with WpVersion; a requirement or a site version that
  * cannot be read is never taken as met.
  *
- * @phpstan-type Candidate array{change: PlannedChange, package: PackageVersionKey, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}
+ * @phpstan-type Candidate array{change: PlannedChange, package: PackageVersionKey, from_org: bool, vulnerabilities: list<string>, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}
  */
 final readonly class UpdatePlanner
 {
@@ -66,10 +73,11 @@ final readonly class UpdatePlanner
 
     public function __construct(
         private PackageVersions $versions,
+        private VulnerabilitySource $vulnerabilities,
         private int $quarantineDays,
     ) {}
 
-    public function plan(SiteSnapshot $snapshot, Site $site, ?SiteProfile $profile, string $phpVersion, PhpVersionSource $phpSource): UpdatePlan
+    public function plan(SiteSnapshot $snapshot, Site $site, ?SiteProfile $profile, string $phpVersion, PhpVersionSource $phpSource, PlanOptions $options = new PlanOptions): UpdatePlan
     {
         $blocked = $site->blocked_reason ?? $this->wouldBlock($snapshot);
         $frozen = $profile === null ? [] : self::strings($profile->frozen_components);
@@ -90,6 +98,7 @@ final readonly class UpdatePlanner
         $since = $this->versions->knownSince(array_map(static fn (array $c): PackageVersionKey => $c['package'], $candidates));
 
         foreach ($candidates as $candidate) {
+            $candidate = $blocked === null ? $this->securityFix($candidate) : $candidate;
             $change = $candidate['change'];
             $quarantine = $this->quarantine($change, $since[$candidate['package']->id()] ?? null, $now);
             $decision = match (true) {
@@ -99,8 +108,8 @@ final readonly class UpdatePlanner
                 $candidate['licensed'] === false => [SkipReason::NoLicense, 'No hi ha cap paquet descarregable: falta la llicència.'],
                 default => $this->incompatibility($candidate, $phpVersion, $targets, $skippedTargets, $otherCoreOffers)
                     ?? $this->missingPlugin($candidate['requires_plugins'], $active)
-                    ?? ($quarantine === null ? null : [SkipReason::Quarantine, $quarantine[1], $quarantine[0]])
-                    ?? $this->majorChange($change),
+                    ?? ($quarantine === null || $options->skipQuarantine ? null : [SkipReason::Quarantine, $quarantine[1], $quarantine[0]])
+                    ?? $this->majorChange($change, $options),
             };
 
             if ($decision !== null) {
@@ -112,14 +121,83 @@ final readonly class UpdatePlanner
                 if ($change->type === ComponentType::Core || ($change->type === ComponentType::Woocommerce && $woocommerce !== null)) {
                     $targets[$change->type->value] = $change->targetVersion;
                 }
-                if ($candidate['requires_plugins_inferred']) {
-                    $change = $change->withDetail(self::INFERRED_PLUGINS);
+                if ($quarantine !== null) {
+                    // Only here: let through by --skip-quarantine.
+                    $change = new PlannedChange($change->type, $change->slug, $change->currentVersion, $change->targetVersion, PlanAction::Update, major: $change->major, bypass: QuarantineBypass::Override, quarantineDaysLeft: $quarantine[0]);
                 }
+                $change = $change->withDetail($this->notes($change, $candidate));
             }
             $decided[] = $change;
         }
 
-        return new UpdatePlan($phpVersion, $phpSource, $phpSource !== PhpVersionSource::Cli, $blocked, $this->sorted($decided));
+        return new UpdatePlan($phpVersion, $phpSource, $phpSource !== PhpVersionSource::Cli, $blocked, $this->sorted($decided), $options);
+    }
+
+    /**
+     * What the operator should know about an update that will be applied.
+     *
+     * @param  Candidate  $candidate
+     */
+    private function notes(PlannedChange $change, array $candidate): ?string
+    {
+        $notes = [];
+        if ($candidate['requires_plugins_inferred']) {
+            $notes[] = self::INFERRED_PLUGINS;
+        }
+        if ($change->bypass === QuarantineBypass::Vulnerability) {
+            $notes[] = 'Excepció de seguretat: la versió instal·lada té vulnerabilitats conegudes ('.implode(', ', $candidate['vulnerabilities'])."); s'aplica {$change->targetVersion}, la primera que les corregeix, sense quarantena.";
+        }
+        if ($change->bypass === QuarantineBypass::Override) {
+            $notes[] = 'En quarantena ('.self::days($change->quarantineDaysLeft ?? 0)." més), però s'aplica amb --skip-quarantine.";
+        }
+        if ($change->major) {
+            $notes[] = 'Canvi major aplicat in-place amb --allow-major, sense staging: cal revisar el lloc i el changelog.';
+        }
+
+        return $notes === [] ? null : implode(' ', $notes);
+    }
+
+    /**
+     * The update with the security exception, when the installed version has known
+     * vulnerabilities that the offered version fixes (ADR-0005 section 3): it targets
+     * the first version that fixes them all, when it can be installed.
+     *
+     * @param  Candidate  $candidate
+     * @return Candidate
+     */
+    private function securityFix(array $candidate): array
+    {
+        $change = $candidate['change'];
+        $offered = WpVersion::parse($change->targetVersion);
+        if ($offered === null) {
+            return $candidate;
+        }
+
+        $ids = [];
+        $fix = null;
+        foreach ($this->vulnerabilities->affecting($change->type, $change->slug, $change->currentVersion) as $vulnerability) {
+            $fixed = WpVersion::parse($vulnerability->fixedIn);
+            // Only a fix the offered version includes and the installed one does not.
+            if ($fixed === null || $fixed->compare($offered) > 0 || WpVersion::satisfies($change->currentVersion, $vulnerability->fixedIn) !== false) {
+                continue;
+            }
+            $ids[] = $vulnerability->id;
+            if ($fix === null || WpVersion::compareStrings((string) $vulnerability->fixedIn, $fix) > 0) {
+                $fix = (string) $vulnerability->fixedIn;
+            }
+        }
+        if ($fix === null) {
+            return $candidate;
+        }
+
+        // Only WordPress.org serves a given older version; the core and premium packages offer their latest.
+        $target = $candidate['from_org'] && $change->type !== ComponentType::Core ? $fix : $change->targetVersion;
+        $candidate['change'] = new PlannedChange($change->type, $change->slug, $change->currentVersion, $target, PlanAction::Update,
+            major: VersionChange::isMajor($change->type, $change->currentVersion, $target), bypass: QuarantineBypass::Vulnerability);
+        $candidate['vulnerabilities'] = array_values(array_unique($ids));
+        $candidate['package'] = $candidate['package']->withVersion($target);
+
+        return $candidate;
     }
 
     /**
@@ -176,6 +254,8 @@ final readonly class UpdatePlanner
                 'change' => new PlannedChange($type, $slug, $current, $target, PlanAction::Update, major: $major,
                     bypass: $type === ComponentType::Core && ! $major ? QuarantineBypass::CoreMaintenance : null),
                 'package' => PackageVersionKey::of($type, $slug, $target, self::version($update['source'] ?? null), self::version($update['wporg_slug'] ?? null), self::version($update['package_host'] ?? null)),
+                'from_org' => ($update['source'] ?? null) === PendingUpdate::SOURCE_WORDPRESS_ORG,
+                'vulnerabilities' => [],
                 'licensed' => ($update['licensed'] ?? true) !== false,
                 'requires_php' => self::version($update['requires_php'] ?? null),
                 'requires_wp' => self::version($update['requires_wp'] ?? null),
@@ -372,13 +452,14 @@ final readonly class UpdatePlanner
     }
 
     /**
-     * Before F7 there is no staging: a major change is skipped (ADR-0005, section 2).
+     * Before F7 there is no staging: a major change is skipped (ADR-0005, section 2),
+     * unless an admin applies it in place with --allow-major.
      *
      * @return array{SkipReason, string}|null
      */
-    private function majorChange(PlannedChange $change): ?array
+    private function majorChange(PlannedChange $change, PlanOptions $options): ?array
     {
-        if (! $change->major) {
+        if (! $change->major || $options->allowMajor) {
             return null;
         }
 

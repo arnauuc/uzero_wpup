@@ -25,7 +25,7 @@ final readonly class PlannedChange
         public bool $major = false,
         /** Why it does not wait for the quarantine, if it does not. */
         public ?QuarantineBypass $bypass = null,
-        /** Whole days until it leaves the quarantine, when skipped for it. */
+        /** Whole days until it leaves the quarantine: skipped for it, or let through by --skip-quarantine. */
         public ?int $quarantineDaysLeft = null,
     ) {}
 

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
+use App\Domain\Planning\PlanOptions;
 use App\Domain\Planning\PlanReport;
+use App\Domain\Planning\QuarantineBypass;
 use App\Domain\Planning\UpdatePlan;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
@@ -14,6 +16,7 @@ use App\Enums\PhpVersionSource;
 use App\Enums\RunType;
 use App\Enums\SkipReason;
 use App\Enums\UserRole;
+use App\Models\AuditLogEntry;
 use App\Models\Run;
 use App\Models\Site;
 use App\Models\User;
@@ -159,14 +162,36 @@ it('fails when every named site is inactive', function (): void {
     expect($exit)->toBe(1)->and(Artisan::output())->toContain('antic: inactiu, no es planifica.')->and(Run::query()->count())->toBe(0);
 });
 
-it('shows quarantine, majors and mandatory staging', function (): void {
+it('refuses --allow-major and --skip-quarantine to an operator, audited', function (string $flag): void {
+    $exit = Artisan::call('plan', ['sites' => ['botiga-a'], $flag => true]);
+
+    expect($exit)->toBe(1)
+        ->and(Artisan::output())->toContain('Només un admin pot fer servir --allow-major i --skip-quarantine.')
+        ->and(Run::query()->count())->toBe(0)
+        ->and(AuditLogEntry::query()->where('action', 'command.denied')->sole()->context)->toMatchArray(['ability' => 'override-version-policy']);
+})->with(['--allow-major', '--skip-quarantine']);
+
+it('lets an admin override the version policy: audited and stored on the run', function (): void {
+    User::factory()->create(['unix_username' => 'admin1', 'role' => UserRole::Admin]);
+    actingAsOperator('admin1');
+
+    command('plan', ['sites' => ['botiga-a'], '--allow-major' => true, '--skip-quarantine' => true])->assertSuccessful();
+
+    $flags = ['allow_major' => true, 'skip_quarantine' => true];
+    expect(Run::query()->sole()->flags)->toBe($flags)
+        ->and(AuditLogEntry::query()->where('action', 'plan.version_policy_overridden')->sole()->context)->toBe(['flags' => $flags, 'sites' => ['botiga-a']])
+        ->and(AuditLogEntry::query()->where('action', 'run.queued')->sole()->context['flags'] ?? null)->toBe($flags);
+});
+
+it('shows quarantine, security exceptions, mandatory staging and the overrides', function (): void {
     Site::factory()->create(['name' => 'politica', 'url' => 'https://politica.test']);
     app(PipelineResolver::class)->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
         new ScriptedReadOnlyStep('plan', static function (): StepOutcome {
             $plan = new UpdatePlan('8.3.10', PhpVersionSource::HttpProbe, true, null, [
                 new PlannedChange(ComponentType::Plugin, 'akismet', '5.3', '5.4', PlanAction::Skip, SkipReason::Quarantine, 'Falten 5 dies.', quarantineDaysLeft: 5),
-                new PlannedChange(ComponentType::Plugin, 'big', '2.9', '3.0', PlanAction::Skip, SkipReason::MajorRequiresStaging, 'Canvi major.', major: true),
-            ]);
+                new PlannedChange(ComponentType::Plugin, 'big', '2.9', '3.0', PlanAction::Update, null, 'Canvi major aplicat in-place.', major: true),
+                new PlannedChange(ComponentType::Plugin, 'forms', '1.2', '1.3', PlanAction::Update, null, 'Excepció.', bypass: QuarantineBypass::Vulnerability),
+            ], new PlanOptions(allowMajor: true));
 
             return StepOutcome::succeeded($plan->summary(), '', $plan->toArray());
         }),
@@ -175,16 +200,21 @@ it('shows quarantine, majors and mandatory staging', function (): void {
     Artisan::call('plan', ['sites' => ['politica'], '--wait' => true]);
 
     expect(Artisan::output())
-        ->toContain("Cal staging primer: sí: els canvis que l'exigeixen s'ometen fins a F7")
-        ->toContain('| plugin:akismet     | 5.3    | 5.4      | ometre | en quarantena — Falten 5 dies.')
-        ->toContain('| plugin:big (major) | 2.9    | 3.0      | ometre | major pendent: cal staging (F7) — Canvi major.')
-        ->toContain('En quarantena: akismet (5 d).');
+        ->toContain('Sobreescriptures (auditades): --allow-major.')
+        ->toContain('Cal staging primer: sí, però --allow-major aplica els majors in-place')
+        ->toContain('| plugin:akismet     | 5.3    | 5.4      | ometre      | en quarantena — Falten 5 dies.')
+        ->toContain('| plugin:big (major) | 2.9    | 3.0      | actualitzar | Canvi major aplicat in-place.')
+        ->toContain('| plugin:forms       | 1.2    | 1.3      | actualitzar | excepció de seguretat: sense quarantena — Excepció.')
+        ->toContain('En quarantena: akismet (5 d).')
+        ->toContain('Excepcions de seguretat: forms.')
+        ->toContain('Majors aplicades: cal revisar: big.');
 });
 
-it('says when the plan does not need staging', function (): void {
+it('says whether the plan needs staging, without overrides', function (): void {
     Artisan::call('plan', ['sites' => ['botiga-a'], '--wait' => true]);
 
     // The scripted plan's major skip carries no major flag (as plans stored before UZEROWPUP-127).
     $output = Artisan::output();
-    expect($output)->toContain('Cal staging primer: no');
+    expect($output)->toContain('Cal staging primer: no')
+        ->and(str_contains($output, 'Sobreescriptures'))->toBeFalse();
 });
