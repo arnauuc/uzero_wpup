@@ -18,10 +18,7 @@ final readonly class NewWritesDetector
 {
     private const string NAME = '/^[a-z0-9_-]{1,40}$/D';
 
-    public function __construct(
-        private ShopWritesReader $reader,
-        private int $maxListed,
-    ) {}
+    public function __construct(private ShopWritesReader $reader) {}
 
     /**
      * @param  mixed  $stored  backups.order_watermark of the copy
@@ -34,47 +31,53 @@ final readonly class NewWritesDetector
         }
 
         try {
-            $data = $this->reader->since($driver, $watermark, $this->maxListed);
+            $data = $this->reader->since($driver, $watermark);
         } catch (WatermarkUnreadable $e) {
             return NewWrites::unknown("no s'ha pogut llegir el lloc: {$e->getMessage()}");
         }
 
-        return self::compare($watermark, $data, $this->maxListed);
+        return self::compare($watermark, $data, $this->reader->maxListed, $this->reader->maxRoles);
     }
 
     /**
-     * Pure: the stored watermark against what ShopWritesReader::since() returned.
-     * Besides the rows the site counted, a maximum that went up is a write.
+     * Pure: the stored watermark against what ShopWritesReader::since() returned:
+     * the rows the site counted, a fingerprint that changed with no row to
+     * explain it, and the tables of the copy that were not readable.
      *
      * @param  array<mixed>  $data
      */
-    public static function compare(OrderWatermark $before, array $data, int $maxListed): NewWrites
+    public static function compare(OrderWatermark $before, array $data, int $maxListed, int $maxRoles): NewWrites
     {
-        $now = OrderWatermark::parse($data['now'] ?? null, $data['unix'] ?? null, $data['tables'] ?? null);
-        $tables = is_array($data['tables'] ?? null) ? $data['tables'] : [];
-        if ($now === null || ! is_int($data['orders_total'] ?? null) || ! is_int($data['users_total'] ?? null) || ! is_array($data['orders'] ?? null) || ! is_array($data['users'] ?? null)) {
+        $tables = $data['tables'] ?? null;
+        if (! is_array($tables) || ! is_int($data['orders_total'] ?? null) || ! is_int($data['users_total'] ?? null) || ! is_array($data['orders'] ?? null) || ! is_array($data['users'] ?? null)) {
             return NewWrites::unknown('la resposta del lloc no és vàlida');
         }
 
-        $changed = [];
+        [$changed, $unexplained, $unreadable] = [[], [], []];
         foreach (OrderWatermark::TABLES as $key) {
-            [$old, $new] = [$before->tables[$key], $now->tables[$key]];
-            if ($old->present && ! $new->present) {
+            $old = $before->tables[$key];
+            $new = $tables[$key] ?? null;
+            if (! is_array($new) || ! is_bool($new['present'] ?? null)) {
+                return NewWrites::unknown('la resposta del lloc no és vàlida');
+            }
+            if ($old->present && ! $new['present']) {
                 return NewWrites::unknown("la taula {$key} ja no hi és");
             }
-            if (! $new->present) {
+            if (! $new['present']) {
                 continue;
             }
-            $count = is_array($tables[$key]) ? ($tables[$key]['changed'] ?? null) : null;
+            $count = $new['changed'] ?? null;
             if (! is_int($count) || $count < 0) {
                 return NewWrites::unknown('la resposta del lloc no és vàlida');
             }
-            $raised = ($new->maxId ?? 0) > ($old->present ? ($old->maxId ?? 0) : 0);
-            foreach ($new->max as $column => $value) {
-                $raised = $raised || WatermarkTable::later($value, $old->present ? ($old->max[$column] ?? null) : null);
+            if (! $old->readable) {
+                $unreadable[] = $key;
             }
-            if ($count > 0 || $raised) {
-                $changed[$key] = max($count, 1);
+            if ($count > 0) {
+                $changed[$key] = $count;
+            } elseif ($old->fingerprint !== null && ($new['fingerprint'] ?? null) !== $old->fingerprint) {
+                // A row updated in place (password, email, status): no ID nor date tells which.
+                $unexplained[] = $key;
             }
         }
 
@@ -82,9 +85,9 @@ final readonly class NewWritesDetector
         $orders = self::records($data['orders'], $maxListed, static fn (array $r): ?array => self::name($r['type'] ?? null) && self::name($r['status'] ?? null)
             && self::date($r['created'] ?? null) && self::date($r['modified'] ?? null)
             ? [$orderMax, $r['modified'] ?? $r['created'], self::orderLabel($r['type'], $r['status'])] : null);
-        $users = self::records($data['users'], $maxListed, static function (array $r) use ($before): ?array {
+        $users = self::records($data['users'], $maxListed, static function (array $r) use ($before, $maxRoles): ?array {
             $roles = is_array($r['roles'] ?? null) ? array_values(array_filter($r['roles'], static fn (mixed $role): bool => is_string($role) && self::name($role))) : null;
-            if (! self::date($r['registered'] ?? null) || $roles === null || count($roles) !== count($r['roles']) || count($roles) > 5) {
+            if (! self::date($r['registered'] ?? null) || $roles === null || count($roles) !== count($r['roles']) || count($roles) > $maxRoles) {
                 return null;
             }
 
@@ -94,7 +97,10 @@ final readonly class NewWritesDetector
             return NewWrites::unknown('la resposta del lloc no és vàlida');
         }
 
-        $found = $changed !== [] || $orders !== [] || $users !== [];
+        $found = $changed !== [] || $orders !== [] || $users !== [] || $unexplained !== [];
+        if (! $found && $unreadable !== []) {
+            return NewWrites::unknown("la marca d'aigua de la còpia no es va poder llegir a ".implode(', ', $unreadable));
+        }
 
         return new NewWrites(
             $found ? NewWritesStatus::Found : NewWritesStatus::None,
@@ -104,6 +110,9 @@ final readonly class NewWritesDetector
             max($data['users_total'], count($users)),
             ($data['truncated'] ?? false) === true,
             $changed,
+            null,
+            $unexplained,
+            $unreadable,
         );
     }
 
@@ -139,6 +148,7 @@ final readonly class NewWritesDetector
             null => 'esborrada',
             'shop_order', 'shop_order_placehold' => 'comanda',
             'shop_order_refund' => 'reemborsament',
+            'shop_subscription' => 'subscripció',
             default => is_string($type) ? $type : '?',
         };
 

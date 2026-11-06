@@ -621,21 +621,23 @@ class FakeDriver implements SiteDriver
      */
     private function shopWrites(string $code): string
     {
-        /** @var array{limit: int, since: array<string, array{max_id: int, max: array<string, string|null>}>}|null $in */
+        /** @var array{mode: string, limit?: int, since?: array<string, array{max_id: int, max: array<string, string|null>}>} $in */
         $in = preg_match("/^\\\$in = json_decode\\(base64_decode\\('([A-Za-z0-9+\\/=]*)'\\), true\\);\n/", $code, $m) === 1
-            ? json_decode((string) base64_decode($m[1]), true) : null;
+            ? json_decode((string) base64_decode($m[1]), true) : ['mode' => 'watermark'];
         $now = $this->siteTime ?? time();
         $max = static function (array $rows, string $key): mixed {
             $values = array_column($rows, $key);
 
             return $values === [] ? null : max($values);
         };
-        $tables = array_fill_keys(OrderWatermark::TABLES, ['present' => false, 'max_id' => null, 'max' => []]);
-        $tables['wc_orders'] = ['present' => true, 'max_id' => $max($this->orders, 'id'), 'max' => ['date_created_gmt' => $max($this->orders, 'created'), 'date_updated_gmt' => $max($this->orders, 'modified')]];
-        $tables['users'] = ['present' => true, 'max_id' => $max($this->users, 'id'), 'max' => ['user_registered' => $max($this->users, 'registered')]];
-        $out = ['v' => 1, 'now' => gmdate('Y-m-d H:i:s', $now), 'unix' => $now, 'tables' => $tables];
-        if (! is_array($in)) {
-            return "\n".json_encode($out)."\n";
+        // Any change of a user row, also in place (the fake keeps the roles there).
+        $fingerprint = count($this->users).':'.crc32((string) json_encode($this->users));
+        $tables = array_fill_keys(OrderWatermark::TABLES, ['present' => false]);
+        if (($in['since'] ?? null) === null) {
+            $tables['wc_orders'] = ['present' => true, 'max_id' => $max($this->orders, 'id'), 'max' => ['date_created_gmt' => $max($this->orders, 'created'), 'date_updated_gmt' => $max($this->orders, 'modified')]];
+            $tables['users'] = ['present' => true, 'max_id' => $max($this->users, 'id'), 'max' => ['user_registered' => $max($this->users, 'registered')], 'fingerprint' => $fingerprint];
+
+            return "\n".json_encode(['v' => 1, 'now' => gmdate('Y-m-d H:i:s', $now), 'unix' => $now, 'tables' => $tables])."\n";
         }
 
         $since = static fn (string $table, string $column): string => $in['since'][$table]['max'][$column] ?? '';
@@ -645,15 +647,15 @@ class FakeDriver implements SiteDriver
             || $u['registered'] > $since('users', 'user_registered')));
         usort($orders, static fn (array $a, array $b): int => $b['id'] <=> $a['id']);
         usort($users, static fn (array $a, array $b): int => $b['id'] <=> $a['id']);
-        $out['tables']['wc_orders']['changed'] = count($orders);
-        $out['tables']['users']['changed'] = count($users);
+        $tables['wc_orders'] = ['present' => true, 'changed' => count($orders)];
+        $tables['users'] = ['present' => true, 'changed' => count($users), 'fingerprint' => $fingerprint];
 
-        return "\n".json_encode($out + [
+        return "\n".json_encode(['v' => 1, 'now' => gmdate('Y-m-d H:i:s', $now), 'unix' => $now, 'tables' => $tables,
             'orders_total' => count($orders),
             'users_total' => count($users),
             'truncated' => false,
-            'orders' => array_slice($orders, 0, $in['limit']),
-            'users' => array_slice($users, 0, $in['limit']),
+            'orders' => array_slice($orders, 0, $in['limit'] ?? 0),
+            'users' => array_slice($users, 0, $in['limit'] ?? 0),
         ])."\n";
     }
 

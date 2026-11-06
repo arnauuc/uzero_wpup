@@ -43,11 +43,11 @@ final class ShopGuard
     }
 
     /**
-     * @param  NewWrites|null  $writes  null before connecting to the site (the CLI): the run checks it
+     * @param  NewWrites|null  $writes  null when the site was not read (the CLI checks before any run)
      */
     public static function message(string $copyDate, ?NewWrites $writes = null): string
     {
         return "El lloc és (o pot ser) una botiga: restaurar-ne la base de dades esborra les comandes, els clients i els usuaris entrats des de la còpia ({$copyDate}). "
-            .($writes?->describe() ?? "L'execució comprovarà quins són abans de restaurar res.");
+            .($writes?->describe() ?? 'Sense connectar-se al lloc no es pot saber quins són.');
     }
 }

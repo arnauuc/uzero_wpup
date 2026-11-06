@@ -10,9 +10,9 @@ namespace App\Domain\Backups;
  * backups.order_watermark: for each table that holds orders or users, its
  * highest ID and the highest of its creation and modification dates. Anything
  * above it was written after the read, so possibly after the dump
- * (NewWritesDetector). Versioned: a stored shape of another version, or with
- * a table missing, is not a watermark (null), and the detector answers
- * "unknown".
+ * (NewWritesDetector). Versioned: a stored shape of another version is not a
+ * watermark (null), and the detector answers "unknown"; a table missing or
+ * not valid is kept as not readable (WatermarkTable).
  */
 final readonly class OrderWatermark
 {
@@ -62,18 +62,15 @@ final readonly class OrderWatermark
         }
         $parsed = [];
         foreach (self::TABLES as $key) {
-            $table = WatermarkTable::fromArray($tables[$key] ?? null);
-            if ($table === null) {
-                return null;
-            }
-            $parsed[$key] = $table;
+            // One table that does not validate never invalidates the others.
+            $parsed[$key] = WatermarkTable::fromArray($tables[$key] ?? null);
         }
 
         return new self($readAt, $readAtUnix, $parsed);
     }
 
     /**
-     * @return array{version: int, read_at: string, read_at_unix: int, tables: array<string, array{present: bool, max_id: int|null, max: array<string, string|null>}>}
+     * @return array{version: int, read_at: string, read_at_unix: int, tables: array<string, array{present: bool, readable: bool, max_id: int|null, max: array<string, string|null>, fingerprint: string|null}>}
      */
     public function toArray(): array
     {

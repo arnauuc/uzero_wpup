@@ -16,8 +16,11 @@ use Throwable;
  * docroot), and checks that the dump contains every one of them. A dump with
  * missing tables is deleted and the backup fails: there is no restore point.
  *
- * Right before the dump it reads the order and user watermark (UZEROWPUP-58):
- * whatever is above it may not be in the dump. If it cannot be read the dump is
+ * Right before the dump (the last call before it) it reads the order and user
+ * watermark (UZEROWPUP-58): whatever is above it may not be in the dump. A
+ * transaction that reserved a lower ID before the read and committed after
+ * it is covered by the detector's safety margin (rows dated up to
+ * wpup.backups.watermark.margin_seconds before the read count as written). If it cannot be read the dump is
  * still a restore point, with a warning: without a watermark, restoring the
  * database counts as losing new writes (NewWritesDetector).
  */

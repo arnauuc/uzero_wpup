@@ -17,6 +17,8 @@ final readonly class NewWrites
      * @param  list<AffectedRecord>  $orders
      * @param  list<AffectedRecord>  $users
      * @param  array<string, int>  $tables  rows written since the copy, by table (only those with any)
+     * @param  list<string>  $unexplained  tables whose fingerprint changed without any row explaining it
+     * @param  list<string>  $unreadable  tables whose watermark could not be read: all their rows count
      */
     public function __construct(
         public NewWritesStatus $status,
@@ -27,6 +29,8 @@ final readonly class NewWrites
         public bool $truncated = false,
         public array $tables = [],
         public ?string $reason = null,
+        public array $unexplained = [],
+        public array $unreadable = [],
     ) {}
 
     public static function unknown(string $reason): self
@@ -61,7 +65,13 @@ final readonly class NewWrites
             $more = $total - count($records);
             $parts[] = ($this->truncated ? 'almenys ' : '').$total.' '.($total === 1 ? $one : $many).': '.$listed.($more > 0 ? " i {$more} més" : '');
         }
-        if ($parts === []) {
+        if ($this->unexplained !== []) {
+            $parts[] = 'usuaris modificats: no es pot saber quins';
+        }
+        if ($this->unreadable !== []) {
+            $parts[] = "sense marca d'aigua llegible a ".implode(', ', $this->unreadable).' (es compta tot com a escrit)';
+        }
+        if ($parts === [] && $this->tables !== []) {
             $parts[] = 'files canviades a '.implode(', ', array_map(static fn (string $t, int $n): string => "{$t} ({$n})", array_keys($this->tables), $this->tables));
         }
 
@@ -82,6 +92,8 @@ final readonly class NewWrites
             'truncated' => $this->truncated,
             'tables' => $this->tables,
             'reason' => $this->reason,
+            'unexplained' => $this->unexplained,
+            'unreadable' => $this->unreadable,
         ];
     }
 }

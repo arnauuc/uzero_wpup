@@ -48,10 +48,16 @@ it('detects the orders and users written since a watermark', function (string $f
         $orders[] = $old = shopOrder($driver, 'pending');
         sleep(1); // dates have a resolution of one second
         $stored = app(ShopWritesReader::class)->watermark($driver)->toArray();
+
+        // Within the safety margin, the order made just before the read counts as written.
+        expect(array_map(static fn (AffectedRecord $r): int => $r->id, app(NewWritesDetector::class)->detect($driver, $stored)->orders))->toBe([$old]);
+
+        config(['wpup.backups.watermark.margin_seconds' => 0]);
         $detector = app(NewWritesDetector::class);
 
         expect($stored['tables'][$hpos ? 'wc_orders' : 'posts']['max_id'])->toBeGreaterThanOrEqual($old)
             ->and($stored['tables']['wc_orders']['present'])->toBeTrue()
+            ->and($stored['tables']['users']['fingerprint'])->toMatch('/^\d+:\d+$/')
             ->and($detector->detect($driver, $stored)->status)->toBe(NewWritesStatus::None);
 
         shopEval($driver, "wc_get_order({$old})->update_status('processing'); echo 'ok';");
@@ -81,3 +87,24 @@ it('detects the orders and users written since a watermark', function (string $f
     'HPOS, PHP 7.4' => ['wp74', true],
     'HPOS, MySQL 8.0' => ['wp82', true],
 ]);
+
+it('detects a user updated in place, which no ID nor date shows', function (): void {
+    $driver = app(SshDriverFactory::class)->forSite(Fixtures::site('wp83'), AuditActor::system('tests'));
+    $login = 'wpup-it-'.bin2hex(random_bytes(4));
+    $user = (int) trim($driver->wp(['user', 'create', $login, "{$login}@example.test", '--role=customer', '--porcelain', '--skip-plugins', '--skip-themes'])->stdout);
+
+    try {
+        config(['wpup.backups.watermark.margin_seconds' => 0]);
+        sleep(1);
+        $stored = app(ShopWritesReader::class)->watermark($driver)->toArray();
+        $driver->wp(['user', 'update', (string) $user, "--user_email={$login}-nou@example.test", '--skip-plugins', '--skip-themes']);
+
+        $writes = app(NewWritesDetector::class)->detect($driver, $stored);
+
+        expect($writes->status)->toBe(NewWritesStatus::Found)
+            ->and($writes->unexplained)->toBe(['users'])
+            ->and($writes->describe())->not->toContain('@example.test');
+    } finally {
+        $driver->wp(['user', 'delete', (string) $user, '--yes', '--skip-plugins', '--skip-themes']);
+    }
+});

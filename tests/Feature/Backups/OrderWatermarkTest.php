@@ -68,9 +68,9 @@ it('reads the watermark right before the dump, without plugins and themes', func
     $result = app(DatabaseBackup::class)->run($driver, '42');
 
     $last = $driver->callsBeforeDump[count($driver->callsBeforeDump) - 1];
-    expect($last)->toBe(ShopWritesReader::command(null))
-        ->and($last[1])->toBe("\$in = null;\n".ShopWritesReader::SNIPPET)
-        ->and($result->watermark?->tables['wc_orders']->toArray())->toBe(['present' => true, 'max_id' => 4, 'max' => ['date_created_gmt' => '2026-11-01 10:00:00', 'date_updated_gmt' => '2026-11-01 12:00:00']])
+    expect($last)->toBe(ShopWritesReader::command(['mode' => 'watermark', 'order_types' => config('wpup.backups.watermark.order_types'), 'scan_cap' => 1000]))
+        ->and(config('wpup.backups.watermark.order_types'))->toContain('shop_order', 'shop_subscription')
+        ->and($result->watermark?->tables['wc_orders']->toArray())->toBe(['present' => true, 'readable' => true, 'max_id' => 4, 'max' => ['date_created_gmt' => '2026-11-01 10:00:00', 'date_updated_gmt' => '2026-11-01 12:00:00'], 'fingerprint' => null])
         ->and($result->watermark?->tables['wc_order_addresses']->present)->toBeFalse()
         ->and($result->warnings)->toBe([]);
 });
@@ -106,7 +106,7 @@ it('still makes the restore point when the watermark cannot be read, with a warn
     'WP-CLI fails' => [null],
     'not JSON' => ["Notice: something\n"],
     'a table query failed' => ['{"v":1,"error":"wc_orders"}'],
-    'invalid shape' => ['{"v":1,"now":"2026-11-01 10:00:00","unix":1,"tables":{}}'],
+    'invalid read time' => ['{"v":1,"now":"ahir","unix":1,"tables":{}}'],
 ]);
 
 it('passes the stored watermark as data only: the snippet stays constant', function (): void {
@@ -132,6 +132,32 @@ it('detects the orders and users written above the watermark of a copy', functio
     expect($writes->status)->toBe(NewWritesStatus::Found)
         ->and(array_map(static fn ($r): array => $r->toArray(), $writes->orders))->toBe([['id' => 5, 'new' => true, 'date' => '2026-11-02 08:00:00', 'label' => 'comanda, processing']])
         ->and($writes->users)->toBe([]);
+});
+
+it('asks the site for the rows dated within the safety margin before the read', function (): void {
+    $driver = new FakeDriver;
+    $driver->siteTime = 1762000000;
+    $stored = app(ShopWritesReader::class)->watermark($driver)->toArray();
+
+    app(NewWritesDetector::class)->detect($driver, $stored);
+
+    $code = $driver->wpCalls[count($driver->wpCalls) - 1][1];
+    preg_match("/base64_decode\\('([A-Za-z0-9+\\/=]+)'\\)/", $code, $m);
+    $input = json_decode((string) base64_decode($m[1] ?? ''), true);
+    expect($input)->toMatchArray(['mode' => 'since', 'since_unix' => 1762000000 - 300, 'since_utc' => gmdate('Y-m-d H:i:s', 1762000000 - 300), 'limit' => 50, 'max_roles' => 5, 'scan_cap' => 1000]);
+});
+
+it('detects a user updated in place by the fingerprint of the users table', function (): void {
+    $driver = new FakeDriver;
+    $driver->users = [['id' => 1, 'registered' => '2026-01-01 00:00:00', 'roles' => ['customer']]];
+    $stored = app(ShopWritesReader::class)->watermark($driver)->toArray();
+    $driver->users[0]['roles'] = ['administrator'];
+
+    $writes = app(NewWritesDetector::class)->detect($driver, $stored);
+
+    expect($writes->status)->toBe(NewWritesStatus::Found)
+        ->and($writes->unexplained)->toBe(['users'])
+        ->and($writes->describe())->toContain('usuaris modificats: no es pot saber quins');
 });
 
 it('answers unknown (treated as new writes) without a watermark or when the site cannot be read', function (mixed $stored, ?Throwable $failure, string $reason): void {

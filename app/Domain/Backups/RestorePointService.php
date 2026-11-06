@@ -327,6 +327,9 @@ final readonly class RestorePointService
         }
         if ($row->sha256 !== $source->sha256 || $row->size_bytes !== $source->size_bytes || $row->expires_at?->toIso8601String() !== $source->expires_at?->toIso8601String()) {
             $row->update($attributes + ['verified_at' => null]);
+        } elseif ($row->order_watermark !== $source->order_watermark) {
+            // Same bytes: the copy keeps its verification, and gets the source's watermark.
+            $row->update(['order_watermark' => $source->order_watermark]);
         }
 
         return $row;

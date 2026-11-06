@@ -5,14 +5,19 @@ declare(strict_types=1);
 namespace App\Domain\Backups;
 
 /**
- * One table of an OrderWatermark: whether it exists, its highest ID and the
- * highest value of each of its date columns (null: no rows).
+ * One table of an OrderWatermark: whether it exists, its highest ID, the
+ * highest value of each of its date columns (null: no rows) and, for users,
+ * an aggregate fingerprint of its rows ("count:xor"). A table whose values do
+ * not validate is kept as not readable, instead of invalidating the whole
+ * watermark: the detector then counts every row of it as written.
  */
 final readonly class WatermarkTable
 {
     private const string DATE = '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D';
 
     private const string UNIX = '/^\d{1,12}$/D';
+
+    private const string FINGERPRINT = '/^\d{1,12}:\d{1,20}$/D';
 
     /**
      * @param  array<string, string|null>  $max  column => "Y-m-d H:i:s" (GMT) or a unix time
@@ -21,26 +26,38 @@ final readonly class WatermarkTable
         public bool $present,
         public ?int $maxId,
         public array $max,
+        public ?string $fingerprint = null,
+        public bool $readable = true,
     ) {}
 
-    public static function fromArray(mixed $data): ?self
+    public static function unreadable(): self
     {
-        if (! is_array($data) || ! is_bool($data['present'] ?? null) || ! array_key_exists('max_id', $data) || ! is_array($data['max'] ?? null)) {
-            return null;
+        return new self(true, null, [], null, false);
+    }
+
+    public static function fromArray(mixed $data): self
+    {
+        if (! is_array($data) || ! is_bool($data['present'] ?? null) || ($data['readable'] ?? true) !== true) {
+            return self::unreadable();
         }
-        $maxId = $data['max_id'];
-        if ($maxId !== null && (! is_int($maxId) || $maxId < 0)) {
-            return null;
+        if (! $data['present']) {
+            return new self(false, null, []);
+        }
+        $maxId = $data['max_id'] ?? null;
+        $fingerprint = $data['fingerprint'] ?? null;
+        if (($maxId !== null && (! is_int($maxId) || $maxId < 0)) || ! is_array($data['max'] ?? null)
+            || ($fingerprint !== null && ! self::validFingerprint($fingerprint))) {
+            return self::unreadable();
         }
         $max = [];
         foreach ($data['max'] as $column => $value) {
             if (! is_string($column) || preg_match('/^[a-z_]{1,64}$/D', $column) !== 1 || ($value !== null && ! self::validValue($value))) {
-                return null;
+                return self::unreadable();
             }
             $max[$column] = $value;
         }
 
-        return new self($data['present'], $maxId, $max);
+        return new self(true, $maxId, $max, $fingerprint);
     }
 
     /**
@@ -52,26 +69,18 @@ final readonly class WatermarkTable
     }
 
     /**
-     * Whether $now is after $before: dates of the same format compare as text,
-     * unix times as numbers.
+     * @phpstan-assert-if-true string $value
      */
-    public static function later(?string $now, ?string $before): bool
+    public static function validFingerprint(mixed $value): bool
     {
-        if ($now === null) {
-            return false;
-        }
-        if ($before === null) {
-            return true;
-        }
-
-        return ctype_digit($now) && ctype_digit($before) ? (int) $now > (int) $before : strcmp($now, $before) > 0;
+        return is_string($value) && preg_match(self::FINGERPRINT, $value) === 1;
     }
 
     /**
-     * @return array{present: bool, max_id: int|null, max: array<string, string|null>}
+     * @return array{present: bool, readable: bool, max_id: int|null, max: array<string, string|null>, fingerprint: string|null}
      */
     public function toArray(): array
     {
-        return ['present' => $this->present, 'max_id' => $this->maxId, 'max' => $this->max];
+        return ['present' => $this->present, 'readable' => $this->readable, 'max_id' => $this->maxId, 'max' => $this->max, 'fingerprint' => $this->fingerprint];
     }
 }

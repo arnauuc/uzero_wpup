@@ -255,10 +255,12 @@ class AppServiceProvider extends ServiceProvider
         $this->app->bind(ShopWritesReader::class, static fn (Application $app): ShopWritesReader => new ShopWritesReader(
             $app->make(WpCliReader::class),
             self::configInt('wpup.backups.watermark.timeout_seconds'),
-        ));
-        $this->app->bind(NewWritesDetector::class, static fn (Application $app): NewWritesDetector => new NewWritesDetector(
-            $app->make(ShopWritesReader::class),
+            array_values(array_filter(config()->array('wpup.backups.watermark.order_types'), is_string(...))),
+            self::configInt('wpup.backups.watermark.scan_cap'),
             self::configInt('wpup.backups.watermark.max_listed'),
+            self::configInt('wpup.backups.watermark.max_roles'),
+            self::configInt('wpup.backups.watermark.margin_seconds'),
+            self::configInt('wpup.backups.watermark.error_chars'),
         ));
         $this->app->bind(SiteState::class, static fn (Application $app): SiteState => new SiteState(
             $app->make(WpCliReader::class),
