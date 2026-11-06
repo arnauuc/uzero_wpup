@@ -64,7 +64,7 @@ final readonly class UpdatePlan
     }
 
     /**
-     * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, requires_staging: bool, overrides: array{allow_major: bool, skip_quarantine: bool}, environment_warnings: list<string>, changes: list<array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string, major: bool, quarantine_bypass: ?string, quarantine_days_left: ?int}>}
+     * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, requires_staging: bool, overrides: array{allow_major: bool, skip_quarantine: bool}, environment_warnings: list<string>, changes: list<array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string, major: bool, quarantine_bypass: ?string, quarantine_days_left: ?int, warnings?: list<string>}>}
      */
     public function toArray(): array
     {

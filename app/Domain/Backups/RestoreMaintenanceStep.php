@@ -92,16 +92,44 @@ final readonly class RestoreMaintenanceStep implements Step
             return null;
         }
 
+        return self::switchTo($driver, $on || $wasActive, $this->redactor, $context->run->id);
+    }
+
+    /**
+     * Switches the mode on or off. Best effort (also for the files rollback,
+     * UZEROWPUP-57); returns a warning when it fails.
+     */
+    public static function switchTo(SiteDriver $driver, bool $on, SecretRedactor $redactor, int $runId): ?string
+    {
         try {
-            $driver->setMaintenanceMode($on || $wasActive);
+            $driver->setMaintenanceMode($on);
 
             return null;
         } catch (DriverException $e) {
-            $reason = $this->redactor->redact($e->getMessage());
-            Log::warning('Could not set the maintenance mode during a restore.', ['run_id' => $context->run->id, 'reason' => $reason]);
+            $reason = $redactor->redact($e->getMessage());
+            Log::warning('Could not set the maintenance mode during a restore.', ['run_id' => $runId, 'reason' => $reason]);
 
-            return ($on || $wasActive ? "No s'ha pogut tornar a activar" : "No s'ha pogut desactivar")." el mode manteniment: {$reason}. Revisa'l a mà.";
+            return ($on ? "No s'ha pogut tornar a activar" : "No s'ha pogut desactivar")." el mode manteniment: {$reason}. Revisa'l a mà.";
         }
+    }
+
+    /**
+     * Whether the mode is on; null when it cannot be told. `is-active` exits 1
+     * without an error when it is off; any other failure is unknown.
+     */
+    public static function state(SiteDriver $driver): ?bool
+    {
+        try {
+            $result = $driver->wp(['maintenance-mode', 'is-active', ...SiteDriver::SAFE_MODE]);
+        } catch (DriverException) {
+            return null;
+        }
+
+        return match (true) {
+            $result->successful() => true,
+            $result->exitCode === 1 && ! str_contains($result->stderr, 'Error:') => false,
+            default => null,
+        };
     }
 
     /**
@@ -109,6 +137,6 @@ final readonly class RestoreMaintenanceStep implements Step
      */
     private static function isActive(SiteDriver $driver): bool
     {
-        return $driver->wp(['maintenance-mode', 'is-active', '--skip-plugins', '--skip-themes'])->successful();
+        return $driver->wp(['maintenance-mode', 'is-active', ...SiteDriver::SAFE_MODE])->successful();
     }
 }

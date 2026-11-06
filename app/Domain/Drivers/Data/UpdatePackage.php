@@ -7,8 +7,10 @@ namespace App\Domain\Drivers\Data;
 use App\Enums\ComponentType;
 
 /**
- * A package already uploaded to the site by the tool, with the checksum of the
- * artifact analysed on the tool server (staging and production get the same bytes).
+ * A package to install, as the tool server holds it: the artifact analysed and
+ * verified there (UZEROWPUP-49), with its size and SHA-256. The driver uploads
+ * these exact bytes, so staging and production get the same ones and the site
+ * never downloads a package itself.
  */
 final readonly class UpdatePackage
 {
@@ -16,6 +18,9 @@ final readonly class UpdatePackage
         public ComponentType $type,
         public string $slug,
         public string $targetVersion,
-        public RemoteFile $file,
+        /** Absolute path on the tool server. */
+        public string $localPath,
+        public string $sha256,
+        public int $sizeBytes,
     ) {}
 }

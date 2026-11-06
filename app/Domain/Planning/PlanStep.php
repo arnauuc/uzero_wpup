@@ -11,8 +11,10 @@ use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
 use App\Enums\ChangeResult;
+use App\Enums\PhpVersionSource;
 use App\Models\Run;
 use App\Models\SiteSnapshot;
+use Closure;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -28,7 +30,12 @@ final readonly class PlanStep implements ReadOnlyStep
     /** Size of the string columns of run_changes. */
     private const int COLUMN_LENGTH = 255;
 
-    public function __construct(private UpdatePlanner $planner, private RunAuthorization $authorization, private int $timeoutSeconds, private int $verifiedPhpMaxAgeSeconds) {}
+    /**
+     * @param  Closure(Run, ?string): ChangeAnalyzer|null  $analyzerFor  static analysis of the new
+     *                                                                   packages (UZEROWPUP-50); given
+     *                                                                   the run and the PHP of the web, null if not verified
+     */
+    public function __construct(private UpdatePlanner $planner, private RunAuthorization $authorization, private int $timeoutSeconds, private int $verifiedPhpMaxAgeSeconds, private ?Closure $analyzerFor = null) {}
 
     public function name(): string
     {
@@ -42,7 +49,8 @@ final readonly class PlanStep implements ReadOnlyStep
 
     public function describe(StepContext $context): string
     {
-        return "Calcularà què s'actualitzaria i què s'ometria al lloc ".($context->run->site->name ?? '(desconegut)').', sense tocar-lo.';
+        return "Calcularà què s'actualitzaria i què s'ometria al lloc ".($context->run->site->name ?? '(desconegut)').', sense tocar-lo.'
+            .($this->analyzerFor === null ? '' : " Descarregarà els paquets nous al servidor de l'eina i els analitzarà amb PHPCompatibility.");
     }
 
     public function run(StepContext $context): StepOutcome
@@ -63,7 +71,8 @@ final readonly class PlanStep implements ReadOnlyStep
         // The plan never probes the web, so the PHP may be the CLI's (see WebPhp).
         [$php, $source] = WebPhp::of($snapshot, $site, $this->verifiedPhpMaxAgeSeconds);
 
-        $plan = $this->planner->plan($snapshot, $site->refresh(), $site->profile, $php, $source, $options);
+        $analyzer = $this->analyzerFor === null ? null : ($this->analyzerFor)($context->run, $source === PhpVersionSource::Cli ? null : $php);
+        $plan = $this->planner->plan($snapshot, $site->refresh(), $site->profile, $php, $source, $options, $analyzer);
         $this->recordSkips($context->run, $plan);
 
         return StepOutcome::succeeded($plan->summary(), '', $plan->toArray());

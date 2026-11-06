@@ -79,6 +79,19 @@ Només a `site:add`: `--server` i `--account` (obligatoris; es reutilitzen si ja
 - **Interactiu:** si falten valors obligatoris i hi ha terminal, `site:add` els pregunta; `site:edit` sense opcions ofereix URL, camí i estratègia. Amb `--no-interaction` els valors que falten són un error de validació.
 - `--dry-run` mostra què es crearia o canviaria sense escriure ni auditar; `--json` dóna la sortida per a scripts.
 
+## `plan`: compatibilitat amb PHP, capa 2 (anàlisi estàtica)
+
+`wpup plan` no toca el lloc, però sí que descarrega al servidor de l'eina el paquet nou de cada connector i tema que s'actualitzaria (artefactes, UZEROWPUP-49) i l'analitza amb PHP_CodeSniffer + PHPCompatibility, amb `testVersion` igual al PHP real del lloc. `plan` no té `--dry-run` perquè mai modifica el lloc.
+
+- Un **error** omet l'actualització d'aquest component (motiu «l'anàlisi estàtica hi veu problemes», amb el nombre d'errors i fins a 3 `fitxer:línia`). Els **avisos** no la bloquegen: surten a sota de la taula, com a `Avís <tipus>:<slug>: fitxer:línia missatge`, i es desen al pla de l'execució.
+- Si l'anàlisi no es pot fer (descàrrega bloquejada, temps esgotat, PHPCompatibility falla, PHP del lloc il·legible, l'artefacte no coincideix amb el seu SHA-256) el component s'omet igualment, per precaució, i el detall en diu el motiu. Només s'analitzen els components que encara s'actualitzarien: un lloc bloquejat, un component congelat, exclòs, major o amb requisits no complerts no baixa cap paquet.
+- Només compta el PHP **del web** del lloc, amb `testVersion` exactament igual a la seva versió menor (p. ex. `8.2-8.2`). Si no s'ha verificat pel web (és el del CLI), cap component no s'analitza i tots s'ometen per precaució.
+- Cada paquet té el seu propi temps (descàrrega i anàlisi) i el pas té un pressupost total (`static_analysis.step_budget_seconds`). Quan el que queda no cobreix un altre paquet (`min_remaining_seconds`), la resta s'ometen amb el motiu «temps d'anàlisi esgotat: s'omet per precaució» i el pas acaba.
+- No s'analitzen el nucli (en tenen prou els requisits declarats) ni les traduccions (no porten codi).
+- S'exclouen `vendor/`, `node_modules/` i els polyfills coneguts (`wpup.static_analysis.ignore`, patrons de `phpcs --ignore`). Els límits (temps, memòria, mida de la sortida, nombre de fitxers) són a `wpup.static_analysis`.
+- El resultat es desa a la taula `compat_scans`, per SHA-256 del paquet, versió menor de PHP i versió de les regles (PHPCompatibility, PHP_CodeSniffer i exclusions): el mateix paquet no es torna a analitzar.
+- Limitació coneguda: PHPCompatibility 9.3 no detecta la sintaxi nova de PHP 8 (`match`, tipus unió, operador nullsafe…) i només coneix algunes funcions de PHP 8.0. Aquests casos els cobreix la capa 3 (execució real).
+
 ## Còpies externes conegudes (ADR-0009, punt 2)
 
 L'eina no fa còpies de llarga durada, però vigila que n'hi hagi. `wpup inventory` mostra una fila **Còpia externa** per lloc: `ok` o `AVÍS: …`.

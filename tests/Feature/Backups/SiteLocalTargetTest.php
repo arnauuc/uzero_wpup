@@ -289,6 +289,11 @@ it('purges only its own stale temporary files, before each write', function (): 
         'store-short.part' => $old,
         'db-old.sql.gz' => $old,
         "restore-points/site-1/store-{$hex}.part" => $old,
+        // Packages an interrupted update left (premium zips): removed once stale.
+        'package-'.str_repeat('ab', 8).'.zip' => $old,
+        'package-'.str_repeat('ab', 8).'.zip.part' => $old,
+        'package-'.str_repeat('cd', 8).'.zip' => time(),
+        'restore-points/package-'.str_repeat('ab', 8).'.zip' => $old,
     ] as $path => $mtime) {
         $driver->files[$path] = 'x';
         $driver->fileTimes[$path] = $mtime;
@@ -301,6 +306,8 @@ it('purges only its own stale temporary files, before each write', function (): 
         'store-short.part',
         'db-old.sql.gz',
         "restore-points/site-1/store-{$hex}.part",
+        'package-'.str_repeat('cd', 8).'.zip',
+        'restore-points/package-'.str_repeat('ab', 8).'.zip',
         'restore-points/site-1/r1/db.sql.gz',
     ])->and(fakeLocalTarget($driver)->purgeStale(0))->toBe(0);
 });

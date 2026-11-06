@@ -144,6 +144,11 @@ final class PlanCommand extends WpupCommand
             $c->action->label(),
             self::reason($c),
         ], $plan->changes));
+        foreach ($plan->changes as $c) {
+            foreach ($c->warnings as $warning) {
+                $this->line("Avís {$c->type->value}:{$c->slug}: {$warning}");
+            }
+        }
         $this->line($plan->summary().'.');
 
         $quarantined = array_filter($plan->changes, static fn (PlannedChange $c): bool => $c->reason === SkipReason::Quarantine);

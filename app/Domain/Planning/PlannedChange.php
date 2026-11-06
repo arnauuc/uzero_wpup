@@ -27,11 +27,21 @@ final readonly class PlannedChange
         public ?QuarantineBypass $bypass = null,
         /** Whole days until it leaves the quarantine: skipped for it, or let through by --skip-quarantine. */
         public ?int $quarantineDaysLeft = null,
+        /** @var list<string> warnings of the static analysis, for the report (UZEROWPUP-50) */
+        public array $warnings = [],
     ) {}
+
+    /**
+     * @param  list<string>  $warnings
+     */
+    public function withWarnings(array $warnings): self
+    {
+        return new self($this->type, $this->slug, $this->currentVersion, $this->targetVersion, $this->action, $this->reason, $this->detail, $this->major, $this->bypass, $this->quarantineDaysLeft, $warnings);
+    }
 
     public static function skip(self $change, SkipReason $reason, ?string $detail = null, ?int $quarantineDaysLeft = null): self
     {
-        return new self($change->type, $change->slug, $change->currentVersion, $change->targetVersion, PlanAction::Skip, $reason, $detail, $change->major, $change->bypass, $quarantineDaysLeft);
+        return new self($change->type, $change->slug, $change->currentVersion, $change->targetVersion, PlanAction::Skip, $reason, $detail, $change->major, $change->bypass, $quarantineDaysLeft, $change->warnings);
     }
 
     /**
@@ -39,7 +49,7 @@ final readonly class PlannedChange
      */
     public function withDetail(?string $detail): self
     {
-        return new self($this->type, $this->slug, $this->currentVersion, $this->targetVersion, $this->action, $this->reason, $detail, $this->major, $this->bypass, $this->quarantineDaysLeft);
+        return new self($this->type, $this->slug, $this->currentVersion, $this->targetVersion, $this->action, $this->reason, $detail, $this->major, $this->bypass, $this->quarantineDaysLeft, $this->warnings);
     }
 
     /**
@@ -51,7 +61,7 @@ final readonly class PlannedChange
     }
 
     /**
-     * @return array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string, major: bool, quarantine_bypass: ?string, quarantine_days_left: ?int}
+     * @return array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string, major: bool, quarantine_bypass: ?string, quarantine_days_left: ?int, warnings?: list<string>}
      */
     public function toArray(): array
     {
@@ -66,6 +76,7 @@ final readonly class PlannedChange
             'major' => $this->major,
             'quarantine_bypass' => $this->bypass?->value,
             'quarantine_days_left' => $this->quarantineDaysLeft,
+            ...($this->warnings === [] ? [] : ['warnings' => $this->warnings]),
         ];
     }
 
@@ -97,8 +108,9 @@ final readonly class PlannedChange
         }
 
         // Plans stored before UZEROWPUP-127 have no major (recomputed), bypass or days left.
+        $warnings = is_array($data['warnings'] ?? null) ? array_values(array_filter($data['warnings'], is_string(...))) : [];
         $major = array_key_exists('major', $data) ? $data['major'] === true : VersionChange::isMajor($componentType, $current, $target);
 
-        return new self($componentType, $slug, $current, $target, $planAction, $skipReason, is_string($detail) ? $detail : null, $major, $quarantineBypass, is_int($daysLeft) ? $daysLeft : null);
+        return new self($componentType, $slug, $current, $target, $planAction, $skipReason, is_string($detail) ? $detail : null, $major, $quarantineBypass, is_int($daysLeft) ? $daysLeft : null, $warnings);
     }
 }
