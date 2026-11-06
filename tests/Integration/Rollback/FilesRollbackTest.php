@@ -12,12 +12,12 @@ use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\DriverFactory;
 use App\Domain\Inventory\SiteInventory;
-use App\Domain\Rollback\RevertedChanges;
 use App\Domain\Rollback\RollbackSteps;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunEngine;
 use App\Domain\Secrets\SecretRedactor;
+use App\Domain\Updates\UpdateChanges;
 use App\Enums\AuditChannel;
 use App\Enums\BackupTargetType;
 use App\Enums\ChangeResult;
@@ -92,7 +92,7 @@ it('rolls back the files of an update that broke the site: identical tree and ve
             .' && mkdir -p wpup-it-added && printf "<?php\n/* Plugin Name: wpup-it-added\n * Version: 1.0.0 */\n" > wpup-it-added/wpup-it-added.php'
             .' && rm -rf '.escapeshellarg($removed).' '.escapeshellarg("{$removed}.php"));
         foreach ([['classic-editor', $editor?->version, '9.9.9'], ['wpup-it-added', null, '1.0.0'], [$removed, '1', null]] as [$slug, $from, $to]) {
-            RunChange::factory()->create(['run_id' => $update->id, 'step' => RevertedChanges::UPDATE_STEP, 'component_type' => ComponentType::Plugin,
+            RunChange::factory()->create(['run_id' => $update->id, 'step' => UpdateChanges::STEP, 'component_type' => ComponentType::Plugin,
                 'slug' => $slug, 'version_before' => $from, 'version_after' => $to, 'result' => ChangeResult::Updated]);
         }
         expect(filesRollbackTree($site))->not->toBe($tree);

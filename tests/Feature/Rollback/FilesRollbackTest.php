@@ -29,6 +29,7 @@ use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\RunEngine;
 use App\Domain\Runs\StepContext;
 use App\Domain\Secrets\SecretRedactor;
+use App\Domain\Updates\UpdateChanges;
 use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
 use App\Enums\BackupKind;
@@ -101,7 +102,7 @@ function filesRollbackUpdate(FakeDriver $driver, bool $withSnapshot = true): arr
     $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'new-dependency', '2.0.0'));
     unset($driver->components['theme:storefront']);
     foreach ([['classic-editor', '1.6.3', '1.7.0', ChangeResult::Updated], ['new-dependency', null, '2.0.0', ChangeResult::Updated], ['storefront', '4.6.0', null, ChangeResult::Failed]] as [$slug, $before, $after, $result]) {
-        RunChange::factory()->create(['run_id' => $update->id, 'step' => RevertedChanges::UPDATE_STEP, 'slug' => $slug, 'version_before' => $before, 'version_after' => $after, 'result' => $result,
+        RunChange::factory()->create(['run_id' => $update->id, 'step' => UpdateChanges::STEP, 'slug' => $slug, 'version_before' => $before, 'version_after' => $after, 'result' => $result,
             'component_type' => $slug === 'storefront' ? ComponentType::Theme : ComponentType::Plugin]);
     }
     RunChange::factory()->create(['run_id' => $update->id, 'step' => 'plan', 'slug' => 'akismet', 'result' => ChangeResult::Skipped]);
@@ -288,7 +289,7 @@ it('refuses to undo an update when a later update of the site is still applied',
     filesRollbackPipeline($driver);
     [$site, $update] = filesRollbackUpdate($driver);
     $later = Run::factory()->create(['type' => RunType::Update, 'site_id' => $site->id, 'status' => RunStatus::Succeeded]);
-    RunChange::factory()->create(['run_id' => $later->id, 'step' => RevertedChanges::UPDATE_STEP, 'result' => ChangeResult::Updated]);
+    RunChange::factory()->create(['run_id' => $later->id, 'step' => UpdateChanges::STEP, 'result' => ChangeResult::Updated]);
     $driver->writeCalls = [];
 
     $run = app(RunEngine::class)->execute(filesRollbackRun($site, $update));

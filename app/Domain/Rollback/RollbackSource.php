@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Rollback;
 
+use App\Domain\Updates\UpdateChanges;
 use App\Enums\ChangeResult;
 use App\Enums\RunStatus;
 use App\Enums\RunType;
@@ -46,7 +47,7 @@ final class RollbackSource
             ->whereNotIn('status', [RunStatus::RolledBack->value, RunStatus::Cancelled->value, RunStatus::Skipped->value])
             ->where(static fn ($q) => $q
                 ->whereNotIn('status', [RunStatus::Succeeded->value, RunStatus::Failed->value])
-                ->orWhereHas('changes', static fn ($c) => $c->where('step', RevertedChanges::UPDATE_STEP)->where('result', ChangeResult::Updated->value)))
+                ->orWhereHas('changes', static fn ($c) => $c->where('step', UpdateChanges::STEP)->where('result', ChangeResult::Updated->value)))
             ->orderBy('id')
             ->first();
         if ($later !== null) {

@@ -21,6 +21,7 @@ use App\Domain\Runs\Step;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
 use App\Domain\Secrets\SecretRedactor;
+use App\Domain\Updates\UpdateChanges;
 use App\Enums\AuditResult;
 use App\Enums\BackupKind;
 use App\Models\Backup;
@@ -144,7 +145,7 @@ final readonly class FilesRollbackStep implements Step
             $differences = RestoredState::differences(
                 $installed,
                 SiteSnapshot::query()->where('run_id', $source->id)->first(),
-                $source->changes()->where('step', RevertedChanges::UPDATE_STEP)->get(),
+                $source->changes()->where('step', UpdateChanges::STEP)->get(),
             );
             if ($differences !== []) {
                 throw PostRestoreCheckFailed::because("les versions no són les d'abans de l'actualització: ".implode(' ', $differences));
