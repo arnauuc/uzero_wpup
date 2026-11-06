@@ -171,6 +171,9 @@ final class PlanCommand extends WpupCommand
 
         $this->line('PHP '.$plan->phpVersion.' ('.$plan->phpSource->value.')'.($plan->phpVerified ? '' : ': no verificat pel web, és el del CLI'));
         $this->line('Bloquejat: '.($plan->blockedReason === null ? 'no' : "sí: {$plan->blockedReason}"));
+        foreach ($plan->environmentWarnings as $warning) {
+            $this->warn('Avís d\'entorn: '.$warning);
+        }
         if ($plan->options->any()) {
             $this->line('Sobreescriptures (auditades): '.implode(', ', [
                 ...array_keys(array_filter(['--allow-major' => $plan->options->allowMajor, '--skip-quarantine' => $plan->options->skipQuarantine])),

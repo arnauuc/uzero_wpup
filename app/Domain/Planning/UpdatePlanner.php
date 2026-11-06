@@ -88,6 +88,7 @@ final readonly class UpdatePlanner
         private PackageVersions $versions,
         private VulnerabilitySource $vulnerabilities,
         private int $quarantineDays,
+        private FutureMinimums $futureMinimums,
     ) {}
 
     public function plan(SiteSnapshot $snapshot, Site $site, ?SiteProfile $profile, string $phpVersion, PhpVersionSource $phpSource, PlanOptions $options = new PlanOptions, ?ChangeAnalyzer $analyzer = null): UpdatePlan
@@ -111,7 +112,7 @@ final readonly class UpdatePlanner
 
         // Only an active WooCommerce can become a target: updating an inactive one
         // does not make it meet anyone's requirement.
-        $woocommerce = $this->installedWooCommerce($snapshot);
+        $woocommerce = $snapshot->installedWooCommerce();
         /** @var array<string, string> $targets target version of core and WooCommerce after this plan */
         $targets = [ComponentType::Core->value => $snapshot->core_version, ComponentType::Woocommerce->value => $woocommerce ?? ''];
         /** @var array<string, PlannedChange> $skippedTargets skipped core or WooCommerce update, by type */
@@ -182,7 +183,8 @@ final readonly class UpdatePlanner
             $decided[] = $change;
         }
 
-        return new UpdatePlan($phpVersion, $phpSource, $phpSource !== PhpVersionSource::Cli, $blocked, $this->sorted($decided), $options);
+        return new UpdatePlan($phpVersion, $phpSource, $phpSource !== PhpVersionSource::Cli, $blocked, $this->sorted($decided), $options,
+            $this->futureMinimums->warnings($phpVersion, $phpSource !== PhpVersionSource::Cli, $targets[ComponentType::Core->value], $woocommerce === null ? null : $targets[ComponentType::Woocommerce->value], CarbonImmutable::now('UTC')));
     }
 
     /**
@@ -572,18 +574,6 @@ final readonly class UpdatePlanner
         }
 
         return $plugins;
-    }
-
-    private function installedWooCommerce(SiteSnapshot $snapshot): ?string
-    {
-        foreach ($snapshot->plugins as $plugin) {
-            // An inactive WooCommerce does not satisfy anyone's requirement.
-            if (is_array($plugin) && ($plugin['type'] ?? null) === ComponentType::Woocommerce->value && ($plugin['active'] ?? false) === true && is_string($plugin['version'] ?? null)) {
-                return $plugin['version'];
-            }
-        }
-
-        return null;
     }
 
     /**

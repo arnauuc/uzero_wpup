@@ -281,3 +281,23 @@ it('says whether the plan needs staging, without overrides', function (): void {
     expect($output)->toContain('Cal staging primer: no')
         ->and(str_contains($output, 'Sobreescriptures'))->toBeFalse();
 });
+
+it('shows the environment warnings of the plan in the terminal and in the JSON', function (): void {
+    Site::factory()->create(['name' => 'congelat', 'url' => 'https://congelat.test']);
+    $warning = 'Quedarà congelat abans de WooCommerce 11.6 (febrer 2027): exigeix PHP 8.1 i el lloc té PHP 7.4.33.';
+    app(PipelineResolver::class)->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
+        new ScriptedReadOnlyStep('plan', static function () use ($warning): StepOutcome {
+            $plan = new UpdatePlan('7.4.33', PhpVersionSource::HttpProbe, true, null, [], environmentWarnings: [$warning]);
+
+            return StepOutcome::succeeded($plan->summary(), '', $plan->toArray());
+        }),
+    ]));
+
+    Artisan::call('plan', ['sites' => ['congelat'], '--wait' => true]);
+    expect(Artisan::output())->toContain("Avís d'entorn: {$warning}");
+
+    Artisan::call('plan', ['sites' => ['congelat'], '--wait' => true, '--json' => true]);
+    /** @var array{sites: list<array{plan: array{environment_warnings: list<string>}}>} $json */
+    $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+    expect($json['sites'][0]['plan']['environment_warnings'])->toBe([$warning]);
+});
