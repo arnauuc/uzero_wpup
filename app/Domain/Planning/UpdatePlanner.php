@@ -14,13 +14,14 @@ use App\Enums\SkipReason;
 use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\SiteSnapshot;
+use Carbon\CarbonImmutable;
 
 /**
  * Decides, from a fresh snapshot, the site's block and its profile, which pending
  * updates would be applied and which skipped. It reads no site and writes nothing
- * (UZEROWPUP-36). It applies the declared requirements and the profile and, when
- * given a ChangeAnalyzer, the static analysis of the new package (UZEROWPUP-50);
- * quarantine and --allow-major (UZEROWPUP-127) come later.
+ * (UZEROWPUP-36). It applies the declared requirements, the profile and the
+ * version policy of ADR-0005 (UZEROWPUP-127) and, when given a ChangeAnalyzer, the
+ * static analysis of the new package (UZEROWPUP-50).
  *
  * Profile components (frozen_components, excluded_components) are written as
  * `slug` or `type:slug` (e.g. `akismet`, `plugin:akismet`, `theme:storefront`);
@@ -34,9 +35,15 @@ use App\Models\SiteSnapshot;
  * would block it), excluded, frozen, unlicensed,
  * PHP required by the update above the site's, WordPress required above the
  * core the site will have, WooCommerce required above the one the site will have,
- * a "Requires Plugins" entry not installed and active, major version (ADR-0005,
- * before F7: needs staging), and last the static analysis of the package (an
- * error, or an analysis that could not run, skips it; warnings are kept).
+ * a "Requires Plugins" entry not installed and active, quarantine, major version
+ * (ADR-0005, before F7: needs staging), and last the static analysis of the package
+ * (an error, or an analysis that could not run, skips it; warnings are kept).
+ *
+ * Version policy (ADR-0005, UZEROWPUP-127): a version waits `quarantine_days` from
+ * when it is known to exist (PackageVersions: the earliest of its first sighting
+ * and its WordPress.org date; a version never recorded waits the whole period).
+ * The counter is the offered version's own, so a corrective 3.0.1 restarts it.
+ * Core x.y.z within the installed branch never waits (ADR-0005 section 3).
  *
  * Dependencies over the whole plan (UZEROWPUP-48): versioned requirements only
  * point at the core and WooCommerce, which are decided first, so one pass in the
@@ -46,6 +53,8 @@ use App\Models\SiteSnapshot;
  * whatever happens to that plugin's own update (updates never remove plugins).
  * Versions are compared with WpVersion; a requirement or a site version that
  * cannot be read is never taken as met.
+ *
+ * @phpstan-type Candidate array{change: PlannedChange, pending: ?PendingUpdate, package: PackageVersionKey, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}
  */
 final readonly class UpdatePlanner
 {
@@ -57,6 +66,11 @@ final readonly class UpdatePlanner
 
     /** Prefix of the block a real run would apply, as opposed to one the site already has. */
     public const string WOULD_BLOCK_PREFIX = 'es bloquejaria: ';
+
+    public function __construct(
+        private PackageVersions $versions,
+        private int $quarantineDays,
+    ) {}
 
     public function plan(SiteSnapshot $snapshot, Site $site, ?SiteProfile $profile, string $phpVersion, PhpVersionSource $phpSource, ?ChangeAnalyzer $analyzer = null): UpdatePlan
     {
@@ -75,9 +89,12 @@ final readonly class UpdatePlanner
         $skippedTargets = [];
         $active = $this->activePlugins($snapshot);
         $decided = [];
+        $now = CarbonImmutable::now();
+        $since = $this->versions->knownSince(array_map(static fn (array $c): PackageVersionKey => $c['package'], $candidates));
 
         foreach ($candidates as $candidate) {
             $change = $candidate['change'];
+            $quarantine = $this->quarantine($change, $since[$candidate['package']->id()] ?? null, $now);
             $decision = match (true) {
                 $blocked !== null => [SkipReason::SiteBlocked, $blocked],
                 self::listed($excluded, $change) => [SkipReason::Excluded, 'El component és al perfil del lloc com a exclòs.'],
@@ -85,6 +102,7 @@ final readonly class UpdatePlanner
                 $candidate['licensed'] === false => [SkipReason::NoLicense, 'No hi ha cap paquet descarregable: falta la llicència.'],
                 default => $this->incompatibility($candidate, $phpVersion, $targets, $skippedTargets, $otherCoreOffers)
                     ?? $this->missingPlugin($candidate['requires_plugins'], $active)
+                    ?? ($quarantine === null ? null : [SkipReason::Quarantine, $quarantine[1], $quarantine[0]])
                     ?? $this->majorChange($change),
             };
 
@@ -98,7 +116,7 @@ final readonly class UpdatePlanner
             }
 
             if ($decision !== null) {
-                $change = PlannedChange::skip($change, $decision[0], $decision[1]);
+                $change = PlannedChange::skip($change, $decision[0], $decision[1], $decision[2] ?? null);
                 if (isset($targets[$change->type->value])) {
                     $skippedTargets[$change->type->value] = $change;
                 }
@@ -107,7 +125,7 @@ final readonly class UpdatePlanner
                     $targets[$change->type->value] = $change->targetVersion;
                 }
                 if ($candidate['requires_plugins_inferred']) {
-                    $change = new PlannedChange($change->type, $change->slug, $change->currentVersion, $change->targetVersion, PlanAction::Update, null, self::INFERRED_PLUGINS, $change->warnings);
+                    $change = $change->withDetail(self::INFERRED_PLUGINS);
                 }
             }
             $decided[] = $change;
@@ -117,9 +135,36 @@ final readonly class UpdatePlanner
     }
 
     /**
+     * Whole days left and the operator's text when the version is in quarantine;
+     * null when it is not, or it does not wait (ADR-0005 section 3).
+     *
+     * @return array{0: int, 1: string}|null
+     */
+    private function quarantine(PlannedChange $change, ?CarbonImmutable $since, CarbonImmutable $now): ?array
+    {
+        if ($this->quarantineDays <= 0 || $change->bypass !== null) {
+            return null;
+        }
+        // Never recorded (no inventory saw it): it waits the whole period.
+        $until = ($since ?? $now)->addDays($this->quarantineDays);
+        if ($now->greaterThanOrEqualTo($until)) {
+            return null;
+        }
+        $left = max(1, (int) ceil($now->diffInSeconds($until, true) / 86400));
+        $known = $since === null ? "no s'havia vist fins ara" : 'existeix des del '.$since->format('d/m/Y');
+
+        return [$left, "La versió {$change->targetVersion} {$known}: falten ".self::days($left).' de quarantena (de '.self::days($this->quarantineDays).').'];
+    }
+
+    private static function days(int $days): string
+    {
+        return $days === 1 ? '1 dia' : "{$days} dies";
+    }
+
+    /**
      * The candidates in update order, and the core offers that were not chosen.
      *
-     * @return array{0: list<array{change: PlannedChange, pending: ?PendingUpdate, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}>, 1: list<string>}
+     * @return array{0: list<Candidate>, 1: list<string>}
      */
     private function candidates(SiteSnapshot $snapshot): array
     {
@@ -137,9 +182,13 @@ final readonly class UpdatePlanner
             if ($type === null || ! is_string($slug) || ! is_string($current) || ! is_string($target)) {
                 continue;
             }
+            $major = VersionChange::isMajor($type, $current, $target);
             $row = [
-                'change' => new PlannedChange($type, $slug, $current, $target, PlanAction::Update),
+                // Core x.y.z within its branch never waits for the quarantine (ADR-0005).
+                'change' => new PlannedChange($type, $slug, $current, $target, PlanAction::Update, major: $major,
+                    bypass: $type === ComponentType::Core && ! $major ? QuarantineBypass::CoreMaintenance : null),
                 'pending' => PendingUpdate::fromArray($update),
+                'package' => PackageVersionKey::of($type, $slug, $target, self::version($update['source'] ?? null), self::version($update['wporg_slug'] ?? null), self::version($update['package_host'] ?? null)),
                 'licensed' => ($update['licensed'] ?? true) !== false,
                 'requires_php' => self::version($update['requires_php'] ?? null),
                 'requires_wp' => self::version($update['requires_wp'] ?? null),
@@ -342,7 +391,7 @@ final readonly class UpdatePlanner
      */
     private function majorChange(PlannedChange $change): ?array
     {
-        if (! VersionChange::isMajor($change->type, $change->currentVersion, $change->targetVersion)) {
+        if (! $change->major) {
             return null;
         }
 

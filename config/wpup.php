@@ -95,7 +95,10 @@ return [
      * Update plan (UZEROWPUP-36). A plan never probes the web: it trusts the latest
      * probe-verified PHP of the site only if it is at most this old and the CLI
      * reports the same minor version. `report_version` is the `wpup plan --json`
-     * document version.
+     * document version. `quarantine_days` (ADR-0005, UZEROWPUP-127): how long a new
+     * version waits from when it is known to exist (0 turns the quarantine off).
+     * `package_versions_retention_days`: first sightings of versions no inventory
+     * has offered for this long are purged (PackageVersions::purge, UZEROWPUP-134).
      */
     'planning' => [
         // Includes downloading and analysing the new packages (static_analysis):
@@ -103,6 +106,8 @@ return [
         'step_timeout_seconds' => 3600,
         'report_version' => 1,
         'verified_php_max_age_seconds' => 604800,
+        'quarantine_days' => 7,
+        'package_versions_retention_days' => 365,
     ],
 
     /*

@@ -8,8 +8,10 @@ use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteInventory;
 use App\Domain\Inventory\WpCliReader;
+use App\Domain\Planning\PackageVersions;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\ComponentType;
+use App\Models\PackageVersion;
 use App\Models\Site;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
@@ -295,4 +297,44 @@ it('treats a cached WordPress.org answer without requires_plugins as a miss', fu
 
     Http::assertSentCount(1);
     expect($result->updates[0]->requiresPlugins)->toBe([]);
+});
+
+it('takes the release date from WordPress.org only when the answer is about the offered version', function (): void {
+    $answer = static fn (string $version, string $updated): array => ['version' => $version, 'last_updated' => $updated, 'requires' => '6.0', 'requires_php' => '7.0', 'requires_plugins' => []];
+    Http::fake([
+        'api.wordpress.org/plugins/*addon*' => Http::response($answer('1.1', '2026-10-28 4:29pm GMT')),
+        'api.wordpress.org/plugins/*other*' => Http::response($answer('2.5', '2026-10-28 4:29pm GMT')),
+        'api.wordpress.org/plugins/*third*' => Http::response($answer('3.1', 'ahir')),
+        'api.wordpress.org/themes/*' => Http::response(['version' => '4.7.0', 'last_updated' => '2026-10-30', 'requires' => '6.5', 'requires_php' => '7.4']),
+    ]);
+    $driver = new FakeDriver;
+    foreach (['addon' => '1.0', 'other' => '2.0', 'third' => '3.0'] as $slug => $version) {
+        $driver->addComponent(new ComponentVersion(ComponentType::Plugin, $slug, $version));
+    }
+    $driver->addComponent(new ComponentVersion(ComponentType::Theme, 'storefront', '4.6.0'));
+    $entry = static fn (string $slug, string $version): array => ['id' => "w.org/plugins/{$slug}", 'slug' => $slug, 'new_version' => $version, 'package' => 'https://downloads.wordpress.org/a.zip'];
+    $driver->transients['update_plugins'] = ['response' => ['addon/addon.php' => $entry('addon', '1.1'), 'other/other.php' => $entry('other', '2.4'), 'third/third.php' => $entry('third', '3.1')]];
+    $driver->transients['update_themes'] = ['response' => ['storefront' => ['theme' => 'storefront', 'url' => 'https://wordpress.org/themes/storefront/', 'new_version' => '4.7.0', 'package' => 'https://downloads.wordpress.org/t.zip']]];
+
+    $by = pendingBySlug(pendingUpdates(), $driver);
+
+    expect($by['addon']['released_at'])->toBe('2026-10-28T16:29:00+00:00')
+        // WordPress.org answered about another version, or with an unreadable date: unknown.
+        ->and($by['other']['released_at'])->toBeNull()
+        ->and($by['third']['released_at'])->toBeNull()
+        // Themes only give the day: its end, never before the release.
+        ->and($by['storefront']['released_at'])->toBe('2026-10-30T23:59:59+00:00');
+});
+
+it('records every offered version in package_versions on each inventory', function (): void {
+    Http::fake();
+    $driver = pendingDriver();
+    $inventory = new SiteInventory(null, pendingUpdates(), null, null, null, app(PackageVersions::class));
+
+    $inventory->take(Site::factory()->create(), $driver);
+    $inventory->take(Site::factory()->create(), $driver);
+
+    expect(PackageVersion::query()->orderBy('component_type')->orderBy('slug')->get()->map(static fn (PackageVersion $v): string => "{$v->component_type->value}:{$v->slug}:{$v->version}")->all())->toBe([
+        'core:wordpress:6.9.0', 'plugin:hello:1.7.2', 'plugin:nolicence:2.0.0', 'plugin:premium-thing:3.0.0', 'theme:storefront:4.7.0', 'woocommerce:woocommerce:10.2.0',
+    ]);
 });

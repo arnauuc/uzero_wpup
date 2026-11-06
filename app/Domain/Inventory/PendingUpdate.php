@@ -38,6 +38,8 @@ final readonly class PendingUpdate
         public ?array $requiresPlugins = null,
         /** True when $requiresPlugins comes from the installed version, not the new one. */
         public bool $requiresPluginsInferred = false,
+        /** When WordPress.org last changed this version's listing (ISO 8601), only when it is that version; null if unknown. */
+        public ?string $releasedAt = null,
     ) {}
 
     /**
@@ -67,11 +69,12 @@ final readonly class PendingUpdate
             ($row['licensed'] ?? true) !== false,
             is_array($plugins) ? array_values(array_filter($plugins, is_string(...))) : null,
             ($row['requires_plugins_inferred'] ?? false) === true,
+            $optional('released_at'),
         );
     }
 
     /**
-     * @return array{type: string, slug: string, wporg_slug: ?string, current_version: string, new_version: string, package_host: ?string, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, source: string, licensed: bool, requires_plugins: list<string>|null, requires_plugins_inferred: bool}
+     * @return array{type: string, slug: string, wporg_slug: ?string, current_version: string, new_version: string, package_host: ?string, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, source: string, licensed: bool, requires_plugins: list<string>|null, requires_plugins_inferred: bool, released_at: ?string}
      */
     public function toArray(): array
     {
@@ -89,6 +92,7 @@ final readonly class PendingUpdate
             'licensed' => $this->licensed,
             'requires_plugins' => $this->requiresPlugins,
             'requires_plugins_inferred' => $this->requiresPluginsInferred,
+            'released_at' => $this->releasedAt,
         ];
     }
 }

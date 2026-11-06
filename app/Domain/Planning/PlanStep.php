@@ -103,7 +103,7 @@ final readonly class PlanStep implements ReadOnlyStep
                     'result' => ChangeResult::Skipped,
                     'reason' => $change->reason,
                     'reason_detail' => $change->detail,
-                    'is_major' => VersionChange::isMajor($change->type, $change->currentVersion, $change->targetVersion),
+                    'is_major' => $change->major,
                 ]);
             }
         });

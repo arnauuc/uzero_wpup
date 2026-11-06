@@ -15,6 +15,8 @@ use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\SiteSnapshot;
 
+beforeEach(fn () => config(['wpup.planning.quarantine_days' => 0]));
+
 /**
  * @param  list<array<string, mixed>>  $updates
  * @param  array<string, mixed>  $profile
