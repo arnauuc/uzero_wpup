@@ -6,6 +6,7 @@ namespace Tests\Support;
 
 use App\Domain\Backups\OrderWatermark;
 use App\Domain\Backups\ShopWritesReader;
+use App\Domain\Drivers\Data\AppliedUpdate;
 use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
@@ -171,6 +172,18 @@ class FakeDriver implements SiteDriver
     /** @var list<string> names of the driver methods that change the site, in call order (UZEROWPUP-36) */
     public array $writeCalls = [];
 
+    /** @var list<string> work-directory names of every package applyUpdate() uploaded */
+    public array $uploadedPackages = [];
+
+    /** Thrown by applyUpdate() after the upload, as a failed installer would. */
+    public ?\Throwable $installFailure = null;
+
+    /** The version applyUpdate() really installs; null: the target (a package with another version inside). */
+    public ?string $installsVersion = null;
+
+    /** @var list<string> every installedState() read, "type:slug" */
+    public array $stateReads = [];
+
     /** @var list<list<string>> every WP-CLI call, for assertions */
     public array $wpCalls = [];
 
@@ -304,8 +317,43 @@ class FakeDriver implements SiteDriver
                 : new CommandResult(1, '', "Error: Could not get '{$args[2]}' option.\n", 1),
             count($args) === 4 && $args[0] === 'option' && $args[1] === 'update' => $this->updateOption($args[2], $args[3]),
             count($args) === 2 && $args[0] === 'eval' && preg_match('/^error_log\("(.*)"\);$/', $args[1], $m) === 1 => $this->logLine($m[1]),
+            count($args) === 3 && $args[0] === 'plugin' && in_array($args[1], ['activate', 'deactivate'], true) => $this->togglePlugin($args[2], $args[1] === 'activate'),
             default => new CommandResult(1, '', 'Error: FakeDriver does not support: '.implode(' ', $args)."\n", 1),
         };
+    }
+
+    /**
+     * The "Version:" header inside a package zip, as the real installer would
+     * install it; null when it is not a readable zip with one.
+     */
+    private static function zipVersion(string $path): ?string
+    {
+        $zip = new \ZipArchive;
+        if ($zip->open($path, \ZipArchive::RDONLY) !== true) {
+            return null;
+        }
+        try {
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                if (preg_match('/^\s*\*?\s*Version:\s*(\S+)/m', (string) $zip->getFromIndex($i), $m) === 1) {
+                    return $m[1];
+                }
+            }
+        } finally {
+            $zip->close();
+        }
+
+        return null;
+    }
+
+    private function togglePlugin(string $slug, bool $active): CommandResult
+    {
+        $plugin = $this->components[ComponentType::Plugin->value.':'.$slug] ?? null;
+        if ($plugin === null) {
+            return new CommandResult(1, '', "Error: The '{$slug}' plugin could not be found.\n", 1);
+        }
+        $this->addComponent(new ComponentVersion($plugin->type, $plugin->slug, $plugin->version, $active, $plugin->title));
+
+        return $this->ok("Success: done.\n");
     }
 
     /**
@@ -385,22 +433,61 @@ class FakeDriver implements SiteDriver
         return $this->store($remotePath, (string) file_get_contents($localPath));
     }
 
-    public function applyUpdate(UpdatePackage $package): CommandResult
+    public function installedState(ComponentType $type, string $slug): ?ComponentVersion
     {
+        $this->stateReads[] = "{$type->value}:{$slug}";
+        if ($this->installedFailure !== null) {
+            throw $this->installedFailure;
+        }
+
+        return match ($type) {
+            ComponentType::Core => new ComponentVersion(ComponentType::Core, 'wordpress', $this->coreVersion),
+            ComponentType::Woocommerce, ComponentType::Plugin, ComponentType::Theme => $this->components["{$type->value}:{$slug}"] ?? null,
+            default => throw new DriverException("El driver no llegeix components de tipus «{$type->value}» un per un."),
+        };
+    }
+
+    public function applyUpdate(UpdatePackage $package): AppliedUpdate
+    {
+        if (! in_array($package->type, [ComponentType::Core, ComponentType::Woocommerce, ComponentType::Plugin, ComponentType::Theme], true)) {
+            throw new DriverException("El driver no instal·la paquets de tipus «{$package->type->value}».");
+        }
+        $key = $package->type->value.':'.$package->slug;
+        $before = $this->installedState($package->type, $package->slug);
+        if ($before?->version === $package->targetVersion) {
+            return new AppliedUpdate($this->ok("{$package->slug} ja és a la versió {$package->targetVersion}.\n"), $before, true);
+        }
+
+        // As the bytes that reach the site are checked there.
+
+        $content = is_file($package->localPath) ? (string) file_get_contents($package->localPath) : '';
+        if (! hash_equals($package->sha256, hash('sha256', $content)) || strlen($content) !== $package->sizeBytes) {
+            throw IntegrityCheckFailed::checksumMismatch(basename($package->localPath));
+        }
+
         $this->writeCalls[] = 'applyUpdate';
-        $content = $this->files[$package->file->path] ?? throw new RemoteCommandFailed('El paquet no és al lloc.');
-
-        if (hash('sha256', $content) !== $package->file->sha256) {
-            throw IntegrityCheckFailed::checksumMismatch($package->file->path);
+        $name = 'package-'.bin2hex(random_bytes(8)).'.zip';
+        $this->uploadedPackages[] = $name;
+        $this->files[$name] = $content;
+        try {
+            if ($this->installFailure !== null) {
+                throw $this->installFailure;
+            }
+            $installed = $this->installsVersion ?? self::zipVersion($package->localPath) ?? $package->targetVersion;
+            if ($package->type === ComponentType::Core) {
+                $this->coreVersion = $installed;
+            } else {
+                // Activation is kept, as the real installers do.
+                $this->addComponent(new ComponentVersion($package->type, $package->slug, $installed, $this->components[$key]->active ?? false, $this->components[$key]->title ?? null));
+            }
+        } finally {
+            unset($this->files[$name]);
+        }
+        if ($installed !== $package->targetVersion) {
+            throw new RemoteCommandFailed("No s'ha pogut instal·lar {$package->slug} {$package->targetVersion} (ara: «{$installed}»).");
         }
 
-        if ($package->type === ComponentType::Core) {
-            $this->coreVersion = $package->targetVersion;
-        } else {
-            $this->addComponent(new ComponentVersion($package->type, $package->slug, $package->targetVersion));
-        }
-
-        return $this->ok("Success: {$package->slug} {$package->targetVersion}\n");
+        return new AppliedUpdate($this->ok("Success: {$package->slug} {$package->targetVersion}\n"), $this->installedState($package->type, $package->slug) ?? throw new RemoteCommandFailed('El component no és al lloc.'), false);
     }
 
     /** `wp maintenance-mode activate --force`: `.maintenance` written again with the current time. */

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Domain\Drivers;
 
+use App\Domain\Drivers\Data\AppliedUpdate;
 use App\Domain\Drivers\Data\CommandResult;
+use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\Data\LogCursor;
 use App\Domain\Drivers\Data\PhpRuntime;
@@ -15,6 +17,7 @@ use App\Domain\Drivers\Data\WorkArea;
 use App\Domain\Drivers\Data\WorkFile;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\WorkFileNotFound;
+use App\Enums\ComponentType;
 
 /**
  * The only way the orchestrator talks to a site (AGENTS.md). Implementations:
@@ -37,6 +40,9 @@ interface SiteDriver
 {
     /** Temporary files of a restore in the work directory (restoreDatabase(), uploaded copies). */
     public const string RESTORE_TEMP_PATTERN = '#^restore-[0-9a-f]{16}\.(sql|db\.sql\.gz|files\.tar\.gz)$#D';
+
+    /** Packages uploaded by applyUpdate() to the work directory, while they are installed. */
+    public const string PACKAGE_TEMP_PATTERN = '#^package-[0-9a-f]{16}\.zip(\.part)?$#D';
 
     /**
      * Connectivity and prerequisites, without changing anything (`site:test`).
@@ -67,6 +73,15 @@ interface SiteDriver
      * @throws DriverException
      */
     public function installedComponents(): InstalledComponents;
+
+    /**
+     * One component as installedComponents() would report it, read alone
+     * (one light query): core (slug "wordpress"), WooCommerce, a plugin or a
+     * theme. Null when it is not installed.
+     *
+     * @throws DriverException including for another component type
+     */
+    public function installedState(ComponentType $type, string $slug): ?ComponentVersion;
 
     /**
      * Runs WP-CLI with the domain's PHP binary. $args are passed as separate,
@@ -144,12 +159,31 @@ interface SiteDriver
     public function upload(string $localPath, string $remotePath): RemoteFile;
 
     /**
-     * Installs a package that was uploaded by the tool (never downloaded by the
-     * site). Idempotent: does nothing if the target version is installed.
+     * Installs a package of the tool server on the site (UZEROWPUP-54): the
+     * site never downloads it. Core, WooCommerce, plugins and themes only.
      *
-     * @throws DriverException
+     * - Idempotent: if the target version is installed it uploads nothing and
+     *   changes nothing (a resumed step calls it again).
+     * - The caller verifies the local file right before (ArtifactStore::verify());
+     *   the bytes that reach the site are checked there against $package's
+     *   size and SHA-256 before installing (IntegrityCheckFailed otherwise).
+     * - The upload is a plain name of the work directory matching
+     *   PACKAGE_TEMP_PATTERN (random, private, outside the docroot), removed
+     *   afterwards, also on failure. A failed removal never hides the result:
+     *   it is logged and the file is left to SiteLocalTarget::purgeStale();
+     *   leftovers of a dead attempt are also removed before a new upload.
+     * - Installed with the component's own installer, overwriting the files,
+     *   never activating nor deactivating anything: the activation state after
+     *   is the one before, or it fails.
+     * - Afterwards the installed version must be the target, or it fails.
+     *
+     * TODO(F6, AgentDriver): the same contract over the agent, which receives
+     * the bytes in chunks into its private directory and installs them with
+     * the WordPress upgrader classes.
+     *
+     * @throws DriverException including IntegrityCheckFailed when the bytes do not match
      */
-    public function applyUpdate(UpdatePackage $package): CommandResult;
+    public function applyUpdate(UpdatePackage $package): AppliedUpdate;
 
     /**
      * @throws DriverException
