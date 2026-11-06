@@ -92,6 +92,8 @@ use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
+use App\Domain\Updates\PageCacheCommand;
+use App\Domain\Updates\PostUpdateSettings;
 use App\Domain\Updates\SmokeCheckSettings;
 use App\Domain\Updates\SmokeCheckSteps;
 use App\Domain\Updates\UpdateChanges;
@@ -484,6 +486,13 @@ class AppServiceProvider extends ServiceProvider
             $app->make(RunAuthorization::class),
             $app->make(UpdateChanges::class),
             $app->make(SecretRedactor::class),
+            new PostUpdateSettings(
+                self::configInt('wpup.updates.post_update.step_timeout_seconds'),
+                self::configInt('wpup.updates.post_update.update_db_timeout_seconds'),
+                self::configInt('wpup.updates.post_update.command_timeout_seconds'),
+                self::configInt('wpup.updates.post_update.overhead_seconds'),
+                self::configCommands('wpup.updates.post_update.page_caches'),
+            ),
             self::configInt('wpup.updates.component_timeout_seconds'),
             $app->make(SshSettings::class)->applyUpdateBudgetSeconds(),
         ));
@@ -660,6 +669,27 @@ class AppServiceProvider extends ServiceProvider
         $value = config($key);
 
         return is_array($value) ? array_values(array_filter($value, is_string(...))) : throw new \UnexpectedValueException($key.' must be a list of strings.');
+    }
+
+    /**
+     * @return array<string, PageCacheCommand>
+     */
+    private static function configCommands(string $key): array
+    {
+        $value = config($key);
+        if (! is_array($value)) {
+            throw new \UnexpectedValueException($key.' must be a map of page cache commands.');
+        }
+        $commands = [];
+        foreach ($value as $slug => $entry) {
+            $arguments = is_array($entry) ? ($entry['arguments'] ?? []) : null;
+            if (! is_string($slug) || ! is_array($entry) || ! is_string($entry['command'] ?? null) || ! is_array($arguments) || array_filter($arguments, is_string(...)) !== $arguments) {
+                throw new \UnexpectedValueException($key.' must map plugin slugs to a command name and a list of string arguments.');
+            }
+            $commands[$slug] = new PageCacheCommand($entry['command'], array_values($arguments));
+        }
+
+        return $commands;
     }
 
     private static function configInt(string $key): int
