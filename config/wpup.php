@@ -98,9 +98,47 @@ return [
      * document version.
      */
     'planning' => [
-        'step_timeout_seconds' => 60,
+        // Includes downloading and analysing the new packages (static_analysis).
+        'step_timeout_seconds' => 1800,
         'report_version' => 1,
         'verified_php_max_age_seconds' => 604800,
+    ],
+
+    /*
+     * Compatibility, layer 2 (UZEROWPUP-50): every new plugin or theme package
+     * goes through PHP_CodeSniffer + PHPCompatibility with testVersion equal to
+     * the site's PHP minor. An error blocks that component's update; warnings go
+     * to the report. The package is extracted (only *.php) into a private
+     * directory that is always removed afterwards.
+     */
+    'static_analysis' => [
+        'work_dir' => env('WPUP_STATIC_ANALYSIS_DIR', storage_path('app/static-analysis')),
+        'phpcs_binary' => base_path('vendor/bin/phpcs'),
+        'standard_path' => base_path('vendor/phpcompatibility/php-compatibility'),
+        'timeout_seconds' => 300,
+        'memory_limit' => '512M',
+        // phpcs JSON report; more than this is a failure of the analysis.
+        'max_output_bytes' => 20 * 1024 * 1024,
+        'max_files' => 20000,
+        // phpcs --ignore patterns (matched against the path; * is a wildcard, no commas):
+        // vendored libraries and known polyfills, whose code is guarded by version
+        // checks and gives false positives.
+        'ignore' => [
+            '*/vendor/*',
+            '*/node_modules/*',
+            '*/symfony/polyfill-*/*',
+            '*/polyfill-*/*',
+            '*/random_compat/*',
+            '*/paragonie/*',
+            '*/ralouphie/getallheaders/*',
+        ],
+        // What is kept of a scan (cache and plan): findings, path and message sizes.
+        'summary_max_findings' => 20,
+        'summary_max_path_length' => 160,
+        'summary_max_message_length' => 200,
+        // Findings quoted in a skip detail and in the warnings of the plan.
+        'detail_max_findings' => 3,
+        'warnings_max' => 5,
     ],
 
     /*

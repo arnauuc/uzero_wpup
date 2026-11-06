@@ -40,7 +40,7 @@ final readonly class UpdatePlan
     }
 
     /**
-     * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, changes: list<array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string}>}
+     * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, changes: list<array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string, warnings?: list<string>}>}
      */
     public function toArray(): array
     {

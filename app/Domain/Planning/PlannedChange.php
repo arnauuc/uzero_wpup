@@ -21,15 +21,25 @@ final readonly class PlannedChange
         public PlanAction $action,
         public ?SkipReason $reason = null,
         public ?string $detail = null,
+        /** @var list<string> warnings of the static analysis, for the report (UZEROWPUP-50) */
+        public array $warnings = [],
     ) {}
+
+    /**
+     * @param  list<string>  $warnings
+     */
+    public function withWarnings(array $warnings): self
+    {
+        return new self($this->type, $this->slug, $this->currentVersion, $this->targetVersion, $this->action, $this->reason, $this->detail, $warnings);
+    }
 
     public static function skip(self $change, SkipReason $reason, ?string $detail = null): self
     {
-        return new self($change->type, $change->slug, $change->currentVersion, $change->targetVersion, PlanAction::Skip, $reason, $detail);
+        return new self($change->type, $change->slug, $change->currentVersion, $change->targetVersion, PlanAction::Skip, $reason, $detail, $change->warnings);
     }
 
     /**
-     * @return array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string}
+     * @return array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string, warnings?: list<string>}
      */
     public function toArray(): array
     {
@@ -41,6 +51,7 @@ final readonly class PlannedChange
             'action' => $this->action->value,
             'reason' => $this->reason?->value,
             'detail' => $this->detail,
+            ...($this->warnings === [] ? [] : ['warnings' => $this->warnings]),
         ];
     }
 
@@ -68,6 +79,8 @@ final readonly class PlannedChange
             throw new UnexpectedValueException('Unknown value in a planned change.');
         }
 
-        return new self($componentType, $slug, $current, $target, $planAction, $skipReason, is_string($detail) ? $detail : null);
+        $warnings = is_array($data['warnings'] ?? null) ? array_values(array_filter($data['warnings'], is_string(...))) : [];
+
+        return new self($componentType, $slug, $current, $target, $planAction, $skipReason, is_string($detail) ? $detail : null, $warnings);
     }
 }

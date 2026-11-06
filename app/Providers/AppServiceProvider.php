@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Artifacts\ArtifactException;
 use App\Domain\Artifacts\ArtifactFetcher;
 use App\Domain\Artifacts\ArtifactSettings;
 use App\Domain\Artifacts\ArtifactStore;
 use App\Domain\Artifacts\DnsHostResolver;
 use App\Domain\Artifacts\HostResolver;
+use App\Domain\Artifacts\PackageArtifacts;
 use App\Domain\Artifacts\PackageUrlGuard;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
@@ -30,6 +32,9 @@ use App\Domain\Backups\RestoreStep;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\SiteRestore;
+use App\Domain\Compatibility\CompatSettings;
+use App\Domain\Compatibility\PackageCompatibilityAnalyzer;
+use App\Domain\Compatibility\StaticCompatibility;
 use App\Domain\Credentials\KeyRotationStep;
 use App\Domain\Credentials\SecretsRekey;
 use App\Domain\Credentials\SecretsRekeyStep;
@@ -38,6 +43,7 @@ use App\Domain\Drivers\DriverFactory;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\Ssh\SshSettings;
+use App\Domain\Identity\Ability;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
@@ -53,6 +59,7 @@ use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Notifications\LogSiteBlockNotifier;
 use App\Domain\Notifications\SiteBlockNotifier;
+use App\Domain\Planning\ChangeAnalyzer;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
@@ -82,7 +89,9 @@ use App\Domain\ToolBackup\ToolDatabase;
 use App\Enums\BackupTargetType;
 use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
+use App\Models\Run;
 use App\Models\Site;
+use App\Models\SiteSnapshot;
 use App\Support\Logging\RedactSecretsTap;
 use Closure;
 use GuzzleHttp\Client as GuzzleClient;
@@ -233,6 +242,22 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.artifacts.url_secrets.min_segment_length'),
             self::configString('wpup.artifacts.wordpress_org.core_url'),
             self::configString('wpup.artifacts.wordpress_org.localized_core_url'),
+        ));
+        $this->app->bind(CompatSettings::class, static fn (): CompatSettings => new CompatSettings(
+            self::configString('wpup.static_analysis.work_dir'),
+            self::configString('wpup.static_analysis.phpcs_binary'),
+            self::configString('wpup.static_analysis.standard_path'),
+            self::configInt('wpup.static_analysis.timeout_seconds'),
+            self::configString('wpup.static_analysis.memory_limit'),
+            self::configInt('wpup.static_analysis.max_output_bytes'),
+            self::configInt('wpup.static_analysis.max_files'),
+            self::configStrings('wpup.static_analysis.ignore'),
+            self::configInt('wpup.static_analysis.summary_max_findings'),
+            self::configInt('wpup.static_analysis.summary_max_path_length'),
+            self::configInt('wpup.static_analysis.summary_max_message_length'),
+            self::configInt('wpup.static_analysis.detail_max_findings'),
+            self::configInt('wpup.static_analysis.warnings_max'),
+            self::configInt('wpup.artifacts.max_unpacked_bytes'),
         ));
         $this->app->bind(HostResolver::class, DnsHostResolver::class);
         $this->app->bind(ArtifactFetcher::class, static fn (Application $app): ArtifactFetcher => new ArtifactFetcher(
@@ -392,7 +417,33 @@ class AppServiceProvider extends ServiceProvider
                     self::configInt('wpup.inventory.step_timeout_seconds'),
                     readOnlySite: true,
                 ),
-                new PlanStep($app->make(UpdatePlanner::class), self::configInt('wpup.planning.step_timeout_seconds'), self::configInt('wpup.planning.verified_php_max_age_seconds')),
+                new PlanStep(
+                    $app->make(UpdatePlanner::class),
+                    self::configInt('wpup.planning.step_timeout_seconds'),
+                    self::configInt('wpup.planning.verified_php_max_age_seconds'),
+                    // Static analysis of the new packages (UZEROWPUP-50). The site is only reached,
+                    // as whoever launched the run, to read the package URL of premium updates.
+                    static function (Run $run, SiteSnapshot $snapshot, string $php) use ($app): ChangeAnalyzer {
+                        $driver = null;
+
+                        return new PackageCompatibilityAnalyzer(
+                            $run->id,
+                            $php,
+                            $snapshot->pending_updates,
+                            // One driver (one credential reveal) for the whole plan.
+                            static function () use ($app, $run, &$driver): SiteDriver {
+                                $actor = $app->make(RunAuthorization::class)->actorFor($run, Ability::RunOperations)
+                                    ?? throw new ArtifactException(RunAuthorization::deniedMessage($run));
+                                $site = $run->site ?? throw new ArtifactException("L'execució no té cap lloc.");
+
+                                return $driver ??= $app->make(DriverFactory::class)->forSite($site, $actor);
+                            },
+                            $app->make(PackageArtifacts::class),
+                            $app->make(StaticCompatibility::class),
+                            $app->make(CompatSettings::class),
+                        );
+                    },
+                ),
             ]));
         });
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(

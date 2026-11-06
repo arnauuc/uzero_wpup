@@ -89,6 +89,11 @@ final class PlanCommand extends WpupCommand
             $c->action->label(),
             $c->reason === null ? '' : $c->reason->label().($c->detail === null ? '' : " — {$c->detail}"),
         ], $plan->changes));
+        foreach ($plan->changes as $c) {
+            foreach ($c->warnings as $warning) {
+                $this->line("Avís {$c->type->value}:{$c->slug}: {$warning}");
+            }
+        }
         $this->line($plan->summary().'.');
     }
 }

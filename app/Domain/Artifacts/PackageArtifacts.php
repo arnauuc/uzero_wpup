@@ -7,6 +7,7 @@ namespace App\Domain\Artifacts;
 use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Inventory\PendingUpdate;
+use Closure;
 
 /**
  * The artifact of a pending update for a run: the one the run already holds
@@ -24,16 +25,18 @@ final readonly class PackageArtifacts
     ) {}
 
     /**
+     * @param  SiteDriver|Closure(): SiteDriver  $driver  a closure is only called when the artifact is not stored yet
+     *
      * @throws ArtifactException
      * @throws ConnectionFailed
      */
-    public function obtain(int $runId, SiteDriver $driver, PendingUpdate $update): Artifact
+    public function obtain(int $runId, SiteDriver|Closure $driver, PendingUpdate $update): Artifact
     {
         $existing = $this->store->find($runId, PackageUrlResolver::componentType($update), $update->slug, $update->newVersion);
         if ($existing !== null) {
             return $this->store->verify($existing);
         }
 
-        return $this->fetcher->fetch($runId, $this->resolver->resolve($driver, $update));
+        return $this->fetcher->fetch($runId, $this->resolver->resolve($driver instanceof Closure ? $driver() : $driver, $update));
     }
 }

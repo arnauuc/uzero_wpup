@@ -17,8 +17,9 @@ use App\Models\SiteSnapshot;
 /**
  * Decides, from a fresh snapshot, the site's block and its profile, which pending
  * updates would be applied and which skipped. It reads no site and writes nothing
- * (UZEROWPUP-36). For now it applies the declared requirements and the profile;
- * static analysis (F3), quarantine and --allow-major (UZEROWPUP-127) come later.
+ * (UZEROWPUP-36). It applies the declared requirements and the profile and, when
+ * given a ChangeAnalyzer, the static analysis of the new package (UZEROWPUP-50);
+ * quarantine and --allow-major (UZEROWPUP-127) come later.
  *
  * Profile components (frozen_components, excluded_components) are written as
  * `slug` or `type:slug` (e.g. `akismet`, `plugin:akismet`, `theme:storefront`);
@@ -33,7 +34,8 @@ use App\Models\SiteSnapshot;
  * PHP required by the update above the site's, WordPress required above the
  * core the site will have, WooCommerce required above the one the site will have,
  * a "Requires Plugins" entry not installed and active, major version (ADR-0005,
- * before F7: needs staging).
+ * before F7: needs staging), and last the static analysis of the package (an
+ * error, or an analysis that could not run, skips it; warnings are kept).
  *
  * Dependencies over the whole plan (UZEROWPUP-48): versioned requirements only
  * point at the core and WooCommerce, which are decided first, so one pass in the
@@ -55,7 +57,7 @@ final readonly class UpdatePlanner
     /** Prefix of the block a real run would apply, as opposed to one the site already has. */
     public const string WOULD_BLOCK_PREFIX = 'es bloquejaria: ';
 
-    public function plan(SiteSnapshot $snapshot, Site $site, ?SiteProfile $profile, string $phpVersion, PhpVersionSource $phpSource): UpdatePlan
+    public function plan(SiteSnapshot $snapshot, Site $site, ?SiteProfile $profile, string $phpVersion, PhpVersionSource $phpSource, ?ChangeAnalyzer $analyzer = null): UpdatePlan
     {
         $blocked = $site->blocked_reason ?? $this->wouldBlock($snapshot);
         $frozen = $profile === null ? [] : self::strings($profile->frozen_components);
@@ -85,6 +87,15 @@ final readonly class UpdatePlanner
                     ?? $this->majorChange($change),
             };
 
+            // Last, and only for what is still going to be applied: it downloads the package.
+            $analysis = $decision === null ? $analyzer?->analyze($change) : null;
+            if ($analysis?->skip !== null) {
+                $decision = [$analysis->skip, $analysis->detail ?? ''];
+            }
+            if ($analysis !== null && $analysis->warnings !== []) {
+                $change = $change->withWarnings($analysis->warnings);
+            }
+
             if ($decision !== null) {
                 $change = PlannedChange::skip($change, $decision[0], $decision[1]);
                 if (isset($targets[$change->type->value])) {
@@ -95,7 +106,7 @@ final readonly class UpdatePlanner
                     $targets[$change->type->value] = $change->targetVersion;
                 }
                 if ($candidate['requires_plugins_inferred']) {
-                    $change = new PlannedChange($change->type, $change->slug, $change->currentVersion, $change->targetVersion, PlanAction::Update, null, self::INFERRED_PLUGINS);
+                    $change = new PlannedChange($change->type, $change->slug, $change->currentVersion, $change->targetVersion, PlanAction::Update, null, self::INFERRED_PLUGINS, $change->warnings);
                 }
             }
             $decided[] = $change;
