@@ -14,6 +14,7 @@ final readonly class InventoryRow
 {
     /**
      * @param  list<string>  $phpWarnings
+     * @param  list<string>  $externalBackupWarnings  ExternalBackupStatus warnings (UZEROWPUP-133)
      */
     public function __construct(
         public string $site,
@@ -34,6 +35,7 @@ final readonly class InventoryRow
         public int $outdatedTemplates,
         public bool $blocked,
         public ?string $blockedReason,
+        public array $externalBackupWarnings = [],
     ) {}
 
     public function hasSnapshot(): bool
@@ -65,6 +67,7 @@ final readonly class InventoryRow
             ],
             'blocked' => $this->blocked,
             'blocked_reason' => $this->blockedReason,
+            'external_backup_warnings' => $this->externalBackupWarnings,
         ];
     }
 

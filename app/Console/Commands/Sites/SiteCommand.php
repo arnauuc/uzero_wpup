@@ -41,6 +41,7 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         {--include-uploads : Inclou uploads a la còpia}
         {--no-include-uploads : Exclou uploads de la còpia}
         {--external-backup= : Còpia externa: plesk, dropbox, plugin, other, none}
+        {--external-backup-notes= : Notes de la còpia externa (màx. 500 caràcters; en editar, també cal haver-ne declarat el tipus)}
         {--clear=* : Camp a esborrar: tag, php-binary, window, verify-url, mask, checkout-product, freeze, exclude, notify, external-backup}';
 
     /** CLI names accepted by --clear mapped to the canonical field names. */
@@ -98,6 +99,7 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
             notify: $this->listOption('notify'),
             includeUploads: $this->toggle('include-uploads', 'no-include-uploads'),
             externalBackup: $this->stringOption('external-backup'),
+            externalBackupNotes: $this->stringOption('external-backup-notes'),
         );
     }
 

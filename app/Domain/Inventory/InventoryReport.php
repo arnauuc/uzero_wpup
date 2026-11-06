@@ -17,6 +17,8 @@ use RuntimeException;
  */
 final class InventoryReport
 {
+    public function __construct(private readonly ExternalBackupStatus $externalBackups) {}
+
     public const array CSV_COLUMNS = [
         'site', 'url', 'core', 'woocommerce', 'php', 'php_source', 'db_server',
         'pending_updates', 'unlicensed', 'blocked', 'blocked_reason', 'status', 'failure',
@@ -33,7 +35,7 @@ final class InventoryReport
     {
         $ids = array_map(static fn (Run $run): int => $run->id, $runs);
         // Loaded at once, not per row.
-        $loaded = Run::query()->whereKey($ids)->with('site')->get()->keyBy('id');
+        $loaded = Run::query()->whereKey($ids)->with('site.profile')->get()->keyBy('id');
         $snapshots = SiteSnapshot::query()->whereIn('run_id', $ids)->get()->keyBy('run_id');
         $steps = RunStep::query()->whereIn('run_id', $ids)->where('name', InventoryStep::NAME)->get()->keyBy('run_id');
 
@@ -120,6 +122,11 @@ final class InventoryReport
         $woocommerce = self::array($state['woocommerce'] ?? null);
         $templates = self::array($woocommerce['overridden_templates'] ?? null);
         $php = self::array($snapshot->environment['php'] ?? null);
+        $detected = array_values(array_filter(array_map(
+            ExternalBackupPlugin::fromArray(...),
+            array_values(self::array(self::array($snapshot->environment['external_backups'] ?? null)['plugins'] ?? null)),
+        )));
+        $externalBackup = $this->externalBackups->assess($site?->profile?->external_backup, $detected, now()->toImmutable());
 
         return new InventoryRow(
             $name, $url, $run->id, $run->status, $failure,
@@ -136,6 +143,7 @@ final class InventoryReport
             count(array_filter($templates, static fn (mixed $t): bool => is_array($t) && ($t['outdated'] ?? false) === true)),
             $blockedReason !== null,
             $blockedReason,
+            $externalBackup->warnings,
         );
     }
 

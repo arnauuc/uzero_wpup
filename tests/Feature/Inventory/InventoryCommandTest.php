@@ -20,13 +20,13 @@ use Tests\Support\Runs\ScriptedReadOnlyStep;
 
 /**
  * @param  array<string, mixed>  $arguments
- * @return array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}}>}
+ * @return array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}, external_backup_warnings: list<string>}>}
  */
 function inventoryJson(array $arguments): array
 {
     Artisan::call('inventory', $arguments + ['--json' => true]);
 
-    /** @var array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}}>} $json */
+    /** @var array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}, external_backup_warnings: list<string>}>} $json */
     $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
 
     return $json;
@@ -246,4 +246,15 @@ it('refuses a deactivated user', function (): void {
     command('inventory', ['sites' => ['botiga-a']])->assertFailed();
 
     expect(Run::query()->count())->toBe(0);
+});
+
+it('reports external backup warnings per site from the profile and the detection', function (): void {
+    $site = Site::query()->where('name', 'botiga-a')->firstOrFail();
+    $site->profile()->create(['external_backup' => ['type' => 'plesk']]);
+
+    $json = inventoryJson(['sites' => ['botiga-a', 'mixt'], '--wait' => true]);
+    $warnings = array_column($json['sites'], 'external_backup_warnings', 'site');
+
+    expect($warnings['botiga-a'])->toBe([])
+        ->and($warnings['mixt'])->toHaveCount(1)->and($warnings['mixt'][0])->toContain('Sense còpia externa coneguda');
 });

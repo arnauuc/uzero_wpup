@@ -278,16 +278,24 @@ final readonly class SiteAdministration
         if ($input->includeUploads !== null) {
             $profile['include_uploads'] = $input->includeUploads;
         }
-        if ($input->externalBackup !== null) {
+        if ($input->externalBackup !== null || $input->externalBackupNotes !== null) {
             $types = $this->configList('external_backup_types');
-            if (in_array($input->externalBackup, $types, true)) {
-                $profile['external_backup'] = ['type' => $input->externalBackup];
+            $notesMax = config()->integer('wpup.sites.external_backup_notes_max');
+            $stored = $current?->profile?->external_backup;
+            $type = $input->externalBackup ?? (is_string($stored['type'] ?? null) ? $stored['type'] : null);
+            $notes = $input->externalBackupNotes ?? (is_string($stored['notes'] ?? null) ? $stored['notes'] : null);
+            if ($type === null || ! in_array($type, $types, true)) {
+                $errors[] = $input->externalBackup === null
+                    ? 'Per indicar notes de la còpia externa cal declarar-ne abans el tipus (--external-backup).'
+                    : 'Còpia externa desconeguda (opcions: '.implode(', ', $types).').';
+            } elseif ($notes !== null && mb_strlen($notes) > $notesMax) {
+                $errors[] = 'Les notes de la còpia externa són massa llargues (màxim '.$notesMax.' caràcters).';
             } else {
-                $errors[] = 'Còpia externa desconeguda (opcions: '.implode(', ', $types).').';
+                $profile['external_backup'] = ['type' => $type] + ($notes === null ? [] : ['notes' => $notes]);
             }
         }
         if ($clears('external_backup')) {
-            $this->conflict($input->externalBackup, 'external_backup', $errors);
+            $this->conflict($input->externalBackup ?? $input->externalBackupNotes, 'external_backup', $errors);
             $profile['external_backup'] = null;
         }
 

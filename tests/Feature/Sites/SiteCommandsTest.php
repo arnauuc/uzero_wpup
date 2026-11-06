@@ -176,3 +176,53 @@ it('does not write on edit dry-run, no-op or invalid input', function (): void {
 it('emits JSON without secrets-like fields', function (): void {
     command('site:add', addParams(['--json' => true]))->expectsOutputToContain('"name": "botiga-a"')->assertSuccessful();
 });
+
+it('declares the external backup with notes, keeps the notes when only the type changes and audits it', function (): void {
+    command('site:add', addParams())->assertSuccessful();
+
+    command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'plesk', '--external-backup-notes' => 'Plesk diària', '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->external_backup)->toBe(['type' => 'plesk', 'notes' => 'Plesk diària']);
+
+    command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'dropbox', '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->external_backup)->toBe(['type' => 'dropbox', 'notes' => 'Plesk diària']);
+
+    command('site:edit', ['name' => 'botiga-a', '--external-backup-notes' => 'Dropbox setmanal', '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->external_backup)->toBe(['type' => 'dropbox', 'notes' => 'Dropbox setmanal']);
+
+    $entry = AuditLogEntry::query()->where('action', 'site.edit')->latest('id')->firstOrFail();
+    expect(((array) ($entry->context['changes'] ?? []))['external_backup'] ?? null)->toEqual([
+        'from' => ['type' => 'dropbox', 'notes' => 'Plesk diària'],
+        'to' => ['type' => 'dropbox', 'notes' => 'Dropbox setmanal'],
+    ]);
+
+    command('site:edit', ['name' => 'botiga-a', '--clear' => ['external-backup'], '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->external_backup)->toBeNull();
+});
+
+it('rejects invalid external backup input', function (): void {
+    command('site:add', addParams())->assertSuccessful();
+
+    command('site:edit', ['name' => 'botiga-a', '--external-backup-notes' => 'sense tipus', '--no-interaction' => true])
+        ->expectsOutputToContain('declarar-ne abans el tipus')->assertFailed();
+    command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'cinta', '--no-interaction' => true])
+        ->expectsOutputToContain('desconeguda')->assertFailed();
+    command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'plesk', '--external-backup-notes' => str_repeat('x', 501), '--no-interaction' => true])
+        ->expectsOutputToContain('massa llargues')->assertFailed();
+    command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'plesk', '--clear' => ['external-backup'], '--no-interaction' => true])
+        ->expectsOutputToContain('alhora')->assertFailed();
+
+    expect(Site::query()->sole()->profile?->external_backup)->toBeNull();
+});
+
+it('does not write the external backup on dry-run and denies it to operators', function (): void {
+    command('site:add', addParams())->assertSuccessful();
+
+    command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'plesk', '--dry-run' => true, '--no-interaction' => true])
+        ->expectsOutputToContain('[dry-run]')->assertSuccessful();
+    expect(Site::query()->sole()->profile?->external_backup)->toBeNull();
+
+    actingAsOperator('oper1');
+    command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'plesk', '--external-backup-notes' => 'x', '--no-interaction' => true])
+        ->expectsOutputToContain('No tens permís')->assertFailed();
+    expect(Site::query()->sole()->profile?->external_backup)->toBeNull();
+});

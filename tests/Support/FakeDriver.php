@@ -280,6 +280,9 @@ class FakeDriver implements SiteDriver
             count($args) === 3 && $args[0] === 'option' && $args[1] === 'get' => isset($this->options[$args[2]])
                 ? $this->ok($this->options[$args[2]]."\n")
                 : new CommandResult(1, '', "Error: Could not get '{$args[2]}' option.\n", 1),
+            count($args) === 4 && array_slice($args, 0, 2) === ['option', 'get'] && $args[3] === '--format=json' => isset($this->options[$args[2]])
+                ? $this->ok($this->options[$args[2]]."\n")
+                : new CommandResult(1, '', "Error: Could not get '{$args[2]}' option.\n", 1),
             count($args) === 4 && $args[0] === 'option' && $args[1] === 'update' => $this->updateOption($args[2], $args[3]),
             count($args) === 2 && $args[0] === 'eval' && preg_match('/^error_log\("(.*)"\);$/', $args[1], $m) === 1 => $this->logLine($m[1]),
             default => new CommandResult(1, '', 'Error: FakeDriver does not support: '.implode(' ', $args)."\n", 1),
