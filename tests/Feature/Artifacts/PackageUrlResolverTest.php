@@ -89,7 +89,7 @@ it('reuses the artifact the run already holds without asking the site', function
     $driver->wpFailure = new ConnectionFailed('el lloc no respon');
 
     try {
-        expect(app(PackageArtifacts::class)->obtain($run->id, $driver, pendingFor('plugin', 'premium-thing', '2.1.0', PendingUpdate::SOURCE_TRANSIENT)))->toEqual($stored)
+        expect(app(PackageArtifacts::class)->obtain($run->id, fn () => $driver, pendingFor('plugin', 'premium-thing', '2.1.0', PendingUpdate::SOURCE_TRANSIENT)))->toEqual($stored)
             ->and($driver->wpCalls)->toBe([]);
     } finally {
         exec('rm -rf '.escapeshellarg(artifactsRoot()));

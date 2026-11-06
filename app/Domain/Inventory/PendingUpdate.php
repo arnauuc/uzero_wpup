@@ -43,6 +43,37 @@ final readonly class PendingUpdate
     ) {}
 
     /**
+     * The inverse of toArray(); null when the stored row is not usable.
+     *
+     * @param  array<mixed>  $row
+     */
+    public static function fromArray(array $row): ?self
+    {
+        $plugins = $row['requires_plugins'] ?? null;
+        $optional = static fn (string $key): ?string => is_string($row[$key] ?? null) ? $row[$key] : null;
+        if (! is_string($row['type'] ?? null) || ! is_string($row['slug'] ?? null) || ! is_string($row['current_version'] ?? null) || ! is_string($row['new_version'] ?? null)) {
+            return null;
+        }
+
+        return new self(
+            $row['type'],
+            $row['slug'],
+            $optional('wporg_slug'),
+            $row['current_version'],
+            $row['new_version'],
+            $optional('package_host'),
+            $optional('requires_php'),
+            $optional('requires_wp'),
+            $optional('requires_wc'),
+            $optional('source') ?? self::SOURCE_TRANSIENT,
+            ($row['licensed'] ?? true) !== false,
+            is_array($plugins) ? array_values(array_filter($plugins, is_string(...))) : null,
+            ($row['requires_plugins_inferred'] ?? false) === true,
+            $optional('released_at'),
+        );
+    }
+
+    /**
      * @return array{type: string, slug: string, wporg_slug: ?string, current_version: string, new_version: string, package_host: ?string, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, source: string, licensed: bool, requires_plugins: list<string>|null, requires_plugins_inferred: bool, released_at: ?string}
      */
     public function toArray(): array
