@@ -46,6 +46,13 @@ interface SiteDriver
     public const string PACKAGE_TEMP_PATTERN = '#^package-[0-9a-f]{16}\.zip(\.part)?$#D';
 
     /**
+     * WP-CLI without plugins and themes for the backup, restore and maintenance
+     * commands: they must work on a site that a plugin or theme breaks with a
+     * fatal error (UZEROWPUP-46). Must-use plugins still load.
+     */
+    public const array SAFE_MODE = ['--skip-plugins', '--skip-themes'];
+
+    /**
      * Connectivity and prerequisites, without changing anything (`site:test`).
      */
     public function probe(): ProbeResult;
