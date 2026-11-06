@@ -329,7 +329,7 @@ it('takes the release date from WordPress.org only when the answer is about the 
 it('records every offered version in package_versions on each inventory', function (): void {
     Http::fake();
     $driver = pendingDriver();
-    $inventory = new SiteInventory(null, pendingUpdates(), null, null, app(PackageVersions::class));
+    $inventory = new SiteInventory(null, pendingUpdates(), null, null, null, app(PackageVersions::class));
 
     $inventory->take(Site::factory()->create(), $driver);
     $inventory->take(Site::factory()->create(), $driver);

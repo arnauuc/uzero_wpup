@@ -117,6 +117,7 @@ return [
         'default_window' => ['days' => [1, 2, 3, 4, 5, 6, 7], 'start' => '01:00', 'end' => '06:00'],
         'notification_channels' => ['email', 'telegram', 'slack'],
         'external_backup_types' => ['plesk', 'dropbox', 'plugin', 'other', 'none'],
+        'external_backup_notes_max' => 500,
         // site:import refuses larger files (UZEROWPUP-26).
         'import_max_bytes' => 1048576,
     ],
@@ -325,6 +326,47 @@ return [
         ],
     ],
 
+    /*
+     * Package artifacts (UZEROWPUP-49): every package is downloaded by the tool
+     * server, kept per run with its SHA-256 and installed from there, so staging
+     * and production get the same bytes. Private directory (0700, files 0600).
+     */
+    'artifacts' => [
+        'dir' => env('WPUP_ARTIFACTS_DIR', storage_path('app/artifacts')),
+        // Kept while the run's restore point exists, and at least this long (ADR-0009).
+        'min_retention_days' => 30,
+        // Download (HTTPS only; redirects are followed by hand, HTTPS only too).
+        'connect_timeout_seconds' => 15,
+        'timeout_seconds' => 600,
+        'read_timeout_seconds' => 120,
+        'max_redirects' => 5,
+        // Only public addresses are ever reached (PublicAddress); and only on these ports.
+        'allowed_ports' => [443],
+        // What of a package URL is registered with the secret redactor
+        // (PackageUrlGuard): values of query keys containing one of these words,
+        // and query values / path segments at least this long that look like
+        // a token (letters and digits). Never the slug, the version or a URL.
+        'url_secrets' => [
+            'query_keys' => ['key', 'license', 'licence', 'token', 'password', 'pass', 'secret', 'sig', 'signature', 'auth', 'hash', 'nonce', 'access_token', 'credential'],
+            'min_value_length' => 20,
+            'min_segment_length' => 16,
+        ],
+        'max_bytes' => 200 * 1024 * 1024,
+        // Sum of the uncompressed sizes of the ZIP entries (zip bombs).
+        'max_unpacked_bytes' => 1024 * 1024 * 1024,
+        'chunk_bytes' => 1_048_576,
+        // WP-CLI reads of the site's update data (transients, core check-update).
+        'command_timeout_seconds' => 60,
+        // sprintf(): WordPress.org slug, version; core: (locale,) version. The core
+        // package is never taken from the site.
+        'wordpress_org' => [
+            'core_url' => 'https://downloads.wordpress.org/release/wordpress-%s.zip',
+            'localized_core_url' => 'https://downloads.wordpress.org/release/%s/wordpress-%s.zip',
+            'plugin_url' => 'https://downloads.wordpress.org/plugin/%s.%s.zip',
+            'theme_url' => 'https://downloads.wordpress.org/theme/%s.%s.zip',
+        ],
+    ],
+
     'inventory' => [
         'step_timeout_seconds' => 600,
         // `wpup inventory --json` document version, bumped on incompatible changes.
@@ -368,6 +410,28 @@ return [
             'command_timeout_seconds' => 120,
             // du over a big uploads folder takes long.
             'du_timeout_seconds' => 180,
+        ],
+        // External backups (UZEROWPUP-133, ADR-0009): backup plugins recognised by
+        // their slug. `last_backup` says where the plugin keeps its last backup (a WP option
+        // holding an array: read with `wp option pluck` its unix time and whether it succeeded), or
+        // null when it is not exposed in a format we can trust. A site is warned when
+        // nothing is known or the latest detected backup is older than `max_age_days`.
+        'external_backups' => [
+            'command_timeout_seconds' => 30,
+            'max_age_days' => 7,
+            // A last-backup time further in the future than this is ignored (bad clock or garbage).
+            'max_future_seconds' => 86400,
+            // Longer answers from the site are not even parsed.
+            'max_output_bytes' => 4096,
+            'plugins' => [
+                'updraftplus' => ['name' => 'UpdraftPlus', 'last_backup' => ['option' => 'updraft_last_backup', 'time_key' => 'backup_time', 'success_key' => 'success']],
+                'backwpup' => ['name' => 'BackWPup', 'last_backup' => null],
+                'backwpup-pro' => ['name' => 'BackWPup Pro', 'last_backup' => null],
+                'all-in-one-wp-migration' => ['name' => 'All-in-One WP Migration', 'last_backup' => null],
+                'duplicator' => ['name' => 'Duplicator', 'last_backup' => null],
+                'duplicator-pro' => ['name' => 'Duplicator Pro', 'last_backup' => null],
+                'blogvault-real-time-backup' => ['name' => 'BlogVault', 'last_backup' => null],
+            ],
         ],
     ],
 
