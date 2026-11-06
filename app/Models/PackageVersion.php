@@ -15,8 +15,10 @@ use Illuminate\Database\Eloquent\Model;
  * @property int $id
  * @property ComponentType $component_type
  * @property string $slug
+ * @property string $source see PackageVersionKey
  * @property string $version
  * @property CarbonImmutable $first_seen_at
+ * @property CarbonImmutable $last_seen_at
  * @property CarbonImmutable|null $released_at from WordPress.org, an upper bound of the real release
  */
 class PackageVersion extends Model
@@ -32,6 +34,7 @@ class PackageVersion extends Model
         return [
             'component_type' => ComponentType::class,
             'first_seen_at' => 'immutable_datetime',
+            'last_seen_at' => 'immutable_datetime',
             'released_at' => 'immutable_datetime',
         ];
     }

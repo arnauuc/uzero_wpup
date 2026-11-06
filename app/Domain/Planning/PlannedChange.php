@@ -96,7 +96,9 @@ final readonly class PlannedChange
             throw new UnexpectedValueException('Unknown value in a planned change.');
         }
 
-        // Plans stored before UZEROWPUP-127 have no major, bypass or days left.
-        return new self($componentType, $slug, $current, $target, $planAction, $skipReason, is_string($detail) ? $detail : null, ($data['major'] ?? false) === true, $quarantineBypass, is_int($daysLeft) ? $daysLeft : null);
+        // Plans stored before UZEROWPUP-127 have no major (recomputed), bypass or days left.
+        $major = array_key_exists('major', $data) ? $data['major'] === true : VersionChange::isMajor($componentType, $current, $target);
+
+        return new self($componentType, $slug, $current, $target, $planAction, $skipReason, is_string($detail) ? $detail : null, $major, $quarantineBypass, is_int($daysLeft) ? $daysLeft : null);
     }
 }

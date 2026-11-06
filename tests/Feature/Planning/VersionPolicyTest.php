@@ -3,12 +3,14 @@
 declare(strict_types=1);
 
 use App\Domain\Inventory\PendingUpdate;
+use App\Domain\Planning\PackageVersionKey;
 use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Planning\QuarantineBypass;
 use App\Domain\Planning\UpdatePlan;
 use App\Domain\Planning\UpdatePlanner;
+use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Enums\SkipReason;
 use App\Models\PackageVersion;
@@ -33,11 +35,14 @@ function offer(string $type, string $slug, string $from, string $to, array $extr
     return $extra + ['type' => $type, 'slug' => $slug, 'current_version' => $from, 'new_version' => $to, 'requires_php' => null, 'requires_wp' => null, 'requires_wc' => null, 'requires_plugins' => [], 'licensed' => true, 'source' => 'wordpress.org'];
 }
 
-function seen(string $type, string $slug, string $version, int $daysAgo, ?int $releasedDaysAgo = null): void
+/** $source defaults to the one of a WordPress.org package with that slug (see PackageVersionKey). */
+function seen(string $type, string $slug, string $version, int $daysAgo, ?int $releasedDaysAgo = null, ?string $source = null): void
 {
     PackageVersion::query()->create([
         'component_type' => $type, 'slug' => $slug, 'version' => $version,
-        'first_seen_at' => now()->subDays($daysAgo), 'released_at' => $releasedDaysAgo === null ? null : now()->subDays($releasedDaysAgo),
+        'source' => $source ?? ($type === 'core' ? 'wordpress.org:wordpress' : "wordpress.org:{$slug}"),
+        'first_seen_at' => now()->subDays($daysAgo), 'last_seen_at' => now()->subDays($daysAgo),
+        'released_at' => $releasedDaysAgo === null ? null : now()->subDays($releasedDaysAgo),
     ]);
 }
 
@@ -163,7 +168,8 @@ it('round-trips the policy fields and reads plans stored before them', function 
     $old = UpdatePlan::fromArray(['php' => ['version' => '8.2.1', 'source' => 'cli'], 'changes' => [
         ['type' => 'plugin', 'slug' => 'a', 'current_version' => '1', 'target_version' => '2', 'action' => 'skip', 'reason' => 'major_requires_staging', 'detail' => null],
     ]]);
-    expect($old->changes[0]->major)->toBeFalse();
+    // No stored major flag: recomputed from the versions (1 → 2 is major).
+    expect($old->changes[0]->major)->toBeTrue();
     expect(fn () => UpdatePlan::fromArray(['php' => ['version' => '8.2.1', 'source' => 'cli'], 'changes' => [
         ['type' => 'plugin', 'slug' => 'a', 'current_version' => '1', 'target_version' => '2', 'action' => 'update', 'quarantine_bypass' => 'nope'],
     ]]))->toThrow(UnexpectedValueException::class);
@@ -184,5 +190,40 @@ it('records first sightings idempotently and never moves them forward', function
     $versions->record([$update('2026-11-06T08:00:00+00:00')], CarbonImmutable::now());
     expect(PackageVersion::query()->count())->toBe(1)
         ->and($row()->first_seen_at->utc()->toIso8601String())->toBe('2026-11-01T12:00:00+00:00')
-        ->and($row()->released_at?->utc()->toIso8601String())->toBe('2026-11-01T08:00:00+00:00');
+        ->and($row()->released_at?->utc()->toIso8601String())->toBe('2026-11-01T08:00:00+00:00')
+        ->and($row()->last_seen_at->utc()->toIso8601String())->toBe('2026-11-06T12:00:00+00:00');
+});
+
+it('keeps a separate clock for unrelated packages that share a folder name', function (): void {
+    // Two premium "forms" plugins from different vendors, and the WordPress.org one.
+    seen('plugin', 'forms', '2.1', 30, source: 'host:vendor-a.test');
+    seen('plugin', 'forms', '2.1', 1, source: 'host:vendor-b.test');
+
+    $plan = policyPlan([offer('plugin', 'forms', '2.0', '2.1', ['source' => 'transient', 'package_host' => 'vendor-b.test'])]);
+    expect(policyChange($plan, 'forms')->quarantineDaysLeft)->toBe(6);
+
+    $plan = policyPlan([offer('plugin', 'forms', '2.0', '2.1', ['source' => 'transient', 'package_host' => 'vendor-a.test'])]);
+    expect(policyChange($plan, 'forms')->action)->toBe(PlanAction::Update);
+
+    // The WordPress.org one was never seen: it waits the whole period.
+    expect(policyChange(policyPlan([offer('plugin', 'forms', '2.0', '2.1')]), 'forms')->quarantineDaysLeft)->toBe(7);
+});
+
+it('reads only the asked versions', function (): void {
+    seen('plugin', 'akismet', '5.4', 30);
+    seen('plugin', 'akismet', '5.3', 60);
+    seen('plugin', 'akismet', '5.4', 60, source: 'host:other.test');
+
+    $since = app(PackageVersions::class)->knownSince([new PackageVersionKey(ComponentType::Plugin, 'akismet', 'wordpress.org:akismet', '5.4')]);
+
+    expect(array_keys($since))->toBe([(new PackageVersionKey(ComponentType::Plugin, 'akismet', 'wordpress.org:akismet', '5.4'))->id()]);
+});
+
+it('purges the versions no inventory has offered for the retention period', function (): void {
+    config(['wpup.planning.package_versions_retention_days' => 30]);
+    seen('plugin', 'old', '1.0', 31);
+    seen('plugin', 'recent', '1.0', 29);
+
+    expect(app(PackageVersions::class)->purge(CarbonImmutable::now()))->toBe(1)
+        ->and(PackageVersion::query()->pluck('slug')->all())->toBe(['recent']);
 });

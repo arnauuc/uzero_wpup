@@ -236,6 +236,7 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.http_probe.max_response_bytes'),
             self::configInt('wpup.inventory.http_probe.max_extensions'),
         ));
+        $this->app->bind(PackageVersions::class, static fn (): PackageVersions => new PackageVersions(self::configInt('wpup.planning.package_versions_retention_days')));
         $this->app->bind(UpdatePlanner::class, static fn (Application $app): UpdatePlanner => new UpdatePlanner(
             $app->make(PackageVersions::class),
             self::configInt('wpup.planning.quarantine_days'),

@@ -51,7 +51,7 @@ use Carbon\CarbonImmutable;
  * Versions are compared with WpVersion; a requirement or a site version that
  * cannot be read is never taken as met.
  *
- * @phpstan-type Candidate array{change: PlannedChange, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}
+ * @phpstan-type Candidate array{change: PlannedChange, package: PackageVersionKey, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}
  */
 final readonly class UpdatePlanner
 {
@@ -87,11 +87,11 @@ final readonly class UpdatePlanner
         $active = $this->activePlugins($snapshot);
         $decided = [];
         $now = CarbonImmutable::now();
-        $since = $this->versions->knownSince(array_map(static fn (array $c): PlannedChange => $c['change'], $candidates));
+        $since = $this->versions->knownSince(array_map(static fn (array $c): PackageVersionKey => $c['package'], $candidates));
 
         foreach ($candidates as $candidate) {
             $change = $candidate['change'];
-            $quarantine = $this->quarantine($change, $since[PackageVersions::key($change->type, $change->slug, $change->targetVersion)] ?? null, $now);
+            $quarantine = $this->quarantine($change, $since[$candidate['package']->id()] ?? null, $now);
             $decision = match (true) {
                 $blocked !== null => [SkipReason::SiteBlocked, $blocked],
                 self::listed($excluded, $change) => [SkipReason::Excluded, 'El component és al perfil del lloc com a exclòs.'],
@@ -175,6 +175,7 @@ final readonly class UpdatePlanner
                 // Core x.y.z within its branch never waits for the quarantine (ADR-0005).
                 'change' => new PlannedChange($type, $slug, $current, $target, PlanAction::Update, major: $major,
                     bypass: $type === ComponentType::Core && ! $major ? QuarantineBypass::CoreMaintenance : null),
+                'package' => PackageVersionKey::of($type, $slug, $target, self::version($update['source'] ?? null), self::version($update['wporg_slug'] ?? null), self::version($update['package_host'] ?? null)),
                 'licensed' => ($update['licensed'] ?? true) !== false,
                 'requires_php' => self::version($update['requires_php'] ?? null),
                 'requires_wp' => self::version($update['requires_wp'] ?? null),
