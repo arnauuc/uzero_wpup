@@ -40,7 +40,15 @@ use Illuminate\Support\Facades\Log;
  * cached per slug and version) only for the ones that are missing, else null. `requires_wc` ("WC requires at least" is a plugin header)
  * is not exposed by WordPress.org or by the core transient; it is only filled
  * if a licence server adds `wc_requires` / `wc_requires_at_least` to its
- * transient entry, otherwise null. Licences are not managed: a package without
+ * transient entry, otherwise null. `requires_plugins` (the "Requires Plugins"
+ * header, WP 6.5+) comes from the transient entry, else from the WordPress.org
+ * answer (looked up for a WordPress.org plugin whenever the transient lacks it).
+ * Only when neither has it (premium plugins) it is inferred from the header of
+ * the installed version (one `wp eval` for all plugins) and marked
+ * requires_plugins_inferred, with a warning: a dependency that only the new
+ * version adds is missed. If that cannot be read either it stays null (unknown,
+ * which the planner never takes as met).
+ * Licences are not managed: a package without
  * download URL is reported with licensed=false.
  *
  * A command failing on the site, or WordPress.org failing, never fails the
@@ -49,6 +57,16 @@ use Illuminate\Support\Facades\Log;
  */
 final readonly class PendingUpdates
 {
+    /** Installed plugins' "Requires Plugins" header, by plugin file. Constant: never built from input. */
+    public const string REQUIRES_PLUGINS_SNIPPET = <<<'PHP'
+if (!function_exists('get_plugins')) { require_once ABSPATH . 'wp-admin/includes/plugin.php'; }
+$out = array();
+foreach (get_plugins() as $file => $data) {
+    if (!empty($data['RequiresPlugins'])) { $out[$file] = (string) $data['RequiresPlugins']; }
+}
+echo "\n" . json_encode((object) $out, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR) . "\n";
+PHP;
+
     public function __construct(
         private Factory $http,
         private Cache $cache,
@@ -90,15 +108,31 @@ final readonly class PendingUpdates
                     'kind' => $kind, 'slug' => $slug, 'wporg' => $fromOrg ? ($wporgSlug ?? $slug) : $wporgSlug,
                     'from_org' => $fromOrg, 'current' => $current, 'new' => $new, 'entry' => $entry,
                     'php' => $this->reader->text($entry['requires_php'] ?? null), 'wp' => $this->reader->text($entry['requires'] ?? null),
+                    'plugins' => $kind === ComponentType::Plugin ? self::slugList($entry['requires_plugins'] ?? null, $slug) : [],
                 ];
             }
         }
 
         $info = $this->lookups($pending, $warnings);
+        $found = [];
+        $requiresPlugins = [];
+        foreach ($pending as $i => $row) {
+            $found[$i] = $info[$this->cacheKey($row['kind'], (string) $row['wporg'], $row['new'])] ?? [];
+            $requiresPlugins[$i] = $row['plugins'] ?? self::slugList($found[$i]['requires_plugins'] ?? null, $row['slug']);
+        }
+        $inferred = [];
+        $headers = in_array(null, $requiresPlugins, true) ? $this->installedRequiresPlugins($driver, $warnings) : null;
+        foreach ($headers === null ? [] : $requiresPlugins as $i => $slugs) {
+            if ($slugs === null) {
+                $slug = $pending[$i]['slug'];
+                $requiresPlugins[$i] = self::slugList($headers[$slug] ?? '', $slug);
+                $inferred[$i] = true;
+                $warnings[] = "No s'han pogut confirmar els plugins que requereix la versió nova de «{$slug}»: es fan servir els de la versió instal·lada.";
+            }
+        }
 
-        foreach ($pending as $row) {
+        foreach ($pending as $i => $row) {
             $kind = $row['kind'];
-            $found = $info[$this->cacheKey($kind, (string) $row['wporg'], $row['new'])] ?? [];
             [$host, $licensed] = $this->package($row['entry']['package'] ?? null);
             $type = $kind === ComponentType::Theme ? 'theme' : ($row['slug'] === 'woocommerce' ? 'woocommerce' : 'plugin');
 
@@ -109,11 +143,13 @@ final readonly class PendingUpdates
                 $row['current'],
                 $row['new'],
                 $host,
-                $row['php'] ?? $this->reader->text($found['requires_php'] ?? null),
-                $row['wp'] ?? $this->reader->text($found['requires'] ?? null),
+                $row['php'] ?? $this->reader->text($found[$i]['requires_php'] ?? null),
+                $row['wp'] ?? $this->reader->text($found[$i]['requires'] ?? null),
                 $this->reader->text($row['entry']['wc_requires'] ?? null) ?? $this->reader->text($row['entry']['wc_requires_at_least'] ?? null),
                 $row['from_org'] ? PendingUpdate::SOURCE_WORDPRESS_ORG : PendingUpdate::SOURCE_TRANSIENT,
                 $licensed,
+                $requiresPlugins[$i],
+                $inferred[$i] ?? false,
             );
         }
 
@@ -147,7 +183,7 @@ final readonly class PendingUpdates
                 continue;
             }
             [$host, $licensed] = $this->package($row['package_url'] ?? null);
-            $updates[] = new PendingUpdate('core', 'wordpress', null, $current, $row['version'], $host, null, null, null, PendingUpdate::SOURCE_WORDPRESS_ORG, $licensed);
+            $updates[] = new PendingUpdate('core', 'wordpress', null, $current, $row['version'], $host, null, null, null, PendingUpdate::SOURCE_WORDPRESS_ORG, $licensed, []);
         }
 
         return $updates;
@@ -212,7 +248,7 @@ final readonly class PendingUpdates
      * Requirements from WordPress.org for the entries that lack them in the
      * transient; cached per slug and version, one pooled request round.
      *
-     * @param  list<array{kind: ComponentType, slug: string, wporg: ?string, from_org: bool, current: string, new: string, entry: array<string, mixed>, php: ?string, wp: ?string}>  $pending
+     * @param  list<array{kind: ComponentType, slug: string, wporg: ?string, from_org: bool, current: string, new: string, entry: array<string, mixed>, php: ?string, wp: ?string, plugins: ?list<string>}>  $pending
      * @param  list<string>  $warnings
      * @return array<string, array<string, mixed>> by cache key
      */
@@ -222,12 +258,14 @@ final readonly class PendingUpdates
         $toFetch = [];
 
         foreach ($pending as $row) {
-            if (! $row['from_org'] || $row['wporg'] === null || ($row['php'] !== null && $row['wp'] !== null)) {
+            $complete = $row['php'] !== null && $row['wp'] !== null && $row['plugins'] !== null;
+            if (! $row['from_org'] || $row['wporg'] === null || $complete) {
                 continue;
             }
             $key = $this->cacheKey($row['kind'], $row['wporg'], $row['new']);
             $cached = $this->cache->get($key);
-            if (is_array($cached)) {
+            // An entry cached before requires_plugins was kept is a miss.
+            if (is_array($cached) && array_key_exists('requires_plugins', $cached)) {
                 $found[$key] = $this->stringKeys($cached);
             } elseif (count($toFetch) >= $this->maxLookups) {
                 $warnings[] = "S'ha superat el límit de consultes a WordPress.org: «{$row['slug']}» només té les dades del lloc.";
@@ -267,10 +305,73 @@ final readonly class PendingUpdates
             }
             $data = $this->stringKeys($data);
             $found[$key] = $data;
-            $this->cache->put($key, ['requires' => $data['requires'] ?? null, 'requires_php' => $data['requires_php'] ?? null], $this->cacheTtlSeconds);
+            $this->cache->put($key, ['requires' => $data['requires'] ?? null, 'requires_php' => $data['requires_php'] ?? null, 'requires_plugins' => $data['requires_plugins'] ?? null], $this->cacheTtlSeconds);
         }
 
         return $found;
+    }
+
+    /**
+     * The "Requires Plugins" header of each installed plugin, by slug; only read
+     * when an update lacks it. Null (with a warning) if it cannot be read.
+     *
+     * @param  list<string>  $warnings
+     * @return array<string, mixed>|null
+     */
+    private function installedRequiresPlugins(SiteDriver $driver, array &$warnings): ?array
+    {
+        $what = 'els plugins que requereixen els plugins instal·lats';
+        $result = $this->run($driver, ['eval', self::REQUIRES_PLUGINS_SNIPPET], $what, $warnings);
+        $data = $result !== null && $result->successful() ? $this->reader->json($result->stdout) : null;
+        if ($data === null) {
+            if ($result !== null) {
+                $warnings[] = "No s'han pogut llegir {$what}: no es comproven.";
+            }
+
+            return null;
+        }
+
+        $headers = [];
+        foreach ($data as $file => $header) {
+            $slug = $this->slugOf(ComponentType::Plugin, (string) $file);
+            if ($slug !== null) {
+                $headers[$slug] = $header;
+            }
+        }
+
+        return $headers;
+    }
+
+    /**
+     * Slugs of a "Requires Plugins" value, cleaned as WordPress does
+     * (WP_Plugin_Dependencies::sanitize_dependency_slugs: trimmed, anything that is not
+     * a lowercase slug dropped, never lowercased; the plugin itself dropped too),
+     * sorted. Null when there is no value at all (unknown, not "none").
+     *
+     * @return list<string>|null
+     */
+    private static function slugList(mixed $value, string $self): ?array
+    {
+        $items = match (true) {
+            is_string($value) => explode(',', $value),
+            is_array($value) => array_filter($value, is_string(...)),
+            default => null,
+        };
+        if ($items === null) {
+            return null;
+        }
+
+        $slugs = [];
+        foreach ($items as $item) {
+            $slug = trim($item);
+            if ($slug !== $self && preg_match('/^[a-z0-9]+(-[a-z0-9]+)*$/', $slug) === 1) {
+                $slugs[$slug] = true;
+            }
+        }
+        $slugs = array_keys($slugs);
+        sort($slugs);
+
+        return $slugs;
     }
 
     private function request(PendingRequest $request, ComponentType $kind, string $slug): mixed

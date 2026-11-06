@@ -9,16 +9,24 @@ use App\Domain\Inventory\InventoryStep;
 use App\Domain\Runs\ReadOnlyStep;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
+use App\Enums\ChangeResult;
 use App\Enums\PhpVersionSource;
+use App\Models\Run;
 use App\Models\SiteSnapshot;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Second step of a plan run: plans from the snapshot the inventory step just
- * took. It touches neither the site nor the tool's state.
+ * took. It touches neither the site nor the tool's state; it only records, in
+ * the run's own run_changes, each skipped component with its reason
+ * (UZEROWPUP-48).
  */
 final readonly class PlanStep implements ReadOnlyStep
 {
     public const string NAME = 'plan';
+
+    /** Size of the string columns of run_changes. */
+    private const int COLUMN_LENGTH = 255;
 
     public function __construct(private UpdatePlanner $planner, private int $timeoutSeconds, private int $verifiedPhpMaxAgeSeconds) {}
 
@@ -60,7 +68,42 @@ final readonly class PlanStep implements ReadOnlyStep
         }
 
         $plan = $this->planner->plan($snapshot, $site->refresh(), $site->profile, $php, $source);
+        $this->recordSkips($context->run, $plan);
 
         return StepOutcome::succeeded($plan->summary(), '', $plan->toArray());
+    }
+
+    /**
+     * One run_changes row per skipped component. version_after is the target that
+     * was not applied. A retried step replaces only its own rows (step = plan).
+     * Slug and versions come from the site: cut to the column size, never failing.
+     */
+    private function recordSkips(Run $run, UpdatePlan $plan): void
+    {
+        DB::transaction(static function () use ($run, $plan): void {
+            $run->changes()->where('step', self::NAME)->delete();
+            foreach ($plan->changes as $change) {
+                if ($change->action !== PlanAction::Skip) {
+                    continue;
+                }
+                $run->changes()->create([
+                    'step' => self::NAME,
+                    'component_type' => $change->type,
+                    'slug' => self::column($change->slug),
+                    'version_before' => self::column($change->currentVersion),
+                    'version_after' => self::column($change->targetVersion),
+                    'result' => ChangeResult::Skipped,
+                    'reason' => $change->reason,
+                    'reason_detail' => $change->detail,
+                    'is_major' => VersionChange::isMajor($change->type, $change->currentVersion, $change->targetVersion),
+                ]);
+            }
+        });
+    }
+
+    /** Fits a site-provided value in a varchar(255) column (valid UTF-8, at most 255 bytes). */
+    private static function column(string $value): string
+    {
+        return mb_strcut(mb_scrub($value, 'UTF-8'), 0, self::COLUMN_LENGTH, 'UTF-8');
     }
 }

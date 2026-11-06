@@ -22,6 +22,7 @@ use App\Domain\Drivers\Exceptions\WorkFileNotFound;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Drivers\WebFileName;
 use App\Domain\Drivers\WorkPath;
+use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteState;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
@@ -71,6 +72,9 @@ class FakeDriver implements SiteDriver
 
     /** @var array<string, array<mixed>> site transients by name (update_plugins, update_themes) */
     public array $transients = [];
+
+    /** @var array<string, string> "Requires Plugins" header of installed plugins, by plugin file */
+    public array $requiresPluginsHeaders = [];
 
     /** @var list<array<string, string>> answer of `wp core check-update` */
     public array $coreUpdates = [];
@@ -256,6 +260,7 @@ class FakeDriver implements SiteDriver
 
         return match (true) {
             $args === ['eval', SiteState::SNIPPET] => $this->ok($this->snippetOutput ?? $this->stateSnippet()),
+            $args === ['eval', PendingUpdates::REQUIRES_PLUGINS_SNIPPET] => $this->ok("\n".json_encode((object) $this->requiresPluginsHeaders)."\n"),
             $args === ['db', 'size', '--size_format=b', '--all-tables-with-prefix', '--format=json'] => $this->ok((string) json_encode(array_map(
                 static fn (string $name, int $bytes): array => ['Name' => $name, 'Size' => "{$bytes} B"],
                 array_keys($this->dbTables),
