@@ -31,6 +31,10 @@ use Illuminate\Support\Facades\Log;
  * `slug` or `type:slug` (e.g. `akismet`, `plugin:akismet`, `theme:storefront`);
  * the core is `core:wordpress` or `wordpress`. WooCommerce is also a plugin:
  * `woocommerce`, `plugin:woocommerce` and `woocommerce:woocommerce` all match it.
+ * A frozen entry may carry a version, `slug@1.2` or `type:slug@1.2` (UZEROWPUP-51):
+ * the component may be updated up to that version, not beyond it. `--include` (an
+ * admin, per run) plans a frozen or excluded component anyway; it never forces an
+ * unlicensed one (there is no package) and changes no other rule.
  *
  * The update order is fixed (AGENTS.md): core, WooCommerce, plugins, themes, translations.
  *
@@ -92,6 +96,17 @@ final readonly class UpdatePlanner
         $blocked = $site->blocked_reason ?? $this->wouldBlock($snapshot);
         $frozen = $profile === null ? [] : self::strings($profile->frozen_components);
         $excluded = $profile === null ? [] : self::strings($profile->excluded_components);
+        // Excluded or frozen by the profile and not let through by --include: the skip, if any.
+        $profileSkip = static function (PlannedChange $change) use ($frozen, $excluded, $options): ?array {
+            if (self::listed($options->include, $change)) {
+                return null;
+            }
+            if (self::listed($excluded, $change)) {
+                return [SkipReason::Excluded, 'El component és al perfil del lloc com a exclòs.'];
+            }
+
+            return self::frozenSkip($frozen, $change);
+        };
 
         [$candidates, $otherCoreOffers] = $this->candidates($snapshot);
 
@@ -114,7 +129,7 @@ final readonly class UpdatePlanner
         foreach ($candidates as $i => $candidate) {
             $change = $candidate['change'];
             $quarantines[$i] = $this->quarantine($change, $since[$candidate['package']->id()] ?? null, $now);
-            if ($quarantines[$i] !== null && $blocked === null && $candidate['licensed'] && ! self::listed($excluded, $change) && ! self::listed($frozen, $change)) {
+            if ($quarantines[$i] !== null && $blocked === null && $candidate['licensed'] && self::mayBeAsked($profileSkip($change), $frozen, $change)) {
                 $asked[$i] = new InstalledComponent($change->type, $change->slug, $candidate['from_org'] ? ($candidate['wporg_slug'] ?? $change->slug) : null, $change->currentVersion);
             }
         }
@@ -128,11 +143,12 @@ final readonly class UpdatePlanner
                 $quarantine = null;
             }
             $change = $candidate['change'];
+            // After the security fix: the frozen version is compared with the version that would be installed.
+            $profile = $profileSkip($change);
             $decision = match (true) {
                 $blocked !== null => [SkipReason::SiteBlocked, $blocked],
-                self::listed($excluded, $change) => [SkipReason::Excluded, 'El component és al perfil del lloc com a exclòs.'],
-                self::listed($frozen, $change) => [SkipReason::Frozen, 'El component és al perfil del lloc com a congelat.'],
-                $candidate['licensed'] === false => [SkipReason::NoLicense, 'No hi ha cap paquet descarregable: falta la llicència.'],
+                $profile !== null => $profile,
+                $candidate['licensed'] === false => [SkipReason::NoLicense, 'No hi ha cap paquet descarregable: falta la llicència.'.(self::listed($options->include, $change) ? ' --include no ho pot forçar.' : '')],
                 $candidate['unverified_fix'] !== null => [SkipReason::Other, $candidate['unverified_fix']],
                 default => $this->incompatibility($candidate, $phpVersion, $targets, $skippedTargets, $otherCoreOffers)
                     ?? $this->missingPlugin($candidate['requires_plugins'], $active)
@@ -561,16 +577,97 @@ final readonly class UpdatePlanner
     }
 
     /**
+     * Whether an entry of the list names the component. An entry may end in `@version`
+     * (frozen only): the version is ignored here.
+     *
      * @param  list<string>  $list
      */
     private static function listed(array $list, PlannedChange $change): bool
     {
-        $names = [$change->slug, "{$change->type->value}:{$change->slug}"];
-        if ($change->type === ComponentType::Woocommerce) {
-            $names[] = "plugin:{$change->slug}";
+        return self::entries($list, $change) !== [];
+    }
+
+    /**
+     * The frozen skip of a component, or null when it may be updated: not listed, or
+     * frozen at a version that the offered one does not exceed (the lowest if several).
+     *
+     * @param  list<string>  $frozen
+     * @return array{SkipReason, string}|null
+     */
+    private static function frozenSkip(array $frozen, PlannedChange $change): ?array
+    {
+        $entries = self::entries($frozen, $change);
+        if ($entries === []) {
+            return null;
         }
 
-        return array_intersect($names, $list) !== [];
+        $cap = null;
+        foreach ($entries as $version) {
+            // An unreadable version freezes completely, like no version.
+            $parsed = $version === null ? null : WpVersion::parse($version);
+            if ($parsed === null) {
+                return [SkipReason::Frozen, 'El component és al perfil del lloc com a congelat.'];
+            }
+            if ($cap === null || $parsed->compare($cap[0]) < 0) {
+                $cap = [$parsed, (string) $version];
+            }
+        }
+
+        $target = WpVersion::parse($change->targetVersion);
+        if ($target === null) {
+            return [SkipReason::Frozen, "El component és al perfil del lloc congelat a {$cap[1]}: versió oferta il·legible ({$change->targetVersion})."];
+        }
+        if ($target->compare($cap[0]) <= 0) {
+            return null;
+        }
+
+        return [SkipReason::Frozen, "El component és al perfil del lloc congelat a {$cap[1]}: la versió oferta ({$change->targetVersion}) el supera i no s'instal·len versions intermèdies."];
+    }
+
+    /**
+     * Whether the vulnerability source should be asked about the component: not skipped by
+     * the profile, or only because the offered version is above its frozen version (a
+     * fix at or below it can still be applied). Never for an excluded or fully frozen one.
+     *
+     * @param  array{SkipReason, string}|null  $profileSkip
+     * @param  list<string>  $frozen
+     */
+    private static function mayBeAsked(?array $profileSkip, array $frozen, PlannedChange $change): bool
+    {
+        if ($profileSkip === null) {
+            return true;
+        }
+        if ($profileSkip[0] !== SkipReason::Frozen) {
+            return false;
+        }
+        foreach (self::entries($frozen, $change) as $version) {
+            if ($version === null || WpVersion::parse($version) === null) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * The entries of the list that name the component, as their version (null: no `@version`).
+     *
+     * @param  list<string>  $list
+     * @return list<string|null>
+     */
+    private static function entries(array $list, PlannedChange $change): array
+    {
+        $names = ComponentName::namesOf($change->type, $change->slug);
+
+        $found = [];
+        foreach ($list as $entry) {
+            [$name, $version] = ComponentName::split($entry);
+            if (in_array($name, $names, true)) {
+                $found[] = $version;
+            }
+        }
+
+        return $found;
     }
 
     /**

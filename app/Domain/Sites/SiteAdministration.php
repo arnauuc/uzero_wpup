@@ -7,6 +7,7 @@ namespace App\Domain\Sites;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\SiteLocalDestination;
+use App\Domain\Planning\ComponentName;
 use App\Enums\AuditResult;
 use App\Enums\HostingPanel;
 use App\Enums\SiteDriverType;
@@ -41,8 +42,6 @@ final readonly class SiteAdministration
     private const ABSOLUTE_PATH = '#^/[A-Za-z0-9._/-]*$#';
 
     private const TIME = '/^(?:[01]\d|2[0-3]):[0-5]\d$/';
-
-    private const COMPONENT = '/^[A-Za-z0-9][A-Za-z0-9_.:\/-]{0,127}$/';
 
     private const HOSTNAME = '/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/';
 
@@ -241,8 +240,12 @@ final readonly class SiteAdministration
             $components = $this->list($values, $column, $clears, $errors);
             if ($components !== null) {
                 foreach ($components as $component) {
-                    if (preg_match(self::COMPONENT, $component) !== 1) {
-                        $errors[] = "El component «{$component}» no és vàlid.";
+                    // Frozen only: `slug@version` lets the component update up to that version.
+                    [$name, $version] = $column === 'frozen_components' ? ComponentName::split($component) : [$component, null];
+                    if (! ComponentName::isValid($name)) {
+                        $errors[] = "El component «{$component}» no és vàlid (en minúscules: slug o tipus:slug).";
+                    } elseif ($version !== null && ! ComponentName::isValidVersion($version)) {
+                        $errors[] = "La versió de «{$component}» no és vàlida (cal slug@versió amb xifres i punts, p. ex. akismet@5.3).";
                     }
                 }
                 $profile[$column] = $components;
