@@ -95,12 +95,17 @@ return [
      * Update plan (UZEROWPUP-36). A plan never probes the web: it trusts the latest
      * probe-verified PHP of the site only if it is at most this old and the CLI
      * reports the same minor version. `report_version` is the `wpup plan --json`
-     * document version.
+     * document version. `quarantine_days` (ADR-0005, UZEROWPUP-127): how long a new
+     * version waits from when it is known to exist (0 turns the quarantine off).
+     * `package_versions_retention_days`: first sightings of versions no inventory
+     * has offered for this long are purged (PackageVersions::purge, UZEROWPUP-134).
      */
     'planning' => [
         'step_timeout_seconds' => 60,
         'report_version' => 1,
         'verified_php_max_age_seconds' => 604800,
+        'quarantine_days' => 7,
+        'package_versions_retention_days' => 365,
     ],
 
     /*
@@ -337,6 +342,47 @@ return [
         'retention' => [
             'daily' => 30,
             'monthly' => 12,
+        ],
+    ],
+
+    /*
+     * Package artifacts (UZEROWPUP-49): every package is downloaded by the tool
+     * server, kept per run with its SHA-256 and installed from there, so staging
+     * and production get the same bytes. Private directory (0700, files 0600).
+     */
+    'artifacts' => [
+        'dir' => env('WPUP_ARTIFACTS_DIR', storage_path('app/artifacts')),
+        // Kept while the run's restore point exists, and at least this long (ADR-0009).
+        'min_retention_days' => 30,
+        // Download (HTTPS only; redirects are followed by hand, HTTPS only too).
+        'connect_timeout_seconds' => 15,
+        'timeout_seconds' => 600,
+        'read_timeout_seconds' => 120,
+        'max_redirects' => 5,
+        // Only public addresses are ever reached (PublicAddress); and only on these ports.
+        'allowed_ports' => [443],
+        // What of a package URL is registered with the secret redactor
+        // (PackageUrlGuard): values of query keys containing one of these words,
+        // and query values / path segments at least this long that look like
+        // a token (letters and digits). Never the slug, the version or a URL.
+        'url_secrets' => [
+            'query_keys' => ['key', 'license', 'licence', 'token', 'password', 'pass', 'secret', 'sig', 'signature', 'auth', 'hash', 'nonce', 'access_token', 'credential'],
+            'min_value_length' => 20,
+            'min_segment_length' => 16,
+        ],
+        'max_bytes' => 200 * 1024 * 1024,
+        // Sum of the uncompressed sizes of the ZIP entries (zip bombs).
+        'max_unpacked_bytes' => 1024 * 1024 * 1024,
+        'chunk_bytes' => 1_048_576,
+        // WP-CLI reads of the site's update data (transients, core check-update).
+        'command_timeout_seconds' => 60,
+        // sprintf(): WordPress.org slug, version; core: (locale,) version. The core
+        // package is never taken from the site.
+        'wordpress_org' => [
+            'core_url' => 'https://downloads.wordpress.org/release/wordpress-%s.zip',
+            'localized_core_url' => 'https://downloads.wordpress.org/release/%s/wordpress-%s.zip',
+            'plugin_url' => 'https://downloads.wordpress.org/plugin/%s.%s.zip',
+            'theme_url' => 'https://downloads.wordpress.org/theme/%s.%s.zip',
         ],
     ],
 

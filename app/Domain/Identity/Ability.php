@@ -28,6 +28,9 @@ enum Ability: string
     /** Read runs, reports and site data. */
     case ViewReports = 'view-reports';
 
+    /** --allow-major and --skip-quarantine (ADR-0005): audited, per run. */
+    case OverrideVersionPolicy = 'override-version-policy';
+
     public function allows(User $user): bool
     {
         if (! $user->active) {
@@ -35,7 +38,7 @@ enum Ability: string
         }
 
         return match ($this) {
-            self::ManageSites, self::ManageCredentials, self::ManageUsers => $user->role === UserRole::Admin,
+            self::ManageSites, self::ManageCredentials, self::ManageUsers, self::OverrideVersionPolicy => $user->role === UserRole::Admin,
             self::RunOperations, self::ViewReports => true,
         };
     }

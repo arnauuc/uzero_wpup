@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Artifacts\ArtifactFetcher;
+use App\Domain\Artifacts\ArtifactSettings;
+use App\Domain\Artifacts\ArtifactStore;
+use App\Domain\Artifacts\DnsHostResolver;
+use App\Domain\Artifacts\HostResolver;
+use App\Domain\Artifacts\PackageUrlGuard;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\BackupStep;
@@ -49,6 +55,7 @@ use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Notifications\LogSiteBlockNotifier;
 use App\Domain\Notifications\SiteBlockNotifier;
+use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
@@ -75,12 +82,15 @@ use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
+use App\Domain\Vulnerabilities\NoVulnerabilitySource;
+use App\Domain\Vulnerabilities\VulnerabilitySource;
 use App\Enums\BackupTargetType;
 use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Site;
 use App\Support\Logging\RedactSecretsTap;
 use Closure;
+use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
@@ -208,6 +218,34 @@ class AppServiceProvider extends ServiceProvider
             $app->make(DropboxSettings::class),
             self::configInt('wpup.backups.hash_chunk_bytes'),
         ));
+        // Package artifacts of a run (UZEROWPUP-49).
+        $this->app->bind(ArtifactSettings::class, static fn (): ArtifactSettings => new ArtifactSettings(
+            self::configString('wpup.artifacts.dir'),
+            self::configInt('wpup.artifacts.connect_timeout_seconds'),
+            self::configInt('wpup.artifacts.timeout_seconds'),
+            self::configInt('wpup.artifacts.read_timeout_seconds'),
+            self::configInt('wpup.artifacts.max_bytes'),
+            self::configInt('wpup.artifacts.max_unpacked_bytes'),
+            self::configInt('wpup.artifacts.max_redirects'),
+            self::configInt('wpup.artifacts.chunk_bytes'),
+            self::configInt('wpup.artifacts.command_timeout_seconds'),
+            self::configString('wpup.artifacts.wordpress_org.plugin_url'),
+            self::configString('wpup.artifacts.wordpress_org.theme_url'),
+            self::configInt('wpup.artifacts.min_retention_days'),
+            array_values(array_filter((array) config('wpup.artifacts.allowed_ports'), is_int(...))),
+            array_map(strtolower(...), self::configStrings('wpup.artifacts.url_secrets.query_keys')),
+            self::configInt('wpup.artifacts.url_secrets.min_value_length'),
+            self::configInt('wpup.artifacts.url_secrets.min_segment_length'),
+            self::configString('wpup.artifacts.wordpress_org.core_url'),
+            self::configString('wpup.artifacts.wordpress_org.localized_core_url'),
+        ));
+        $this->app->bind(HostResolver::class, DnsHostResolver::class);
+        $this->app->bind(ArtifactFetcher::class, static fn (Application $app): ArtifactFetcher => new ArtifactFetcher(
+            new GuzzleClient,
+            $app->make(ArtifactStore::class),
+            $app->make(PackageUrlGuard::class),
+            $app->make(ArtifactSettings::class),
+        ));
         // The tool's own backup (UZEROWPUP-47, ADR-0009 §3).
         $this->app->bind(ToolBackupSettings::class, static fn (): ToolBackupSettings => new ToolBackupSettings(
             self::configStrings('wpup.tool_backup.age_recipients'),
@@ -238,6 +276,14 @@ class AppServiceProvider extends ServiceProvider
             config('wpup.inventory.http_probe.verify_tls') !== false,
             self::configInt('wpup.inventory.http_probe.max_response_bytes'),
             self::configInt('wpup.inventory.http_probe.max_extensions'),
+        ));
+        $this->app->bind(PackageVersions::class, static fn (): PackageVersions => new PackageVersions(self::configInt('wpup.planning.package_versions_retention_days')));
+        // Until UZEROWPUP-128 picks a source, no vulnerability is known (ADR-0005).
+        $this->app->bind(VulnerabilitySource::class, NoVulnerabilitySource::class);
+        $this->app->bind(UpdatePlanner::class, static fn (Application $app): UpdatePlanner => new UpdatePlanner(
+            $app->make(PackageVersions::class),
+            $app->make(VulnerabilitySource::class),
+            self::configInt('wpup.planning.quarantine_days'),
         ));
         $this->app->bind(PendingUpdates::class, static fn (Application $app): PendingUpdates => new PendingUpdates(
             $app->make(HttpFactory::class),
@@ -290,7 +336,7 @@ class AppServiceProvider extends ServiceProvider
         $this->app->bind(ExternalBackupStatus::class, static fn (): ExternalBackupStatus => new ExternalBackupStatus(self::configInt('wpup.inventory.external_backups.max_age_days')));
         // Until the notification channels exist (F5), blocks only reach the log.
         $this->app->bind(SiteBlockNotifier::class, LogSiteBlockNotifier::class);
-        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class), $app->make(ExternalBackups::class)));
+        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class), $app->make(ExternalBackups::class), $app->make(PackageVersions::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
             $resolver->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([
@@ -369,7 +415,7 @@ class AppServiceProvider extends ServiceProvider
                     self::configInt('wpup.inventory.step_timeout_seconds'),
                     readOnlySite: true,
                 ),
-                new PlanStep($app->make(UpdatePlanner::class), self::configInt('wpup.planning.step_timeout_seconds'), self::configInt('wpup.planning.verified_php_max_age_seconds')),
+                new PlanStep($app->make(UpdatePlanner::class), $app->make(RunAuthorization::class), self::configInt('wpup.planning.step_timeout_seconds'), self::configInt('wpup.planning.verified_php_max_age_seconds')),
             ]));
         });
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(
