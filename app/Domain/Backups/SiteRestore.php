@@ -12,7 +12,9 @@ use App\Domain\Secrets\SecretRedactor;
 use App\Enums\BackupKind;
 use App\Models\Backup;
 use App\Models\Site;
+use Closure;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * Puts one registered copy back on its site (UZEROWPUP-46).
@@ -79,10 +81,27 @@ final readonly class SiteRestore
      */
     public function restore(Site $site, SiteDriver $driver, Backup $row, AuditActor $actor): void
     {
+        $this->prepared($site, $driver, $row, $actor, fn (RemoteFile $file) => $this->apply($driver, $row->kind, $file));
+    }
+
+    /**
+     * Makes the copy available on the site and hands it to $use: in place
+     * for a site-local copy, uploaded (and removed afterwards) for an
+     * external one. The database rollback (UZEROWPUP-59) checks the site
+     * again right before it imports.
+     *
+     * @param  Closure(RemoteFile): void  $use
+     *
+     * @throws RestoreRefused when the copy cannot be read or holds other bytes (nothing written)
+     * @throws DriverException from the upload
+     * @throws Throwable whatever $use throws
+     */
+    public function prepared(Site $site, SiteDriver $driver, Backup $row, AuditActor $actor, Closure $use): void
+    {
         $target = $this->target($site, $row, $actor);
 
         if ($target instanceof SiteLocalTarget) {
-            $this->apply($driver, $row->kind, $target->workFile($row->path, $row->size_bytes, $row->sha256));
+            $use($target->workFile($row->path, $row->size_bytes, $row->sha256));
 
             return;
         }
@@ -96,7 +115,7 @@ final readonly class SiteRestore
             } finally {
                 @unlink($local);
             }
-            $this->apply($driver, $row->kind, $file);
+            $use($file);
         } finally {
             try {
                 $driver->remove($name);

@@ -405,6 +405,9 @@ return [
      */
     'rollback' => [
         'files_timeout_seconds' => 3600,
+        // The database of the run's point, put back only when nothing was written to
+        // the orders or users since the copy (UZEROWPUP-59).
+        'database_timeout_seconds' => 3600,
     ],
 
     /*
