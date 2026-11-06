@@ -24,6 +24,15 @@ final readonly class UpdatePlan
         public array $changes,
     ) {}
 
+    /**
+     * ADR-0005: one change that needs staging makes the whole run of the site staging-first.
+     * Before F7 those changes are skipped.
+     */
+    public function requiresStaging(): bool
+    {
+        return array_filter($this->changes, static fn (PlannedChange $c): bool => $c->requiresStaging()) !== [];
+    }
+
     public function updateCount(): int
     {
         return count(array_filter($this->changes, static fn (PlannedChange $c): bool => $c->action === PlanAction::Update));
@@ -40,13 +49,14 @@ final readonly class UpdatePlan
     }
 
     /**
-     * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, changes: list<array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string}>}
+     * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, requires_staging: bool, changes: list<array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string, major: bool, quarantine_bypass: ?string, quarantine_days_left: ?int}>}
      */
     public function toArray(): array
     {
         return [
             'php' => ['version' => $this->phpVersion, 'source' => $this->phpSource->value, 'verified' => $this->phpVerified],
             'blocked_reason' => $this->blockedReason,
+            'requires_staging' => $this->requiresStaging(),
             'changes' => array_map(static fn (PlannedChange $c): array => $c->toArray(), $this->changes),
         ];
     }

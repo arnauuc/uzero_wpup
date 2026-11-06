@@ -7,8 +7,11 @@ namespace App\Domain\Inventory;
 use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\SiteDriver;
+use App\Domain\Planning\WpVersion;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\ComponentType;
+use DateTimeImmutable;
+use DateTimeZone;
 use Illuminate\Contracts\Cache\Repository as Cache;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory;
@@ -48,6 +51,8 @@ use Illuminate\Support\Facades\Log;
  * requires_plugins_inferred, with a warning: a dependency that only the new
  * version adds is missed. If that cannot be read either it stays null (unknown,
  * which the planner never takes as met).
+ * `released_at` (UZEROWPUP-127) is WordPress.org's `last_updated`, only from a
+ * lookup made anyway and only when that answer is about the offered version.
  * Licences are not managed: a package without
  * download URL is reported with licensed=false.
  *
@@ -150,6 +155,7 @@ PHP;
                 $licensed,
                 $requiresPlugins[$i],
                 $inferred[$i] ?? false,
+                self::releasedAt($found[$i], $row['new']),
             );
         }
 
@@ -264,8 +270,8 @@ PHP;
             }
             $key = $this->cacheKey($row['kind'], $row['wporg'], $row['new']);
             $cached = $this->cache->get($key);
-            // An entry cached before requires_plugins was kept is a miss.
-            if (is_array($cached) && array_key_exists('requires_plugins', $cached)) {
+            // An entry cached before requires_plugins or last_updated were kept is a miss.
+            if (is_array($cached) && array_key_exists('requires_plugins', $cached) && array_key_exists('last_updated', $cached)) {
                 $found[$key] = $this->stringKeys($cached);
             } elseif (count($toFetch) >= $this->maxLookups) {
                 $warnings[] = "S'ha superat el límit de consultes a WordPress.org: «{$row['slug']}» només té les dades del lloc.";
@@ -305,7 +311,10 @@ PHP;
             }
             $data = $this->stringKeys($data);
             $found[$key] = $data;
-            $this->cache->put($key, ['requires' => $data['requires'] ?? null, 'requires_php' => $data['requires_php'] ?? null, 'requires_plugins' => $data['requires_plugins'] ?? null], $this->cacheTtlSeconds);
+            $this->cache->put($key, [
+                'requires' => $data['requires'] ?? null, 'requires_php' => $data['requires_php'] ?? null, 'requires_plugins' => $data['requires_plugins'] ?? null,
+                'version' => $data['version'] ?? null, 'last_updated' => $data['last_updated'] ?? null,
+            ], $this->cacheTtlSeconds);
         }
 
         return $found;
@@ -374,6 +383,40 @@ PHP;
         return $slugs;
     }
 
+    /**
+     * WordPress.org's `last_updated` (UZEROWPUP-127), only when its answer is about
+     * the offered version: it describes the latest version alone. It is the last
+     * change of the listing (a readme edit moves it too), so it is never before the
+     * release: an upper bound, which PackageVersions combines with the first sighting.
+     * Plugins give "2025-10-28 4:29pm GMT"; themes only the day, taken at its end.
+     * Anything else is null.
+     *
+     * @param  array<string, mixed>  $info
+     */
+    private static function releasedAt(array $info, string $offered): ?string
+    {
+        $version = $info['version'] ?? null;
+        $text = $info['last_updated'] ?? null;
+        $answered = is_string($version) ? WpVersion::parse($version) : null;
+        $wanted = WpVersion::parse($offered);
+        if (! is_string($text) || $answered === null || $wanted === null || $answered->compare($wanted) !== 0) {
+            return null;
+        }
+        $text = trim($text);
+        $utc = new DateTimeZone('UTC');
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d g:ia T', $text, $utc);
+        if ($date === false) {
+            $day = DateTimeImmutable::createFromFormat('!Y-m-d', $text, $utc);
+            $date = $day === false ? false : $day->setTime(23, 59, 59);
+        }
+        $errors = DateTimeImmutable::getLastErrors();
+        if ($date === false || ($errors !== false && $errors['warning_count'] > 0)) {
+            return null;
+        }
+
+        return $date->setTimezone($utc)->format(DATE_ATOM);
+    }
+
     private function request(PendingRequest $request, ComponentType $kind, string $slug): mixed
     {
         $theme = $kind === ComponentType::Theme;
@@ -381,7 +424,7 @@ PHP;
         return $request->timeout($this->httpTimeoutSeconds)->acceptJson()->get($theme ? $this->themesInfoUrl : $this->pluginsInfoUrl, [
             'action' => $theme ? 'theme_information' : 'plugin_information',
             'request' => ['slug' => $slug, 'fields' => $theme
-                ? ['requires' => 1, 'requires_php' => 1]
+                ? ['requires' => 1, 'requires_php' => 1, 'last_updated' => 1]
                 : ['sections' => 0, 'description' => 0, 'short_description' => 0, 'versions' => 0, 'banners' => 0, 'icons' => 0, 'reviews' => 0]],
         ]);
     }

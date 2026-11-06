@@ -121,6 +121,16 @@ sudo -u wpup wpup site:import llocs.yaml --dry-run
 sudo -u wpup wpup site:import llocs.csv
 ```
 
+## `plan` i la política de versions (ADR-0005)
+
+`wpup plan [llocs…|--tag=…|--all]` encua un inventari fresc i calcula què s'actualitzaria i què s'ometria, i per què, sense tocar el lloc. Hi aplica la política de versions:
+
+- **Majors:** core `x.y`, WooCommerce `X.0` i plugins o temes amb canvi al primer número. Fins a F7 s'ometen amb «major pendent: cal staging (F7)», i el pla diu «Cal staging primer: sí». La taula hi afegeix `(major)`.
+- **Quarantena:** una versió nova espera `planning.quarantine_days` (per defecte, 7) des de la data de publicació de WordPress.org o des de la primera vegada que l'inventari la va veure (`package_versions`), la que sigui anterior. La taula mostra els dies que falten. Si surt una versió correctiva, compta la seva pròpia data.
+- **Excepció sense quarantena:** el core `x.y.z` dins de la mateixa branca.
+
+Amb `--json`, cada pla porta `requires_staging` i, per a cada canvi, `major`, `quarantine_bypass` i `quarantine_days_left`.
+
 ## Retenció dels punts de restauració (ADR-0009)
 
 Un punt de restauració d'una actualització correcta es conserva 7 dies, i cada lloc en té com a màxim 2 (`backups.retention_days` i `backups.max_per_site` a `config/wpup.php`). Fer-ne un de tercer esborra el més antic que no estigui retingut. La mateixa retenció s'aplica a la còpia externa.

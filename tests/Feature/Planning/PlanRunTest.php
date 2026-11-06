@@ -27,12 +27,15 @@ use App\Enums\RunType;
 use App\Enums\SkipReason;
 use App\Enums\UserRole;
 use App\Models\AuditLogEntry;
+use App\Models\PackageVersion;
 use App\Models\Run;
 use App\Models\RunChange;
 use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\SiteSnapshot;
 use App\Models\User;
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
@@ -41,6 +44,8 @@ use Tests\Support\FakeDriver;
 beforeEach(function (): void {
     Redis::connection('locks')->command('flushdb');
     config(['wpup.runs.heartbeat_seconds' => 1]);
+    // The quarantine has its own tests (VersionPolicyTest and below).
+    config(['wpup.planning.quarantine_days' => 0]);
     Http::fake(['*' => Http::response('', 500)]);
 });
 
@@ -293,4 +298,23 @@ it('reports a failed plan run with the site block taken from the site', function
     expect($exit)->toBe(1)
         ->and($json['sites'][0])->toMatchArray(['status' => 'failed', 'blocked' => true, 'plan' => null])
         ->and($json['sites'][0]['failure'])->toContain('WP-CLI no respon');
+});
+
+it('holds new versions seen by the inventory until the quarantine is over (ADR-0005)', function (): void {
+    config(['wpup.planning.quarantine_days' => 7]);
+    Carbon::setTestNow(CarbonImmutable::parse('2026-11-06 12:00:00'));
+    $site = Site::factory()->create();
+
+    $first = planRun(plannedDriver(), $site);
+    $quarantined = RunChange::query()->where('run_id', $first->id)->where('slug', 'classic-editor')->sole();
+    expect($quarantined->reason)->toBe(SkipReason::Quarantine)
+        ->and($quarantined->reason_detail)->toContain('falten 7 dies')
+        // The core x.y.z does not wait.
+        ->and(array_column(planResult($first)['changes'], 'action', 'slug')['wordpress'])->toBe('update');
+
+    Carbon::setTestNow(now()->addDays(8));
+    $second = planRun(plannedDriver(), $site);
+
+    expect(array_column(planResult($second)['changes'], 'action', 'slug')['classic-editor'])->toBe('update')
+        ->and(PackageVersion::query()->where('slug', 'classic-editor')->sole()->first_seen_at->equalTo(CarbonImmutable::parse('2026-11-06 12:00:00')))->toBeTrue();
 });

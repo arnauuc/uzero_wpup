@@ -53,6 +53,7 @@ use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Notifications\LogSiteBlockNotifier;
 use App\Domain\Notifications\SiteBlockNotifier;
+use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
@@ -272,6 +273,11 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.http_probe.max_response_bytes'),
             self::configInt('wpup.inventory.http_probe.max_extensions'),
         ));
+        $this->app->bind(PackageVersions::class, static fn (): PackageVersions => new PackageVersions(self::configInt('wpup.planning.package_versions_retention_days')));
+        $this->app->bind(UpdatePlanner::class, static fn (Application $app): UpdatePlanner => new UpdatePlanner(
+            $app->make(PackageVersions::class),
+            self::configInt('wpup.planning.quarantine_days'),
+        ));
         $this->app->bind(PendingUpdates::class, static fn (Application $app): PendingUpdates => new PendingUpdates(
             $app->make(HttpFactory::class),
             $app->make(CacheFactory::class)->store(),
@@ -313,7 +319,7 @@ class AppServiceProvider extends ServiceProvider
         $this->app->bind(ExternalBackupStatus::class, static fn (): ExternalBackupStatus => new ExternalBackupStatus(self::configInt('wpup.inventory.external_backups.max_age_days')));
         // Until the notification channels exist (F5), blocks only reach the log.
         $this->app->bind(SiteBlockNotifier::class, LogSiteBlockNotifier::class);
-        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class), $app->make(ExternalBackups::class)));
+        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class), $app->make(ExternalBackups::class), $app->make(PackageVersions::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
             $resolver->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([
