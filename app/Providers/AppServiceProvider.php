@@ -491,7 +491,8 @@ class AppServiceProvider extends ServiceProvider
             httpTimeoutSeconds: self::configInt('wpup.smoke_check.http_timeout_seconds'),
             maxRedirects: self::configInt('wpup.smoke_check.max_redirects'),
             verifyTls: config('wpup.smoke_check.verify_tls') !== false,
-            logMaxBytes: self::configInt('wpup.smoke_check.log_max_bytes'),
+            maxCandidateLines: self::configInt('wpup.smoke_check.max_candidate_lines'),
+            signatureWindowBytes: self::configInt('wpup.smoke_check.signature_window_bytes'),
             reportedLines: self::configInt('wpup.smoke_check.reported_lines'),
             lineMaxChars: self::configInt('wpup.smoke_check.line_max_chars'),
             fatalPatterns: self::configStrings('wpup.smoke_check.fatal_patterns'),
@@ -502,6 +503,8 @@ class AppServiceProvider extends ServiceProvider
             $app->make(HttpFactory::class),
             $app->make(SecretRedactor::class),
             $app->make(SmokeCheckSettings::class),
+            $app->make(SshSettings::class)->connectTimeoutSeconds,
+            $app->make(SshSettings::class)->commandTimeoutSeconds,
         ));
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(
             runTimeoutSeconds: self::configInt('wpup.runs.timeout_seconds'),
@@ -660,6 +663,8 @@ class AppServiceProvider extends ServiceProvider
     {
         // ADR-0007: the minimum PHP of the fleet cannot be configured below 7.4.
         SitePrerequisites::assertMinimumPhp(config('wpup.min_site_php'));
+        // A broken fatal pattern (UZEROWPUP-56) is a configuration error now, not a silent miss later.
+        $this->app->make(SmokeCheckSettings::class);
 
         // Second line of defence behind the `wpup` bash wrapper: when invoked through
         // it (WPUP_CLI=1), only Uzero wpup commands may run (ADR-0002).

@@ -53,7 +53,7 @@ final readonly class HttpProbe
             $removed = $this->remove($driver, $name, $site);
         }
 
-        return new HttpProbeResult($result->fileName, $result->version, $result->sapi, $result->extensions, $result->error, $removed);
+        return new HttpProbeResult($result->fileName, $result->version, $result->sapi, $result->extensions, $result->error, $removed, $result->errorLog);
     }
 
     private function call(string $url, string $token, string $name): HttpProbeResult
@@ -88,7 +88,11 @@ final readonly class HttpProbe
         ));
         $sapi = is_string($data['sapi'] ?? null) && preg_match('/^[a-z0-9-]{1,32}$/', $data['sapi']) === 1 ? $data['sapi'] : null;
 
-        return new HttpProbeResult($name, $version, $sapi, $extensions);
+        // The web's error_log, only when it is an absolute path of a sane length (it can also be "syslog" or empty).
+        $errorLog = $data['error_log'] ?? null;
+        $errorLog = is_string($errorLog) && $errorLog !== '' && $errorLog[0] === '/' && strlen($errorLog) <= 1024 && ! str_contains($errorLog, "\n") ? $errorLog : null;
+
+        return new HttpProbeResult($name, $version, $sapi, $extensions, errorLog: $errorLog);
     }
 
     private function remove(SiteDriver $driver, string $name, Site $site): bool

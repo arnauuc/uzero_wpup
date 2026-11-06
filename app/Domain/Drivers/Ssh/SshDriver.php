@@ -9,6 +9,7 @@ use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\Data\LogCursor;
+use App\Domain\Drivers\Data\LogScan;
 use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\Data\ProbeCheck;
 use App\Domain\Drivers\Data\ProbeResult;
@@ -45,6 +46,12 @@ use RuntimeException;
  */
 final class SshDriver implements SiteDriver
 {
+    /** Cheap remote prefilter for fatal lines; callers classify what it returns. */
+    private const string LOG_PREFILTER = 'PHP (Fatal error|Parse error):';
+
+    /** A log line can be a whole stack trace: only this much of each candidate is kept. */
+    private const int LOG_LINE_BYTES = 2000;
+
     private const GZIP_FAILED = '__WPUP_GZIP_FAIL__';
 
     /**
@@ -507,9 +514,9 @@ final class SshDriver implements SiteDriver
         );
     }
 
-    public function phpLogCursor(): LogCursor
+    public function phpLogCursor(?string $webLogPath = null): LogCursor
     {
-        $log = $this->phpLogPath();
+        $log = $this->usableLogPath($webLogPath) ?? $this->phpLogPath();
         if ($log === null) {
             return new LogCursor(null, 0);
         }
@@ -517,6 +524,89 @@ final class SshDriver implements SiteDriver
         [$size, $inode] = $this->statLog($log);
 
         return new LogCursor($log, $size, $inode);
+    }
+
+    public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan
+    {
+        $log = $cursor->path;
+        if ($log === null) {
+            return new LogScan;
+        }
+
+        [$size, $inode] = $this->statLog($log);
+        $rotated = $inode !== $cursor->fileId || $size < $cursor->offset;
+        $lines = [];
+        $siblingRead = false;
+        if ($rotated) {
+            // Logrotate renames the old file to .1: what was written between the
+            // cursor and the rotation is there (best effort, errors ignored).
+            $sibling = $this->usableLogPath($log.'.1');
+            if ($sibling !== null && $cursor->offset > 0) {
+                $result = $this->exec($this->fatalGrep($sibling, $cursor->offset, $maxLines + 1));
+                if ($result->exitCode <= 1) {
+                    $lines = $this->candidates($result->stdout);
+                    $siblingRead = true;
+                }
+            }
+        }
+        $offset = $rotated ? 0 : $cursor->offset;
+        if ($size > $offset) {
+            $result = $this->exec($this->fatalGrep($log, $offset, $maxLines + 1));
+            if ($result->exitCode > 1) {
+                throw self::failure('La lectura del log de PHP', $result);
+            }
+            $lines = [...$lines, ...$this->candidates($result->stdout)];
+        }
+
+        return new LogScan(array_slice($lines, 0, $maxLines), count($lines) > $maxLines, $rotated, $siblingRead);
+    }
+
+    public function phpLogFatalsBefore(LogCursor $cursor, int $windowBytes, int $maxLines): array
+    {
+        if ($cursor->path === null || $cursor->offset <= 0) {
+            return [];
+        }
+        $start = max(0, $cursor->offset - max(1, $windowBytes));
+        $result = $this->exec($this->fatalGrep($cursor->path, $start, $maxLines, $cursor->offset - $start));
+        if ($result->exitCode > 1) {
+            throw self::failure('La lectura del log de PHP', $result);
+        }
+
+        return array_slice($this->candidates($result->stdout), 0, $maxLines);
+    }
+
+    /**
+     * Reads $path from byte $from (0-based), at most $length bytes when given,
+     * and prints at most $maxLines candidate lines, each cut to a bounded
+     * length. grep exits 1 when nothing matches, which is not an error.
+     */
+    private function fatalGrep(string $path, int $from, int $maxLines, ?int $length = null): string
+    {
+        return 'tail -c +'.($from + 1).' '.escapeshellarg($path)
+            .($length === null ? '' : ' | head -c '.max(1, $length))
+            .' | grep -a -E -m '.max(1, $maxLines).' '.escapeshellarg(self::LOG_PREFILTER)
+            .' | cut -c1-'.self::LOG_LINE_BYTES;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function candidates(string $output): array
+    {
+        return array_values(array_filter(explode("\n", $output), static fn (string $line): bool => $line !== ''));
+    }
+
+    /**
+     * $path when it is an absolute path to a readable regular file, else null.
+     */
+    private function usableLogPath(?string $path): ?string
+    {
+        if ($path === null || $path === '' || $path[0] !== '/' || str_contains($path, "\n")) {
+            return null;
+        }
+        $check = $this->exec('test -f '.escapeshellarg($path).' && test -r '.escapeshellarg($path));
+
+        return $check->successful() ? $path : null;
     }
 
     public function phpLogSince(LogCursor $cursor, int $maxBytes = 1_048_576): array
