@@ -89,7 +89,7 @@ PHP;
 
         foreach ([ComponentType::Plugin, ComponentType::Theme] as $kind) {
             foreach ($this->transient($driver, $kind, $now, $warnings) as $key => $entry) {
-                $slug = $this->slugOf($kind, $key);
+                $slug = self::slugOf($kind, $key);
                 $new = $entry['new_version'] ?? null;
                 if ($slug === null || ! is_string($new) || $new === '') {
                     continue;
@@ -333,7 +333,7 @@ PHP;
 
         $headers = [];
         foreach ($data as $file => $header) {
-            $slug = $this->slugOf(ComponentType::Plugin, (string) $file);
+            $slug = self::slugOf(ComponentType::Plugin, (string) $file);
             if ($slug !== null) {
                 $headers[$slug] = $header;
             }
@@ -411,7 +411,12 @@ PHP;
         return $out;
     }
 
-    private function slugOf(ComponentType $kind, string $key): ?string
+    /**
+     * The installed name of a transient entry key ("dir/file.php" or
+     * "file.php" for plugins, the theme key); null when it is not a safe name.
+     * Shared with the package download (PackageUrlResolver).
+     */
+    public static function slugOf(ComponentType $kind, string $key): ?string
     {
         if ($kind === ComponentType::Plugin) {
             $dir = dirname($key);
