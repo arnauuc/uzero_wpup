@@ -7,6 +7,7 @@ namespace App\Models;
 use App\Enums\ChangeResult;
 use App\Enums\ComponentType;
 use App\Enums\SkipReason;
+use Carbon\CarbonImmutable;
 use Database\Factories\RunChangeFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -24,6 +25,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property SkipReason|null $reason
  * @property string|null $reason_detail
  * @property bool $is_major
+ * @property CarbonImmutable|null $reverted_at when a rollback undid it (UZEROWPUP-57)
  */
 class RunChange extends Model
 {
@@ -43,6 +45,7 @@ class RunChange extends Model
             'result' => ChangeResult::class,
             'reason' => SkipReason::class,
             'is_major' => 'boolean',
+            'reverted_at' => 'immutable_datetime',
         ];
     }
 
