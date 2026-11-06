@@ -15,10 +15,18 @@ use Throwable;
  * tables, dumps them (consistent, compressed, on the site's server, outside the
  * docroot), and checks that the dump contains every one of them. A dump with
  * missing tables is deleted and the backup fails: there is no restore point.
+ *
+ * Right before the dump it reads the order and user watermark (UZEROWPUP-58):
+ * whatever is above it may not be in the dump. If it cannot be read the dump is
+ * still a restore point, with a warning: without a watermark, restoring the
+ * database counts as losing new writes (NewWritesDetector).
  */
 final class DatabaseBackup
 {
-    public function __construct(private readonly SecretRedactor $redactor) {}
+    public function __construct(
+        private readonly SecretRedactor $redactor,
+        private readonly ShopWritesReader $watermarks,
+    ) {}
 
     /**
      * @param  string  $label  identifies the run in the file name (run id or timestamp)
@@ -35,6 +43,15 @@ final class DatabaseBackup
             throw BackupFailed::noTables();
         }
 
+        $warnings = [];
+        $watermark = null;
+        try {
+            $watermark = $this->watermarks->watermark($driver);
+        } catch (WatermarkUnreadable $e) {
+            Log::warning('Could not read the order and user watermark before a database dump.', ['reason' => $e->getMessage()]);
+            $warnings[] = "No s'ha pogut llegir la marca d'aigua de comandes i usuaris ({$e->getMessage()}): restaurar aquesta còpia de la base de dades es tractarà com si hi hagués escriptures noves.";
+        }
+
         $file = $driver->dumpDatabase($name);
 
         try {
@@ -49,7 +66,7 @@ final class DatabaseBackup
             throw BackupFailed::missingTables($missing, $this->discard($driver, $file->path));
         }
 
-        return new DatabaseBackupResult($file, $expected);
+        return new DatabaseBackupResult($file, $expected, $watermark, $warnings);
     }
 
     /**

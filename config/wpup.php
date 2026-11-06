@@ -197,6 +197,13 @@ return [
         'database' => [
             'file_name' => 'db-%s-%s.sql.gz',
         ],
+        // Order and user watermark of a database copy (UZEROWPUP-58, AGENTS.md rule 4):
+        // read right before the dump and compared before restoring it. At most
+        // max_listed orders and users are listed (newest first); the rest are counted.
+        'watermark' => [
+            'timeout_seconds' => 120,
+            'max_listed' => 50,
+        ],
         // Code archive (UZEROWPUP-39, ADR-0009): core, plugins, themes, mu-plugins,
         // drop-ins and wp-config.php. Paths relative to the WordPress root; tar and
         // rsync patterns ("*") are allowed.

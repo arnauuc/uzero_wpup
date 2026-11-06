@@ -150,7 +150,8 @@ final readonly class RestorePointService
         $pending = [];
 
         try {
-            $pending[BackupKind::Database->value] = $this->database->run($driver, $label)->file;
+            $database = $this->database->run($driver, $label);
+            $pending[BackupKind::Database->value] = $database->file;
             $archive = $this->files->run($driver, $site->profile->include_uploads ?? false, $label, $fileExcludes);
             $pending[BackupKind::Files->value] = $archive->file;
 
@@ -169,6 +170,7 @@ final readonly class RestorePointService
                     'size_bytes' => $file->sizeBytes,
                     'sha256' => $file->sha256,
                     'expires_at' => $expiresAt,
+                    'order_watermark' => $kind === BackupKind::Database ? $database->watermark?->toArray() : null,
                 ]);
                 $rows[] = $row;
                 if ($stored->sizeBytes !== $file->sizeBytes || $stored->sha256 === null || ! hash_equals($file->sha256, $stored->sha256)) {
@@ -190,7 +192,7 @@ final readonly class RestorePointService
             throw $e;
         }
 
-        return [$rows, $archive->warnings];
+        return [$rows, [...$database->warnings, ...$archive->warnings]];
     }
 
     /**
@@ -316,7 +318,7 @@ final readonly class RestorePointService
      */
     private function externalRow(Site $site, ?Run $run, BackupTargetRecord $record, Backup $source): Backup
     {
-        $attributes = ['run_id' => $run?->id, 'size_bytes' => $source->size_bytes, 'sha256' => $source->sha256, 'expires_at' => $source->expires_at];
+        $attributes = ['run_id' => $run?->id, 'size_bytes' => $source->size_bytes, 'sha256' => $source->sha256, 'expires_at' => $source->expires_at, 'order_watermark' => $source->order_watermark];
         $row = Backup::query()->where('site_id', $site->id)->where('backup_target_id', $record->id)->where('kind', $source->kind)
             ->where('path', $source->path)->whereNull('deleted_at')->latest('id')->first();
 

@@ -21,6 +21,7 @@ use App\Domain\Backups\RestorePointGate;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\RestoreStep;
+use App\Domain\Backups\ShopWritesReader;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\SiteRestore;
@@ -249,6 +250,10 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.wordpress_org.max_lookups'),
             self::configInt('wpup.inventory.wordpress_org.stale_after_seconds'),
             self::configInt('wpup.inventory.wordpress_org.cache_ttl_seconds'),
+        ));
+        $this->app->bind(ShopWritesReader::class, static fn (Application $app): ShopWritesReader => new ShopWritesReader(
+            $app->make(WpCliReader::class),
+            self::configInt('wpup.backups.watermark.timeout_seconds'),
         ));
         $this->app->bind(SiteState::class, static fn (Application $app): SiteState => new SiteState(
             $app->make(WpCliReader::class),
