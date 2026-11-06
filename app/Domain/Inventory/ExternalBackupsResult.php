@@ -13,7 +13,7 @@ final readonly class ExternalBackupsResult
     public function __construct(public array $plugins, public array $warnings) {}
 
     /**
-     * @return array{plugins: list<array{slug: string, name: string, active: bool, last_backup_at: string|null}>, warnings: list<string>}
+     * @return array{plugins: list<array{slug: string, name: string, active: bool, exposes_date: bool, last_backup_at: string|null, last_backup_ok: bool|null}>, warnings: list<string>}
      */
     public function toArray(): array
     {

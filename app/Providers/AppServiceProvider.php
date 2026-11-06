@@ -264,7 +264,7 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.prerequisites.du_timeout_seconds'),
         ));
         $this->app->bind(ExternalBackups::class, static function (Application $app): ExternalBackups {
-            /** @var array<string, array{name: string, last_backup: array{option: string, key: string}|null}> $known */
+            /** @var array<string, array{name: string, last_backup: array{option: string, time_key: string, success_key: string}|null}> $known */
             $known = config('wpup.inventory.external_backups.plugins');
 
             return new ExternalBackups(
@@ -272,6 +272,7 @@ class AppServiceProvider extends ServiceProvider
                 $known,
                 self::configInt('wpup.inventory.external_backups.command_timeout_seconds'),
                 self::configInt('wpup.inventory.external_backups.max_future_seconds'),
+                self::configInt('wpup.inventory.external_backups.max_output_bytes'),
             );
         });
         $this->app->bind(ExternalBackupStatus::class, static fn (): ExternalBackupStatus => new ExternalBackupStatus(self::configInt('wpup.inventory.external_backups.max_age_days')));

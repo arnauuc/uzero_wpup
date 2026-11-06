@@ -24,32 +24,46 @@ function externalBackupDriver(): FakeDriver
 }
 
 /**
- * @return array{plugins: list<array{slug: string, name: string, active: bool, last_backup_at: string|null}>, warnings: list<string>}
+ * @return array{plugins: list<array{slug: string, name: string, active: bool, exposes_date: bool, last_backup_at: string|null, last_backup_ok: bool|null}>, warnings: list<string>}
  */
 function readBackups(FakeDriver $driver): array
 {
     return app(ExternalBackups::class)->read($driver, $driver->installedComponents(), CarbonImmutable::createFromTimestampUTC(EXTERNAL_NOW))->toArray();
 }
 
-it('detects backup plugins by slug and reads the UpdraftPlus date', function (): void {
+it('detects backup plugins by slug and reads the UpdraftPlus date and outcome with option pluck', function (): void {
     $driver = externalBackupDriver();
-    $driver->options['updraft_last_backup'] = (string) json_encode(['nonce' => 'abc', 'backup_time' => EXTERNAL_NOW - 3600, 'success' => 1]);
+    $driver->options['updraft_last_backup'] = (string) json_encode(['nonce' => 'abc', 'backup_time' => EXTERNAL_NOW - 3600, 'success' => 1, 'errors' => []]);
 
     $result = readBackups($driver);
 
     expect($result['warnings'])->toBe([])
         ->and(array_column($result['plugins'], 'slug'))->toBe(['backwpup', 'duplicator', 'updraftplus'])
-        ->and($result['plugins'][2])->toBe(['slug' => 'updraftplus', 'name' => 'UpdraftPlus', 'active' => true, 'last_backup_at' => CarbonImmutable::createFromTimestampUTC(EXTERNAL_NOW - 3600)->toIso8601String()])
-        ->and($result['plugins'][0]['last_backup_at'])->toBeNull()
+        ->and($result['plugins'][2])->toBe(['slug' => 'updraftplus', 'name' => 'UpdraftPlus', 'active' => true, 'exposes_date' => true, 'last_backup_at' => CarbonImmutable::createFromTimestampUTC(EXTERNAL_NOW - 3600)->toIso8601String(), 'last_backup_ok' => true])
+        ->and($result['plugins'][0])->toMatchArray(['exposes_date' => false, 'last_backup_at' => null, 'last_backup_ok' => null])
         ->and($result['plugins'][1]['active'])->toBeFalse()
-        ->and($driver->wpCalls)->toBe([['option', 'get', 'updraft_last_backup', '--format=json']]);
+        ->and($driver->wpCalls)->toBe([
+            ['option', 'pluck', 'updraft_last_backup', 'backup_time', '--format=json'],
+            ['option', 'pluck', 'updraft_last_backup', 'success', '--format=json'],
+        ]);
 });
+
+it('records a failed last UpdraftPlus run with its date', function (mixed $success): void {
+    $driver = externalBackupDriver();
+    $driver->options['updraft_last_backup'] = (string) json_encode(['backup_time' => EXTERNAL_NOW - 60, 'success' => $success, 'errors' => ['disc ple']]);
+
+    $plugin = readBackups($driver)['plugins'][2];
+
+    expect($plugin['last_backup_ok'])->toBeFalse()->and($plugin['last_backup_at'])->not->toBeNull();
+})->with([0, false, '0']);
 
 it('does not read the date of an inactive plugin', function (): void {
     $driver = new FakeDriver;
     $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'updraftplus', '1.24.1', false));
 
-    expect(readBackups($driver)['plugins'][0]['last_backup_at'])->toBeNull()->and($driver->wpCalls)->toBe([]);
+    $plugin = readBackups($driver)['plugins'][0];
+
+    expect($plugin)->toMatchArray(['exposes_date' => true, 'last_backup_at' => null])->and($driver->wpCalls)->toBe([]);
 });
 
 it('lists nothing for a site without backup plugins', function (): void {
@@ -70,8 +84,29 @@ it('turns an untrustworthy answer into a warning and a null date', function (str
     'no key' => '{"nonce":"x"}',
     'text time' => '{"backup_time":"yesterday"}',
     'negative' => '{"backup_time":-5}',
+    'nested' => '{"backup_time":{"a":1}}',
     'far future' => '{"backup_time":'.(EXTERNAL_NOW + 10 * 86400).'}',
 ]);
+
+it('ignores an oversized answer', function (): void {
+    $driver = externalBackupDriver();
+    $driver->options['updraft_last_backup'] = (string) json_encode(['backup_time' => str_repeat('1', 5000)]);
+
+    $result = readBackups($driver);
+
+    expect($result['plugins'][2]['last_backup_at'])->toBeNull()->and($result['warnings'][0])->toContain('massa gran');
+});
+
+it('keeps the date and warns when only the outcome cannot be read', function (): void {
+    $driver = externalBackupDriver();
+    $driver->options['updraft_last_backup'] = (string) json_encode(['backup_time' => EXTERNAL_NOW - 60]);
+
+    $result = readBackups($driver);
+
+    expect($result['plugins'][2]['last_backup_at'])->not->toBeNull()
+        ->and($result['plugins'][2]['last_backup_ok'])->toBeNull()
+        ->and($result['warnings'])->toHaveCount(1);
+});
 
 it('warns when the option cannot be read and keeps the inventory going', function (): void {
     $result = readBackups(externalBackupDriver());
@@ -88,7 +123,7 @@ it('lets a lost connection propagate', function (): void {
 
 it('stores the detection in the snapshot environment', function (): void {
     $driver = externalBackupDriver();
-    $driver->options['updraft_last_backup'] = (string) json_encode(['backup_time' => time() - 60]);
+    $driver->options['updraft_last_backup'] = (string) json_encode(['backup_time' => time() - 60, 'success' => 1]);
 
     $snapshot = app(SiteInventory::class)->take(Site::factory()->create(), $driver, null, false);
 

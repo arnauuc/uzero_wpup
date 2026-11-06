@@ -20,13 +20,13 @@ use Tests\Support\Runs\ScriptedReadOnlyStep;
 
 /**
  * @param  array<string, mixed>  $arguments
- * @return array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}, external_backup_warnings: list<string>}>}
+ * @return array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}, external_backup_warnings: list<string>, external_backup_detection_warnings: list<string>}>}
  */
 function inventoryJson(array $arguments): array
 {
     Artisan::call('inventory', $arguments + ['--json' => true]);
 
-    /** @var array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}, external_backup_warnings: list<string>}>} $json */
+    /** @var array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}, external_backup_warnings: list<string>, external_backup_detection_warnings: list<string>}>} $json */
     $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
 
     return $json;
@@ -143,9 +143,11 @@ it('writes the CSV to stdout, one row per site, with status and failure', functi
     Artisan::call('inventory', ['sites' => ['botiga-a', 'blog'], '--wait' => true, '--csv' => true]);
     $rows = array_map(static fn (string $l): array => str_getcsv($l, escape: ''), explode("\n", trim(Artisan::output())));
 
-    expect($rows[0])->toBe(['site', 'url', 'core', 'woocommerce', 'php', 'php_source', 'db_server', 'pending_updates', 'unlicensed', 'blocked', 'blocked_reason', 'status', 'failure'])
-        ->and($rows[1])->toBe(['blog', 'https://blog.test', '', '', '', '', '', '', '', 'no', '', 'failed', "No s'ha pogut fer l'inventari: connexió caiguda"])
-        ->and($rows[2])->toBe(['botiga-a', 'https://a.test', '6.8.3', '9.8.1', '8.2.20', 'plesk_handler', '11.4.2-MariaDB', '2', '1', 'no', '', 'succeeded', '']);
+    $unevaluated = "Sense còpia externa coneguda: no n'hi ha de declarada ni cap plugin de còpies actiu (la detecció de plugins no s'ha executat).";
+
+    expect($rows[0])->toBe(['site', 'url', 'core', 'woocommerce', 'php', 'php_source', 'db_server', 'pending_updates', 'unlicensed', 'blocked', 'blocked_reason', 'status', 'failure', 'external_backup_warnings'])
+        ->and($rows[1])->toBe(['blog', 'https://blog.test', '', '', '', '', '', '', '', 'no', '', 'failed', "No s'ha pogut fer l'inventari: connexió caiguda", $unevaluated])
+        ->and($rows[2])->toBe(['botiga-a', 'https://a.test', '6.8.3', '9.8.1', '8.2.20', 'plesk_handler', '11.4.2-MariaDB', '2', '1', 'no', '', 'succeeded', '', $unevaluated]);
 });
 
 it('protects the CSV against formula injection and strips line breaks', function (): void {
@@ -257,4 +259,40 @@ it('reports external backup warnings per site from the profile and the detection
 
     expect($warnings['botiga-a'])->toBe([])
         ->and($warnings['mixt'])->toHaveCount(1)->and($warnings['mixt'][0])->toContain('Sense còpia externa coneguda');
+});
+
+it('judges the declaration alone when there is no inventory and says detection did not run', function (): void {
+    Site::query()->where('name', 'blog')->firstOrFail()->profile()->create(['external_backup' => ['type' => 'plugin']]);
+
+    $json = inventoryJson(['sites' => ['blog'], '--wait' => true]);
+
+    expect($json['sites'][0]['external_backup_warnings'])->toHaveCount(1)
+        ->and($json['sites'][0]['external_backup_warnings'][0])->toContain('la detecció de plugins no s\'ha executat');
+});
+
+it('shows the detection warnings and failed or unreadable backups of a snapshot with external backups', function (): void {
+    app(PipelineResolver::class)->register(RunType::Inventory, static fn (Run $run): Pipeline => new Pipeline([
+        new ScriptedReadOnlyStep('inventory', static function ($context) use ($run): StepOutcome {
+            SiteSnapshot::factory()->create([
+                'site_id' => $run->site_id,
+                'run_id' => $run->id,
+                'environment' => ['external_backups' => [
+                    'plugins' => [['slug' => 'updraftplus', 'name' => 'UpdraftPlus', 'active' => true, 'exposes_date' => true, 'last_backup_at' => null, 'last_backup_ok' => null]],
+                    'warnings' => ['No s\'ha pogut llegir la data'],
+                ]],
+            ]);
+
+            return StepOutcome::succeeded('ok');
+        }),
+    ]));
+
+    $json = inventoryJson(['sites' => ['mixt'], '--wait' => true]);
+
+    expect($json['sites'][0]['external_backup_warnings'])->toHaveCount(1)
+        ->and($json['sites'][0]['external_backup_warnings'][0])->toContain("No s'ha pogut llegir la data de l'última còpia de UpdraftPlus")
+        ->and($json['sites'][0]['external_backup_detection_warnings'])->toBe(["No s'ha pogut llegir la data"]);
+
+    command('inventory', ['sites' => ['mixt'], '--wait' => true])
+        ->expectsOutputToContain('Detecció de còpies')
+        ->assertSuccessful();
 });

@@ -226,3 +226,24 @@ it('does not write the external backup on dry-run and denies it to operators', f
         ->expectsOutputToContain('No tens permís')->assertFailed();
     expect(Site::query()->sole()->profile?->external_backup)->toBeNull();
 });
+
+it('trims the notes, clears them with an empty value and rejects whitespace-only or control characters', function (): void {
+    command('site:add', addParams())->assertSuccessful();
+
+    command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'plesk', '--external-backup-notes' => "  Plesk diària \t", '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->external_backup)->toBe(['type' => 'plesk', 'notes' => 'Plesk diària']);
+
+    command('site:edit', ['name' => 'botiga-a', '--external-backup-notes' => '   ', '--no-interaction' => true])
+        ->expectsOutputToContain('només espais')->assertFailed();
+    command('site:edit', ['name' => 'botiga-a', '--external-backup-notes' => "a\x1bb", '--no-interaction' => true])
+        ->expectsOutputToContain('caràcters de control')->assertFailed();
+    expect(Site::query()->sole()->profile?->external_backup)->toBe(['type' => 'plesk', 'notes' => 'Plesk diària']);
+
+    command('site:edit', ['name' => 'botiga-a', '--external-backup-notes' => '', '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->external_backup)->toBe(['type' => 'plesk']);
+
+    // Changing the type keeps the notes unless new ones are given.
+    command('site:edit', ['name' => 'botiga-a', '--external-backup-notes' => 'nota', '--no-interaction' => true])->assertSuccessful();
+    command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'none', '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->external_backup)->toBe(['type' => 'none', 'notes' => 'nota']);
+});

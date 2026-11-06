@@ -98,6 +98,7 @@ final class InventoryCommand extends WpupCommand implements ChangesState
             ['Estat', self::notes($row)],
             ['Bloquejat', $row->blocked ? "sí: {$row->blockedReason}" : 'no'],
             ['Còpia externa', $row->externalBackupWarnings === [] ? 'ok' : 'AVÍS: '.implode(' ', $row->externalBackupWarnings)],
+            ...($row->externalBackupDetectionWarnings === [] ? [] : [['Detecció de còpies', implode(' ', $row->externalBackupDetectionWarnings)]]),
         ];
         $this->table(['Camp', 'Valor'], $lines);
     }

@@ -8,8 +8,11 @@ use Carbon\CarbonImmutable;
 use Throwable;
 
 /**
- * A backup plugin found on a site (UZEROWPUP-133). lastBackupAt is null when
- * the plugin does not expose it or it could not be read.
+ * A backup plugin found on a site (UZEROWPUP-133). $exposesDate says whether
+ * the plugin is known to keep the time of its last backup in a readable place
+ * (config); lastBackupAt is null when it does not or when it could not be read.
+ * $lastBackupOk is false when the last backup is recorded as failed, null when
+ * unknown (UpdraftPlus records failed runs there too).
  */
 final readonly class ExternalBackupPlugin
 {
@@ -17,11 +20,21 @@ final readonly class ExternalBackupPlugin
         public string $slug,
         public string $name,
         public bool $active,
+        public bool $exposesDate,
         public ?CarbonImmutable $lastBackupAt,
+        public ?bool $lastBackupOk = null,
     ) {}
 
     /**
-     * @return array{slug: string, name: string, active: bool, last_backup_at: string|null}
+     * True when the plugin should have told the date and it could not be read.
+     */
+    public function dateUnreadable(): bool
+    {
+        return $this->exposesDate && $this->lastBackupAt === null;
+    }
+
+    /**
+     * @return array{slug: string, name: string, active: bool, exposes_date: bool, last_backup_at: string|null, last_backup_ok: bool|null}
      */
     public function toArray(): array
     {
@@ -29,7 +42,9 @@ final readonly class ExternalBackupPlugin
             'slug' => $this->slug,
             'name' => $this->name,
             'active' => $this->active,
+            'exposes_date' => $this->exposesDate,
             'last_backup_at' => $this->lastBackupAt?->utc()->toIso8601String(),
+            'last_backup_ok' => $this->lastBackupOk,
         ];
     }
 
@@ -50,6 +65,6 @@ final readonly class ExternalBackupPlugin
             }
         }
 
-        return new self($row['slug'], $row['name'], ($row['active'] ?? false) === true, $at);
+        return new self($row['slug'], $row['name'], ($row['active'] ?? false) === true, ($row['exposes_date'] ?? false) === true, $at, is_bool($row['last_backup_ok'] ?? null) ? $row['last_backup_ok'] : null);
     }
 }

@@ -283,7 +283,18 @@ final readonly class SiteAdministration
             $notesMax = config()->integer('wpup.sites.external_backup_notes_max');
             $stored = $current?->profile?->external_backup;
             $type = $input->externalBackup ?? (is_string($stored['type'] ?? null) ? $stored['type'] : null);
-            $notes = $input->externalBackupNotes ?? (is_string($stored['notes'] ?? null) ? $stored['notes'] : null);
+            $notes = $stored['notes'] ?? null;
+            $notes = is_string($notes) ? $notes : null;
+            if ($input->externalBackupNotes !== null) {
+                // '' clears the notes; a value that is only whitespace is a mistake.
+                $trimmed = trim($input->externalBackupNotes);
+                if ($input->externalBackupNotes !== '' && $trimmed === '') {
+                    $errors[] = 'Les notes de la còpia externa no poden ser només espais.';
+                } elseif (preg_match('/[\x00-\x1F\x7F]/', $trimmed) === 1) {
+                    $errors[] = 'Les notes de la còpia externa no poden tenir caràcters de control.';
+                }
+                $notes = $trimmed === '' ? null : $trimmed;
+            }
             if ($type === null || ! in_array($type, $types, true)) {
                 $errors[] = $input->externalBackup === null
                     ? 'Per indicar notes de la còpia externa cal declarar-ne abans el tipus (--external-backup).'

@@ -84,9 +84,15 @@ Només a `site:add`: `--server` i `--account` (obligatoris; es reutilitzen si ja
 L'eina no fa còpies de llarga durada, però vigila que n'hi hagi. `wpup inventory` mostra una fila **Còpia externa** per lloc: `ok` o `AVÍS: …`.
 
 - **Declaració** (només `admin`): `wpup site:edit botiga-a --external-backup=plesk --external-backup-notes="Plesk, diària, 14 dies"`. Tipus: `plesk`, `dropbox`, `plugin`, `other`, `none`.
-- **Detecció:** l'inventari busca plugins de còpies (UpdraftPlus, BackWPup, All-in-One WP Migration, Duplicator, BlogVault) a la llista de plugins instal·lats (`config/wpup.php` → `inventory.external_backups`) i, per als actius que l'exposen amb un format fiable (ara UpdraftPlus), llegeix la data de l'última còpia. Es desa a `environment.external_backups` de la captura.
-- **Avís** quan no hi ha cap còpia externa coneguda (cap declarada i cap plugin actiu), quan es declara `plugin` sense cap plugin actiu, o quan l'última còpia detectada és més antiga de `max_age_days` (7 per defecte). Una còpia declarada com a `plesk`, `dropbox` o `other` cobreix el lloc encara que el plugin sigui antic. Un plugin que no exposa la data mai no es considera antic.
-- `wpup inventory --json` afegeix `external_backup_warnings` a cada lloc.
+- **Detecció:** l'inventari busca plugins de còpies (UpdraftPlus, BackWPup, All-in-One WP Migration, Duplicator, BlogVault) a la llista de plugins instal·lats (`config/wpup.php` → `inventory.external_backups`). Per als actius que exposen l'última còpia amb un format fiable (ara UpdraftPlus) llegeix, amb `wp option pluck`, la data i si va anar bé. Es desa a `environment.external_backups` de la captura.
+- **Avís** (la declaració cobreix «hi ha còpia», però el que es troba al lloc compta sempre):
+  - cap còpia externa coneguda (cap declarada i cap plugin actiu), o `plugin` declarat sense cap plugin actiu;
+  - la darrera còpia d'un plugin ha fallat (UpdraftPlus desa també les execucions fallides), i no compta com a recent;
+  - un plugin que exposa la data no s'ha pogut llegir (un que no l'exposa mai no avisa);
+  - l'última còpia correcta és més antiga de `max_age_days` (7 per defecte), encara que s'hagi declarat `plesk`, `dropbox` o `other`.
+  Sense inventari, o amb una captura sense detecció, només es jutja la declaració i l'avís ho diu.
+- `--external-backup-notes=""` (buit) esborra les notes; canviar el tipus sense indicar-ne conserva les notes. Les notes es retallen i no poden ser només espais.
+- `wpup inventory` mostra l'avís i, si cal, «Detecció de còpies» amb el que no s'ha pogut llegir. `--json` afegeix `external_backup_warnings` i `external_backup_detection_warnings` a cada lloc, i `--csv` la columna `external_backup_warnings`.
 
 ## `site:test`
 

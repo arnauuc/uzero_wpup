@@ -176,3 +176,12 @@ it('denies the import to operators', function (): void {
     command('site:import', importParams(exampleFile('llocs.yaml')))->expectsOutputToContain('No tens permís')->assertFailed();
     expect(Site::query()->count())->toBe(0);
 });
+
+it('imports the external backup type with its notes', function (): void {
+    $csv = "name,url,wp_path,external_backup,external_backup_notes,server,hostname,account\n"
+        .'botiga-n,https://botiga-n.example.test,/var/www/n,plesk,"Plesk diària, 14 dies",srv-n,srv-n.example.test,botiga_n'."\n";
+
+    command('site:import', importParams(importFile($csv, 'csv')))->assertSuccessful();
+
+    expect(Site::query()->where('name', 'botiga-n')->sole()->profile?->external_backup)->toBe(['type' => 'plesk', 'notes' => 'Plesk diària, 14 dies']);
+});

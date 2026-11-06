@@ -42,6 +42,7 @@ final readonly class SiteInput
         public ?array $notify = null,
         public ?bool $includeUploads = null,
         public ?string $externalBackup = null,
+        /** null = not given, '' = clear the notes */
         public ?string $externalBackupNotes = null,
     ) {}
 }

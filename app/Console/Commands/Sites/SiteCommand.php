@@ -41,7 +41,7 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         {--include-uploads : Inclou uploads a la còpia}
         {--no-include-uploads : Exclou uploads de la còpia}
         {--external-backup= : Còpia externa: plesk, dropbox, plugin, other, none}
-        {--external-backup-notes= : Notes de la còpia externa (màx. 500 caràcters; en editar, també cal haver-ne declarat el tipus)}
+        {--external-backup-notes= : Notes de la còpia externa (màx. 500 caràcters; cal haver-ne declarat el tipus; buides, les esborra)}
         {--clear=* : Camp a esborrar: tag, php-binary, window, verify-url, mask, checkout-product, freeze, exclude, notify, external-backup}';
 
     /** CLI names accepted by --clear mapped to the canonical field names. */
@@ -99,8 +99,18 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
             notify: $this->listOption('notify'),
             includeUploads: $this->toggle('include-uploads', 'no-include-uploads'),
             externalBackup: $this->stringOption('external-backup'),
-            externalBackupNotes: $this->stringOption('external-backup-notes'),
+            externalBackupNotes: $this->rawStringOption('external-backup-notes'),
         );
+    }
+
+    /**
+     * Like stringOption(), but an empty value stays '' (it means "clear" for the notes).
+     */
+    private function rawStringOption(string $name): ?string
+    {
+        $value = $this->option($name);
+
+        return is_string($value) ? $value : null;
     }
 
     /**

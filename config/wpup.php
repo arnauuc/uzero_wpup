@@ -366,8 +366,8 @@ return [
             'du_timeout_seconds' => 180,
         ],
         // External backups (UZEROWPUP-133, ADR-0009): backup plugins recognised by
-        // their slug. `last_backup` says where the plugin keeps the time of its last
-        // backup (a WP option holding JSON/an array, read with `wp option get`), or
+        // their slug. `last_backup` says where the plugin keeps its last backup (a WP option
+        // holding an array: read with `wp option pluck` its unix time and whether it succeeded), or
         // null when it is not exposed in a format we can trust. A site is warned when
         // nothing is known or the latest detected backup is older than `max_age_days`.
         'external_backups' => [
@@ -375,8 +375,10 @@ return [
             'max_age_days' => 7,
             // A last-backup time further in the future than this is ignored (bad clock or garbage).
             'max_future_seconds' => 86400,
+            // Longer answers from the site are not even parsed.
+            'max_output_bytes' => 4096,
             'plugins' => [
-                'updraftplus' => ['name' => 'UpdraftPlus', 'last_backup' => ['option' => 'updraft_last_backup', 'key' => 'backup_time']],
+                'updraftplus' => ['name' => 'UpdraftPlus', 'last_backup' => ['option' => 'updraft_last_backup', 'time_key' => 'backup_time', 'success_key' => 'success']],
                 'backwpup' => ['name' => 'BackWPup', 'last_backup' => null],
                 'backwpup-pro' => ['name' => 'BackWPup Pro', 'last_backup' => null],
                 'all-in-one-wp-migration' => ['name' => 'All-in-One WP Migration', 'last_backup' => null],

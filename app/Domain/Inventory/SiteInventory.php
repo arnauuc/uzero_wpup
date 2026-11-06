@@ -46,8 +46,9 @@ use App\Models\SiteSnapshot;
  *   site with their reasons. The block lives on the sites row (blocked_reason, blocked_at, blocked_by).
  * - environment.prerequisites_warnings: list<string>, why a check could not be evaluated (redacted; also logged).
  * - environment.external_backups (UZEROWPUP-133, see ExternalBackups): array{plugins: list<array{slug: string,
- *   name: string, active: bool, last_backup_at: ?string (ISO 8601 UTC; null = not exposed or unreadable)}>,
- *   warnings: list<string>}. Only backup plugins from config are listed. The judgement (warning when there is no
+ *   name: string, active: bool, exposes_date: bool (the plugin is known to keep its last backup, see config),
+ *   last_backup_at: ?string (ISO 8601 UTC; null = not exposed or unreadable), last_backup_ok: ?bool (false = the last
+ *   run failed)}>, warnings: list<string>}. Only backup plugins from config are listed. The judgement (warning when there is no
  *   known external backup or the last one is too old) is ExternalBackupStatus, applied when reporting.
  *
  * PHP: the version WP-CLI runs with (UZEROWPUP-29) is cross-checked with the
