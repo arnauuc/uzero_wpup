@@ -56,6 +56,8 @@ use App\Domain\Notifications\SiteBlockNotifier;
 use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
+use App\Domain\Rollback\RevertedChanges;
+use App\Domain\Rollback\RollbackSteps;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
@@ -389,6 +391,8 @@ class AppServiceProvider extends ServiceProvider
                         $app->make(RunAuthorization::class), $app->make(AuditLogger::class), $app->make(SecretRedactor::class), self::configInt('wpup.backups.restore.step_timeout_seconds')),
                 ]);
             });
+            // `wpup rollback <run>` (UZEROWPUP-57, the command is UZEROWPUP-61): undoes the parent update run.
+            $resolver->register(RunType::Rollback, static fn (): Pipeline => new Pipeline($app->make(RollbackSteps::class)->steps()));
             // The tool's own backup (UZEROWPUP-47): a read-only check (also under --dry-run), then the copy.
             $resolver->register(RunType::ToolBackup, static fn (): Pipeline => new Pipeline([
                 new ToolBackupCheckStep($app->make(ToolBackupService::class), $app->make(RunAuthorization::class), self::configInt('wpup.tool_backup.check_timeout_seconds')),
@@ -412,6 +416,17 @@ class AppServiceProvider extends ServiceProvider
             maxStepAttempts: self::configInt('wpup.runs.max_step_attempts'),
             summaryMaxChars: self::configInt('wpup.runs.summary_max_chars'),
             outputMaxBytes: self::configInt('wpup.runs.output_max_bytes'),
+        ));
+        // The steps that undo an update (UZEROWPUP-57), for `wpup rollback <run>` and the update flow.
+        $this->app->bind(RollbackSteps::class, static fn (Application $app): RollbackSteps => new RollbackSteps(
+            $app->make(RestoreSelection::class),
+            $app->make(SiteRestore::class),
+            $app->make(RevertedChanges::class),
+            static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+            $app->make(RunAuthorization::class),
+            $app->make(AuditLogger::class),
+            $app->make(SecretRedactor::class),
+            self::configInt('wpup.rollback.files_timeout_seconds'),
         ));
         $this->app->bind(SshSettings::class, static fn (): SshSettings => new SshSettings(
             connectTimeoutSeconds: self::configInt('wpup.ssh.connect_timeout_seconds'),

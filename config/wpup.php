@@ -282,6 +282,14 @@ return [
     ],
 
     /*
+     * Rollback of an update from its own restore point (UZEROWPUP-57): the
+     * code archive mirrored back onto the site and the versions checked.
+     */
+    'rollback' => [
+        'files_timeout_seconds' => 3600,
+    ],
+
+    /*
      * The tool's own daily backup (ADR-0009 §3, UZEROWPUP-47,
      * docs/runbooks/copia-eina.md): pg_dump of the tool database, the
      * non-secret configuration and the reports, encrypted with age on the VM
