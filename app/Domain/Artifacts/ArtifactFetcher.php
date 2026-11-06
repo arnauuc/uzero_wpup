@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Domain\Artifacts;
 
-use App\Domain\Secrets\SecretRedactor;
 use App\Enums\ComponentType;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
@@ -19,10 +18,13 @@ use ZipArchive;
 
 /**
  * Downloads a package to the run's artifacts (UZEROWPUP-49) from the tool
- * server, never from the site: HTTPS only (redirects too, followed by hand
- * so every hop is checked and its tokens registered before any request),
- * bounded in time and size, hashed while it streams to disk, and accepted
- * only if it is a sane ZIP. Messages and logs name the host, never the URL.
+ * server, never from the site: HTTPS only, to public addresses on allowed
+ * ports, pinned to the address that was checked (PackageUrlGuard::pin);
+ * redirects are followed by hand so every hop is checked the same way and
+ * its tokens registered before any request. Bounded in time and size,
+ * hashed while it streams to disk, and accepted only if it is a sane ZIP.
+ * Messages and logs name the host, never the URL; an address that is
+ * refused and one that does not answer get the same message.
  *
  * Idempotent: a package the run already holds is verified and reused, never
  * downloaded again (staging and production get the same bytes).
@@ -32,7 +34,7 @@ final readonly class ArtifactFetcher
     public function __construct(
         private ClientInterface $http,
         private ArtifactStore $store,
-        private SecretRedactor $redactor,
+        private PackageUrlGuard $guard,
         private ArtifactSettings $settings,
     ) {}
 
@@ -71,21 +73,17 @@ final readonly class ArtifactFetcher
             if ($status < 300 || $status >= 400 || ! $response->hasHeader('Location')) {
                 break;
             }
+            $response->getBody()->close();
             if ($hops >= $this->settings->maxRedirects) {
                 throw ArtifactException::download($source, 'massa redireccions.');
             }
-            $response->getBody()->close();
             try {
-                $next = (string) UriResolver::resolve(new Uri($url), new Uri($response->getHeaderLine('Location')));
+                $url = (string) UriResolver::resolve(new Uri($url), new Uri($response->getHeaderLine('Location')));
             } catch (InvalidArgumentException) {
                 // Its message quotes the URI.
                 throw ArtifactException::download($source, 'redirecció no vàlida.');
             }
-            PackageSource::guard($next, $this->redactor);
-            if (PackageSource::httpsHost($next) === null) {
-                throw ArtifactException::download($source, 'redirigeix a una adreça que no és HTTPS.');
-            }
-            $url = $next;
+            $this->guard->register($url, $source->slug, $source->version);
         }
 
         if ($status !== 200) {
@@ -102,6 +100,8 @@ final readonly class ArtifactFetcher
     private function request(PackageSource $source, #[\SensitiveParameter] string $url): ResponseInterface
     {
         try {
+            $pinned = $this->guard->pin($url);
+
             return $this->http->request('GET', $url, [
                 'allow_redirects' => false,
                 'http_errors' => false,
@@ -110,11 +110,15 @@ final readonly class ArtifactFetcher
                 'timeout' => $this->settings->timeoutSeconds,
                 'read_timeout' => $this->settings->readTimeoutSeconds,
                 'headers' => ['Accept' => 'application/zip, application/octet-stream'],
+                'curl' => [CURLOPT_RESOLVE => [$pinned], CURLOPT_PROTOCOLS => CURLPROTO_HTTPS],
             ]);
+        } catch (DownloadBlocked $e) {
+            Log::warning("Artifact download of {$source->slug} {$source->version} refused: {$e->getMessage()}");
+            throw ArtifactException::unreachable($source);
         } catch (GuzzleException|InvalidArgumentException $e) {
             // Never the message nor the exception itself: they carry the URL.
             $this->logFailure($source, $e);
-            throw ArtifactException::download($source, 'error de connexió o temps esgotat.');
+            throw ArtifactException::unreachable($source);
         }
     }
 
@@ -123,10 +127,7 @@ final readonly class ArtifactFetcher
      */
     private function stream(PackageSource $source, ResponseInterface $response, string $temporary): array
     {
-        $out = fopen($temporary, 'wb');
-        if ($out === false) {
-            throw ArtifactException::storage("no s'ha pogut obrir el fitxer temporal.");
-        }
+        $out = FileOperation::run(static fn () => fopen($temporary, 'wb'), "no s'ha pogut obrir el fitxer temporal.");
         $hash = hash_init('sha256');
         $size = 0;
         try {
@@ -138,7 +139,8 @@ final readonly class ArtifactFetcher
                     throw ArtifactException::download($source, $this->tooBig());
                 }
                 hash_update($hash, $chunk);
-                if (fwrite($out, $chunk) !== strlen($chunk)) {
+                $written = FileOperation::run(static fn (): int|false => fwrite($out, $chunk), "no s'ha pogut escriure el paquet (disc ple?).");
+                if ($written !== strlen($chunk)) {
                     throw ArtifactException::storage("no s'ha pogut escriure el paquet (disc ple?).");
                 }
             }
@@ -148,7 +150,7 @@ final readonly class ArtifactFetcher
             $this->logFailure($source, $e);
             throw ArtifactException::download($source, "la transferència s'ha tallat.");
         } finally {
-            fclose($out);
+            @fclose($out);
         }
 
         return [hash_final($hash), $size];
@@ -161,11 +163,7 @@ final readonly class ArtifactFetcher
      */
     private function checkZip(PackageSource $source, string $path): void
     {
-        $handle = fopen($path, 'rb');
-        $magic = $handle === false ? '' : (string) fread($handle, 4);
-        if ($handle !== false) {
-            fclose($handle);
-        }
+        $magic = FileOperation::run(static fn (): string|false => file_get_contents($path, false, null, 0, 4), "no s'ha pogut llegir el paquet baixat.");
         $zip = new ZipArchive;
         if ($magic !== "PK\x03\x04" || $zip->open($path, ZipArchive::CHECKCONS | ZipArchive::RDONLY) !== true) {
             throw ArtifactException::invalidPackage($source, 'no és un fitxer ZIP.');

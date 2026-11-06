@@ -18,6 +18,12 @@ class ArtifactException extends RuntimeException
         return new self("No s'ha pogut descarregar el paquet de «{$source->slug}» {$source->version} des de {$source->host()}: {$reason}");
     }
 
+    /** The same message whether the address was refused or did not answer (no port scanning). */
+    public static function unreachable(PackageSource $source): self
+    {
+        return new self("No s'ha pogut baixar el paquet de «{$source->slug}» {$source->version} de {$source->host()}.");
+    }
+
     public static function invalidPackage(PackageSource $source, string $reason): self
     {
         return new self("El paquet de «{$source->slug}» {$source->version} no és vàlid: {$reason}");

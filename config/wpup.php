@@ -334,6 +334,17 @@ return [
         'timeout_seconds' => 600,
         'read_timeout_seconds' => 120,
         'max_redirects' => 5,
+        // Only public addresses are ever reached (PublicAddress); and only on these ports.
+        'allowed_ports' => [443],
+        // What of a package URL is registered with the secret redactor
+        // (PackageUrlGuard): values of query keys containing one of these words,
+        // and query values / path segments at least this long that look like
+        // a token (letters and digits). Never the slug, the version or a URL.
+        'url_secrets' => [
+            'query_keys' => ['key', 'license', 'licence', 'token', 'password', 'pass', 'secret', 'sig', 'signature', 'auth', 'hash', 'nonce', 'access_token', 'credential'],
+            'min_value_length' => 20,
+            'min_segment_length' => 16,
+        ],
         'max_bytes' => 200 * 1024 * 1024,
         // Sum of the uncompressed sizes of the ZIP entries (zip bombs).
         'max_unpacked_bytes' => 1024 * 1024 * 1024,

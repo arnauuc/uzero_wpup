@@ -42,12 +42,10 @@ final readonly class ArtifactStore
     {
         $dir = $this->runDirectory($runId);
         foreach (glob($dir.'/*'.self::PARTIAL_SUFFIX) ?: [] as $stale) {
-            @unlink($stale);
+            FileOperation::run(static fn (): bool => unlink($stale), "no s'ha pogut esborrar un fitxer temporal antic.");
         }
         $path = $dir.'/'.bin2hex(random_bytes(8)).self::PARTIAL_SUFFIX;
-        if (! touch($path) || ! chmod($path, 0600)) {
-            throw ArtifactException::storage("no s'ha pogut crear un fitxer temporal.");
-        }
+        FileOperation::run(static fn (): bool => touch($path) && chmod($path, 0600), "no s'ha pogut crear un fitxer temporal.");
 
         return $path;
     }
@@ -60,10 +58,8 @@ final readonly class ArtifactStore
     public function commit(int $runId, PackageSource $source, string $temporary, string $sha256, int $sizeBytes): Artifact
     {
         $relative = "run-{$runId}/{$source->fileName()}";
-        if (! rename($temporary, rtrim($this->settings->directory, '/').'/'.$relative)) {
-            @unlink($temporary);
-            throw ArtifactException::storage("no s'ha pogut desar el paquet de «{$source->slug}».");
-        }
+        $target = rtrim($this->settings->directory, '/').'/'.$relative;
+        FileOperation::run(static fn (): bool => rename($temporary, $target), "no s'ha pogut desar el paquet de «{$source->slug}».");
 
         $row = RunArtifact::query()->create([
             'run_id' => $runId,
@@ -92,8 +88,13 @@ final readonly class ArtifactStore
         if (! is_file($artifact->path) || is_link($artifact->path)) {
             throw ArtifactIntegrityFailed::missing($artifact);
         }
-        $hash = hash_file('sha256', $artifact->path);
-        if ($hash === false || filesize($artifact->path) !== $artifact->sizeBytes || ! hash_equals($artifact->sha256, $hash)) {
+        try {
+            $size = FileOperation::run(static fn (): int|false => filesize($artifact->path), 'no es pot llegir.');
+            $hash = FileOperation::run(static fn (): string|false => hash_file('sha256', $artifact->path), 'no es pot llegir.');
+        } catch (ArtifactException) {
+            throw ArtifactIntegrityFailed::missing($artifact);
+        }
+        if ($size !== $artifact->sizeBytes || ! hash_equals($artifact->sha256, $hash)) {
             throw ArtifactIntegrityFailed::mismatch($artifact);
         }
 
@@ -109,11 +110,15 @@ final readonly class ArtifactStore
     public function purge(RunArtifact $row, CarbonImmutable $now): void
     {
         $path = rtrim($this->settings->directory, '/').'/'.$row->path;
-        if (file_exists($path) && ! unlink($path)) {
-            throw ArtifactException::storage("no s'ha pogut esborrar «{$row->path}».");
+        if (file_exists($path)) {
+            FileOperation::run(static fn (): bool => unlink($path), "no s'ha pogut esborrar «{$row->path}».");
         }
         $row->forceFill(['purged_at' => $now])->save();
-        @rmdir(dirname($path));
+        $dir = dirname($path);
+        // Only once empty; another artifact of the run may still be there.
+        if ((scandir($dir) ?: []) === ['.', '..']) {
+            FileOperation::run(static fn (): bool => rmdir($dir), "no s'ha pogut esborrar el directori de «{$row->path}».");
+        }
     }
 
     /**
@@ -121,12 +126,15 @@ final readonly class ArtifactStore
      */
     private function runDirectory(int $runId): string
     {
+        $dir = rtrim($this->settings->directory, '/')."/run-{$runId}";
         try {
-            PrivateDirectory::ensure($this->settings->directory);
+            return FileOperation::run(static function () use ($dir): string {
+                PrivateDirectory::ensure(dirname($dir));
 
-            return PrivateDirectory::ensure(rtrim($this->settings->directory, '/')."/run-{$runId}");
+                return PrivateDirectory::ensure($dir);
+            }, "no s'ha pogut preparar el directori de l'execució {$runId}.");
         } catch (RuntimeException $e) {
-            throw ArtifactException::storage($e->getMessage());
+            throw $e instanceof ArtifactException ? $e : ArtifactException::storage($e->getMessage());
         }
     }
 }

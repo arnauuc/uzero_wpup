@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Domain\Artifacts;
 
 use App\Domain\Secrets\Secret;
-use App\Domain\Secrets\SecretRedactor;
 use App\Enums\ComponentType;
 
 /**
@@ -15,6 +14,7 @@ use App\Enums\ComponentType;
  */
 final readonly class PackageSource
 {
+    /** Slugs and versions; "~" is outside it, so fileName() is unambiguous. */
     private const string NAME = '/^[A-Za-z0-9_][A-Za-z0-9._+-]*$/D';
 
     private function __construct(
@@ -26,18 +26,19 @@ final readonly class PackageSource
     ) {}
 
     /**
-     * Validates the URL (HTTPS only) and registers every part of it that may
-     * be a token with the redactor, before anything can log it.
+     * Registers the URL's token-looking parts with the redactor (before
+     * anything can log it) and validates it: HTTPS only. Whether its host
+     * may be reached is checked when it is downloaded (PackageUrlGuard::pin).
      *
      * @throws ArtifactException
      */
-    public static function create(ComponentType $type, string $slug, string $version, #[\SensitiveParameter] string $url, SecretRedactor $redactor): self
+    public static function create(ComponentType $type, string $slug, string $version, #[\SensitiveParameter] string $url, PackageUrlGuard $guard): self
     {
-        self::guard($url, $redactor);
+        $guard->register($url, $slug, $version);
         if (preg_match(self::NAME, $slug) !== 1 || preg_match(self::NAME, $version) !== 1) {
             throw ArtifactException::noPackage($slug, $version, 'el nom o la versió tenen caràcters no permesos.');
         }
-        $host = self::httpsHost($url);
+        $host = PackageUrlGuard::httpsHost($url);
         if ($host === null) {
             throw ArtifactException::noPackage($slug, $version, "l'URL no és HTTPS.");
         }
@@ -50,46 +51,9 @@ final readonly class PackageSource
         return $this->host;
     }
 
-    /** "plugin-woocommerce-10.2.0.zip": the file name in the run's directory. */
+    /** "plugin~woocommerce~10.2.0.zip": the file name in the run's directory. */
     public function fileName(): string
     {
-        return "{$this->type->value}-{$this->slug}-{$this->version}.zip";
-    }
-
-    /**
-     * Registers the URL and its token-looking parts: the whole URL, the query
-     * and each of its values, the userinfo, and path segments that look like
-     * keys (long, with a digit; the .zip file name excepted).
-     */
-    public static function guard(#[\SensitiveParameter] string $url, SecretRedactor $redactor): void
-    {
-        $redactor->register($url);
-        $parts = parse_url($url);
-        if (! is_array($parts)) {
-            return;
-        }
-        foreach (['user', 'pass', 'query', 'fragment'] as $key) {
-            if (isset($parts[$key])) {
-                $redactor->register($parts[$key]);
-                $redactor->register(rawurldecode($parts[$key]));
-            }
-        }
-        parse_str($parts['query'] ?? '', $query);
-        array_walk_recursive($query, static fn (mixed $value) => is_string($value) ? $redactor->register($value) : null);
-        foreach (explode('/', $parts['path'] ?? '') as $segment) {
-            $segment = rawurldecode($segment);
-            if (strlen($segment) >= 16 && preg_match('/\d/', $segment) === 1 && ! str_ends_with(strtolower($segment), '.zip')) {
-                $redactor->register($segment);
-            }
-        }
-    }
-
-    /** The lowercase host of an https:// URL, or null when it is not one. */
-    public static function httpsHost(#[\SensitiveParameter] string $url): ?string
-    {
-        $parts = parse_url($url);
-        $host = is_array($parts) ? ($parts['host'] ?? '') : '';
-
-        return is_array($parts) && strtolower($parts['scheme'] ?? '') === 'https' && $host !== '' ? strtolower($host) : null;
+        return "{$this->type->value}~{$this->slug}~{$this->version}.zip";
     }
 }

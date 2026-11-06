@@ -7,6 +7,9 @@ namespace App\Providers;
 use App\Domain\Artifacts\ArtifactFetcher;
 use App\Domain\Artifacts\ArtifactSettings;
 use App\Domain\Artifacts\ArtifactStore;
+use App\Domain\Artifacts\DnsHostResolver;
+use App\Domain\Artifacts\HostResolver;
+use App\Domain\Artifacts\PackageUrlGuard;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\BackupStep;
@@ -222,11 +225,16 @@ class AppServiceProvider extends ServiceProvider
             self::configString('wpup.artifacts.wordpress_org.plugin_url'),
             self::configString('wpup.artifacts.wordpress_org.theme_url'),
             self::configInt('wpup.artifacts.min_retention_days'),
+            array_values(array_filter((array) config('wpup.artifacts.allowed_ports'), is_int(...))),
+            array_map(strtolower(...), self::configStrings('wpup.artifacts.url_secrets.query_keys')),
+            self::configInt('wpup.artifacts.url_secrets.min_value_length'),
+            self::configInt('wpup.artifacts.url_secrets.min_segment_length'),
         ));
+        $this->app->bind(HostResolver::class, DnsHostResolver::class);
         $this->app->bind(ArtifactFetcher::class, static fn (Application $app): ArtifactFetcher => new ArtifactFetcher(
             new GuzzleClient,
             $app->make(ArtifactStore::class),
-            $app->make(SecretRedactor::class),
+            $app->make(PackageUrlGuard::class),
             $app->make(ArtifactSettings::class),
         ));
         // The tool's own backup (UZEROWPUP-47, ADR-0009 §3).
