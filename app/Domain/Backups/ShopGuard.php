@@ -11,11 +11,12 @@ use App\Models\SiteSnapshot;
 /**
  * Whether restoring a site's database may lose a shop's orders, customers or
  * users (AGENTS.md rule 4, UZEROWPUP-46). Conservative: a site whose
- * inventory is unknown counts as a shop. Until the order and user watermark
- * of a copy (backups.order_watermark, UZEROWPUP-58) can be compared, a shop
- * always counts as possibly losing data, so its database is only restored
- * with --accept-data-loss and the operator typing the site's name (never
- * --force).
+ * inventory is unknown counts as a shop. Its database is only restored with
+ * --accept-data-loss and the operator typing the site's name (never --force).
+ * The restore run compares the copy's order and user watermark with the site
+ * (NewWritesDetector, UZEROWPUP-58) and tells which orders and users would be
+ * lost; restoring without the confirmation when nothing was written is
+ * UZEROWPUP-59.
  */
 final class ShopGuard
 {
@@ -41,8 +42,12 @@ final class ShopGuard
         return SiteSnapshot::query()->where('site_id', $site->id)->orderByDesc('taken_at')->orderByDesc('id')->first();
     }
 
-    public static function message(string $copyDate): string
+    /**
+     * @param  NewWrites|null  $writes  null when the site was not read (the CLI checks before any run)
+     */
+    public static function message(string $copyDate, ?NewWrites $writes = null): string
     {
-        return "El lloc és (o pot ser) una botiga: restaurar-ne la base de dades esborra les comandes, els clients i els usuaris entrats des de la còpia ({$copyDate}), i encara no es pot saber quins són.";
+        return "El lloc és (o pot ser) una botiga: restaurar-ne la base de dades esborra les comandes, els clients i els usuaris entrats des de la còpia ({$copyDate}). "
+            .($writes?->describe() ?? 'Sense connectar-se al lloc no es pot saber quins són.');
     }
 }
