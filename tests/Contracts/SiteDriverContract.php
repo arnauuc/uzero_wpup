@@ -209,16 +209,20 @@ final class SiteDriverContract
                 $installed = static fn (): ?ComponentVersion => $driver->installedComponents()->find(ComponentType::Plugin, 'wpup-contract-plugin');
 
                 try {
-                    expect($driver->applyUpdate(SiteDriverContract::package($zips[0], '1.1.0'))->successful())->toBeTrue()
+                    $first = $driver->applyUpdate(SiteDriverContract::package($zips[0], '1.1.0'));
+                    expect($first->result->successful())->toBeTrue()
+                        ->and($first->alreadyInstalled)->toBeFalse()
+                        ->and($first->installed->version)->toBe('1.1.0')
                         ->and($installed()?->version)->toBe('1.1.0')
                         ->and($installed()?->active)->toBeFalse()
                         ->and($driver->wp(['plugin', 'activate', 'wpup-contract-plugin'])->successful())->toBeTrue();
 
                     $update = SiteDriverContract::package($zips[1], '1.2.0');
-                    expect($driver->applyUpdate($update)->successful())->toBeTrue()
-                        ->and($driver->applyUpdate($update)->successful())->toBeTrue()
+                    expect($driver->applyUpdate($update)->installed->active)->toBeTrue()
+                        ->and($driver->applyUpdate($update)->alreadyInstalled)->toBeTrue()
                         ->and($installed()?->version)->toBe('1.2.0')
-                        ->and($installed()?->active)->toBeTrue();
+                        ->and($installed()?->active)->toBeTrue()
+                        ->and($driver->installedState(ComponentType::Plugin, 'wpup-contract-plugin'))->toEqual($installed());
 
                     // Other bytes than the artifact's: nothing is uploaded nor changed.
                     $tampered = new UpdatePackage(ComponentType::Plugin, 'wpup-contract-plugin', '1.3.0', $zips[2], str_repeat('0', 64), (int) filesize($zips[2]));
@@ -240,6 +244,17 @@ final class SiteDriverContract
                     array_map(unlink(...), $zips);
                     $driver->remove($archive->path);
                 }
+            });
+
+            it('reads one component as the inventory reports it', function () use ($factory): void {
+                $driver = $factory();
+                $all = $driver->installedComponents();
+                $plugin = array_values(array_filter($all->components, static fn (ComponentVersion $c): bool => $c->type === ComponentType::Plugin))[0];
+
+                expect($driver->installedState(ComponentType::Core, 'wordpress')?->version)->toBe($all->coreVersion)
+                    ->and($driver->installedState(ComponentType::Plugin, $plugin->slug))->toEqual($plugin)
+                    ->and($driver->installedState(ComponentType::Plugin, 'wpup-contract-not-installed'))->toBeNull()
+                    ->and(fn () => $driver->installedState(ComponentType::Translation, 'ca'))->toThrow(DriverException::class);
             });
 
             it('toggles maintenance mode', function () use ($factory): void {

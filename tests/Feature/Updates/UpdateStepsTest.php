@@ -4,24 +4,22 @@ declare(strict_types=1);
 
 use App\Domain\Artifacts\Artifact;
 use App\Domain\Artifacts\ArtifactStore;
-use App\Domain\Artifacts\PackageArtifacts;
 use App\Domain\Artifacts\PackageSource;
 use App\Domain\Artifacts\PackageUrlGuard;
 use App\Domain\Audit\AuditActor;
+use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
-use App\Domain\Inventory\PendingUpdate;
-use App\Domain\Inventory\WpCliReader;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Planning\UpdatePlan;
+use App\Domain\Runs\Exceptions\StepTimedOut;
 use App\Domain\Runs\RunAuthorization;
-use App\Domain\Runs\Step;
 use App\Domain\Runs\StepContext;
 use App\Domain\Secrets\SecretRedactor;
+use App\Domain\Updates\ComponentUpdateStep;
 use App\Domain\Updates\UpdateChanges;
 use App\Domain\Updates\UpdateSteps;
-use App\Enums\ChangeResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Enums\RunStepStatus;
@@ -29,7 +27,6 @@ use App\Enums\SkipReason;
 use App\Models\Run;
 use App\Models\RunChange;
 use App\Models\Site;
-use App\Models\SiteSnapshot;
 use Illuminate\Support\Facades\Http;
 use Tests\Support\FakeDriver;
 
@@ -45,38 +42,35 @@ afterEach(function (): void {
 });
 
 /**
- * The four component updates of the fake site (and a skip), in no particular order.
+ * The fake site's updates (and a skip), in the plan's order.
  *
  * @return list<PlannedChange>
  */
 function fakeSiteChanges(): array
 {
     return [
-        new PlannedChange(ComponentType::Theme, 'storefront', '4.6.0', '4.6.1', PlanAction::Update),
+        new PlannedChange(ComponentType::Core, 'wordpress', '6.8.3', '6.8.4', PlanAction::Update),
+        new PlannedChange(ComponentType::Woocommerce, 'woocommerce', '10.1.0', '10.1.1', PlanAction::Update),
         new PlannedChange(ComponentType::Plugin, 'classic-editor', '1.6.3', '1.6.4', PlanAction::Update),
         new PlannedChange(ComponentType::Plugin, 'hello', '1.6', '2.0', PlanAction::Skip, SkipReason::MajorRequiresStaging),
-        new PlannedChange(ComponentType::Woocommerce, 'woocommerce', '10.1.0', '10.1.1', PlanAction::Update),
-        new PlannedChange(ComponentType::Core, 'wordpress', '6.8.3', '6.8.4', PlanAction::Update),
+        new PlannedChange(ComponentType::Theme, 'storefront', '4.6.0', '4.6.1', PlanAction::Update),
     ];
 }
 
 /**
- * A run with a fresh inventory offering the planned updates, and their artifacts.
+ * A run holding the analysed artifact of every planned update.
  *
  * @return array{Run, StepContext, array<string, Artifact>}
  */
 function updateRun(): array
 {
     $run = Run::factory()->create(['site_id' => Site::factory()]);
-    $pending = [];
     $artifacts = [];
     foreach (fakeSiteChanges() as $change) {
-        $pending[] = (new PendingUpdate($change->type->value, $change->slug, $change->slug, $change->currentVersion, $change->targetVersion, 'downloads.wordpress.org', null, null, null, PendingUpdate::SOURCE_WORDPRESS_ORG, true))->toArray();
         $artifacts[$change->slug] = updateArtifact($run, $change->type, $change->slug, $change->targetVersion);
     }
-    $snapshot = SiteSnapshot::factory()->create(['site_id' => $run->site_id, 'run_id' => $run->id, 'pending_updates' => $pending]);
 
-    return [$run, new StepContext($run, false, ['inventory' => ['snapshot_id' => $snapshot->id]]), $artifacts];
+    return [$run, new StepContext($run, false), $artifacts];
 }
 
 function updateArtifact(Run $run, ComponentType $type, string $slug, string $version): Artifact
@@ -90,17 +84,26 @@ function updateArtifact(Run $run, ComponentType $type, string $slug, string $ver
     return $store->commit($run->id, $source, $temporary, hash('sha256', $bytes), strlen($bytes));
 }
 
-/**
- * @return list<Step>
- */
-function updateSteps(FakeDriver $driver, ?UpdatePlan $plan = null): array
+function updateBuilder(FakeDriver $driver, int $timeout = 60, int $minimum = 60): UpdateSteps
 {
-    $builder = new UpdateSteps(
-        app(PackageArtifacts::class), app(ArtifactStore::class), static fn (Site $s, AuditActor $a): SiteDriver => $driver,
-        app(RunAuthorization::class), new UpdateChanges, app(SecretRedactor::class), app(WpCliReader::class), 60, 60, 60,
+    return new UpdateSteps(
+        app(ArtifactStore::class), static fn (Site $s, AuditActor $a): SiteDriver => $driver,
+        app(RunAuthorization::class), new UpdateChanges, app(SecretRedactor::class), $timeout, $minimum,
     );
+}
 
-    return $builder->for($plan ?? new UpdatePlan('8.3.14', PhpVersionSource::PleskHandler, true, null, fakeSiteChanges()));
+/**
+ * @return list<ComponentUpdateStep>
+ */
+function updateSteps(FakeDriver $driver): array
+{
+    return updateBuilder($driver)->for(new UpdatePlan('8.3.14', PhpVersionSource::PleskHandler, true, null, fakeSiteChanges()));
+}
+
+/** The classic-editor step. */
+function classicStep(FakeDriver $driver): ComponentUpdateStep
+{
+    return updateSteps($driver)[2];
 }
 
 /**
@@ -113,10 +116,14 @@ function updateRows(Run $run): array
     ])->all());
 }
 
-it('builds one step per planned update in the fixed order, then the translations', function (): void {
-    $names = array_map(static fn (Step $s): string => $s->name(), updateSteps(new FakeDriver));
+it('builds one step per planned update, in the plan order', function (): void {
+    $names = array_map(static fn (ComponentUpdateStep $s): string => $s->name(), updateSteps(new FakeDriver));
 
-    expect($names)->toBe(['update:core:wordpress', 'update:woocommerce:woocommerce', 'update:plugin:classic-editor', 'update:theme:storefront', 'translations']);
+    expect($names)->toBe(['update:core:wordpress', 'update:woocommerce:woocommerce', 'update:plugin:classic-editor', 'update:theme:storefront']);
+});
+
+it('refuses a step timeout shorter than the longest install', function (): void {
+    expect(fn () => updateBuilder(new FakeDriver, 600, 3615))->toThrow(InvalidArgumentException::class, '3615');
 });
 
 it('installs every component from its artifact and records each change with its versions', function (): void {
@@ -140,13 +147,15 @@ it('installs every component from its artifact and records each change with its 
         ])
         // Every upload is gone (and Http is faked: nothing was downloaded).
         ->and($driver->uploadedPackages)->toHaveCount(4)
-        ->and($driver->files)->toBe([]);
+        ->and($driver->files)->toBe([])
+        // One light read before in the step, and one before and after in the driver.
+        ->and($driver->stateReads)->toHaveCount(12);
 });
 
 it('does nothing when repeated: the installed version is checked first', function (): void {
     [$run, $context] = updateRun();
     $driver = new FakeDriver;
-    $step = updateSteps($driver)[2];
+    $step = classicStep($driver);
 
     $first = $step->run($context);
     $second = $step->run($context);
@@ -159,12 +168,39 @@ it('does nothing when repeated: the installed version is checked first', functio
         ->and(updateRows($run))->toBe([['plugin', 'classic-editor', '1.6.3', '1.6.4', 'updated']]);
 });
 
+it('never acts on a site that changed since the plan', function (?string $installed): void {
+    [$run, $context] = updateRun();
+    $driver = new FakeDriver;
+    unset($driver->components['plugin:classic-editor']);
+    if ($installed !== null) {
+        $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'classic-editor', $installed));
+    }
+
+    $outcome = classicStep($driver)->run($context);
+
+    expect($outcome->status)->toBe(RunStepStatus::Failed)
+        ->and($outcome->summary)->toContain('cal tornar a planificar')
+        ->and($driver->writeCalls)->toBe([])
+        ->and(updateRows($run))->toBe([['plugin', 'classic-editor', $installed ?? '1.6.3', $installed, 'failed']]);
+})->with(['newer' => '1.7.0', 'older' => '1.5.0', 'removed' => null]);
+
+it('fails without uploading when the run holds no analysed artifact', function (): void {
+    $run = Run::factory()->create(['site_id' => Site::factory()]);
+    $driver = new FakeDriver;
+
+    $outcome = classicStep($driver)->run(new StepContext($run, false));
+
+    expect($outcome->status)->toBe(RunStepStatus::Failed)
+        ->and($outcome->summary)->toContain('cap artefacte analitzat per a plugin «classic-editor» 1.6.4 en aquesta execució')
+        ->and($driver->writeCalls)->toBe([]);
+});
+
 it('fails when the site ends up with another version than the target', function (): void {
     [$run, $context] = updateRun();
     $driver = new FakeDriver;
     $driver->installsVersion = '1.6.3-beta';
 
-    $outcome = updateSteps($driver)[2]->run($context);
+    $outcome = classicStep($driver)->run($context);
 
     expect($outcome->status)->toBe(RunStepStatus::Failed)
         ->and($outcome->summary)->toContain('classic-editor')
@@ -177,12 +213,12 @@ it('verifies the artifact right before the upload and refuses changed bytes', fu
     file_put_contents($artifacts['classic-editor']->path, 'tampered after the analysis');
     $driver = new FakeDriver;
 
-    $outcome = updateSteps($driver)[2]->run($context);
+    $outcome = classicStep($driver)->run($context);
 
     expect($outcome->status)->toBe(RunStepStatus::Failed)
         ->and($driver->writeCalls)->toBe([])
         ->and($driver->uploadedPackages)->toBe([])
-        ->and($driver->installedComponents()->find(ComponentType::Plugin, 'classic-editor')?->version)->toBe('1.6.3')
+        ->and($driver->installedState(ComponentType::Plugin, 'classic-editor')?->version)->toBe('1.6.3')
         ->and(updateRows($run))->toBe([['plugin', 'classic-editor', '1.6.3', '1.6.3', 'failed']]);
 });
 
@@ -192,7 +228,7 @@ it('removes the upload when the installer fails, and keeps secrets out of the re
     $driver = new FakeDriver;
     $driver->installFailure = new RemoteCommandFailed('Error: could not unzip with key licence-s3cr3t-0001');
 
-    $outcome = updateSteps($driver)[2]->run($context);
+    $outcome = classicStep($driver)->run($context);
     $row = $run->changes()->sole();
 
     expect($outcome->status)->toBe(RunStepStatus::Failed)
@@ -203,43 +239,12 @@ it('removes the upload when the installer fails, and keeps secrets out of the re
         ->and($row->reason_detail)->not->toContain('licence-s3cr3t-0001');
 });
 
-it('fails without touching the site when the fresh inventory does not offer the update', function (): void {
-    [$run] = updateRun();
-    $driver = new FakeDriver;
-
-    $outcome = updateSteps($driver)[2]->run(new StepContext($run, false, []));
-
-    expect($outcome->status)->toBe(RunStepStatus::Failed)
-        ->and($outcome->summary)->toContain("No hi ha l'actualització")
-        ->and($driver->writeCalls)->toBe([]);
-});
-
-it('updates the translations, recording each one, and fails if one stays pending', function (): void {
+it('records the change as failed on a timeout or an unexpected error, and lets it through', function (): void {
     [$run, $context] = updateRun();
     $driver = new FakeDriver;
-    $driver->translationUpdates = [
-        ['kind' => 'core', 'slug' => 'wordpress', 'language' => 'ca'],
-        ['kind' => 'plugin', 'slug' => 'woocommerce', 'language' => 'ca'],
-    ];
-    $steps = updateSteps($driver);
-    $translations = $steps[count($steps) - 1];
+    $driver->installFailure = new StepTimedOut('step timed out');
 
-    $done = $translations->run($context);
-    $again = $translations->run($context);
-
-    expect($done->status)->toBe(RunStepStatus::Succeeded)
-        ->and($done->summary)->toBe('2 traduccions actualitzades.')
-        ->and($again->summary)->toBe('Cap traducció pendent.')
-        ->and(updateRows($run))->toBe([
-            ['translation', 'core:ca', null, null, 'updated'],
-            ['translation', 'plugin:woocommerce:ca', null, null, 'updated'],
-        ]);
-
-    $driver->translationUpdates = [['kind' => 'theme', 'slug' => 'storefront', 'language' => 'ca']];
-    $driver->translationsStuck = true;
-    $stuck = $translations->run($context);
-
-    expect($stuck->status)->toBe(RunStepStatus::Failed)
-        ->and($stuck->summary)->toContain('theme:storefront:ca')
-        ->and($run->changes()->where('slug', 'theme:storefront:ca')->value('result'))->toBe(ChangeResult::Failed);
+    expect(fn () => classicStep($driver)->run($context))->toThrow(StepTimedOut::class)
+        ->and(updateRows($run))->toBe([['plugin', 'classic-editor', '1.6.3', null, 'failed']])
+        ->and($driver->files)->toBe([]);
 });

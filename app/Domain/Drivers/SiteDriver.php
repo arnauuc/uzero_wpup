@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Domain\Drivers;
 
+use App\Domain\Drivers\Data\AppliedUpdate;
 use App\Domain\Drivers\Data\CommandResult;
+use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\Data\LogCursor;
 use App\Domain\Drivers\Data\PhpRuntime;
@@ -15,6 +17,7 @@ use App\Domain\Drivers\Data\WorkArea;
 use App\Domain\Drivers\Data\WorkFile;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\WorkFileNotFound;
+use App\Enums\ComponentType;
 
 /**
  * The only way the orchestrator talks to a site (AGENTS.md). Implementations:
@@ -70,6 +73,15 @@ interface SiteDriver
      * @throws DriverException
      */
     public function installedComponents(): InstalledComponents;
+
+    /**
+     * One component as installedComponents() would report it, read alone
+     * (one light query): core (slug "wordpress"), WooCommerce, a plugin or a
+     * theme. Null when it is not installed.
+     *
+     * @throws DriverException including for another component type
+     */
+    public function installedState(ComponentType $type, string $slug): ?ComponentVersion;
 
     /**
      * Runs WP-CLI with the domain's PHP binary. $args are passed as separate,
@@ -152,12 +164,14 @@ interface SiteDriver
      *
      * - Idempotent: if the target version is installed it uploads nothing and
      *   changes nothing (a resumed step calls it again).
-     * - The local file must match $package's size and SHA-256 before anything
-     *   is uploaded; the upload is checked again on the site.
+     * - The caller verifies the local file right before (ArtifactStore::verify());
+     *   the bytes that reach the site are checked there against $package's
+     *   size and SHA-256 before installing (IntegrityCheckFailed otherwise).
      * - The upload is a plain name of the work directory matching
-     *   PACKAGE_TEMP_PATTERN (random, private, outside the docroot), always
-     *   removed afterwards, also on failure; leftovers of a dead attempt are
-     *   removed before a new upload.
+     *   PACKAGE_TEMP_PATTERN (random, private, outside the docroot), removed
+     *   afterwards, also on failure. A failed removal never hides the result:
+     *   it is logged and the file is left to SiteLocalTarget::purgeStale();
+     *   leftovers of a dead attempt are also removed before a new upload.
      * - Installed with the component's own installer, overwriting the files,
      *   never activating nor deactivating anything: the activation state after
      *   is the one before, or it fails.
@@ -169,7 +183,7 @@ interface SiteDriver
      *
      * @throws DriverException including IntegrityCheckFailed when the bytes do not match
      */
-    public function applyUpdate(UpdatePackage $package): CommandResult;
+    public function applyUpdate(UpdatePackage $package): AppliedUpdate;
 
     /**
      * @throws DriverException

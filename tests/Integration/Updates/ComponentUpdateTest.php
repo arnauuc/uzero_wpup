@@ -7,7 +7,6 @@ use App\Domain\Artifacts\PackageSource;
 use App\Domain\Artifacts\PackageUrlGuard;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\DriverFactory;
-use App\Domain\Inventory\PendingUpdate;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Planning\UpdatePlan;
@@ -18,7 +17,6 @@ use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Enums\RunStepStatus;
 use App\Models\Run;
-use App\Models\SiteSnapshot;
 use Illuminate\Support\Facades\Http;
 use Tests\Contracts\SiteDriverContract;
 use Tests\Support\Fixtures;
@@ -62,11 +60,9 @@ it('updates an active plugin from its artifact on wp83, keeping it active, idemp
         copy($new, $temporary);
         $source = PackageSource::create(ComponentType::Plugin, 'wpup-contract-plugin', '1.1.0', 'https://updates.example.com/wpup-contract-plugin.zip', app(PackageUrlGuard::class));
         $store->commit($run->id, $source, $temporary, (string) hash_file('sha256', $new), (int) filesize($new));
-        $pending = new PendingUpdate('plugin', 'wpup-contract-plugin', null, '1.0.0', '1.1.0', 'updates.example.com', null, null, null, PendingUpdate::SOURCE_TRANSIENT, true);
-        $snapshot = SiteSnapshot::factory()->create(['site_id' => $site->id, 'run_id' => $run->id, 'pending_updates' => [$pending->toArray()]]);
         $change = new PlannedChange(ComponentType::Plugin, 'wpup-contract-plugin', '1.0.0', '1.1.0', PlanAction::Update);
         $step = app(UpdateSteps::class)->for(new UpdatePlan('8.3', PhpVersionSource::PleskHandler, true, null, [$change]))[0];
-        $context = new StepContext($run, false, ['inventory' => ['snapshot_id' => $snapshot->id]]);
+        $context = new StepContext($run, false);
 
         $first = $step->run($context);
         $second = $step->run($context);

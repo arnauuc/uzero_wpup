@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Support;
 
+use App\Domain\Drivers\Data\AppliedUpdate;
 use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
@@ -178,11 +179,8 @@ class FakeDriver implements SiteDriver
     /** The version applyUpdate() really installs; null: the target (a package with another version inside). */
     public ?string $installsVersion = null;
 
-    /** @var list<array{kind: string, slug: string, language: string}> translations with an update available */
-    public array $translationUpdates = [];
-
-    /** Translations `wp language … update` does not manage to update. */
-    public bool $translationsStuck = false;
+    /** @var list<string> every installedState() read, "type:slug" */
+    public array $stateReads = [];
 
     /** @var list<list<string>> every WP-CLI call, for assertions */
     public array $wpCalls = [];
@@ -307,11 +305,6 @@ class FakeDriver implements SiteDriver
             count($args) === 4 && $args[0] === 'option' && $args[1] === 'update' => $this->updateOption($args[2], $args[3]),
             count($args) === 2 && $args[0] === 'eval' && preg_match('/^error_log\("(.*)"\);$/', $args[1], $m) === 1 => $this->logLine($m[1]),
             count($args) === 3 && $args[0] === 'plugin' && in_array($args[1], ['activate', 'deactivate'], true) => $this->togglePlugin($args[2], $args[1] === 'activate'),
-            count($args) >= 3 && $args[0] === 'language' && $args[2] === 'list' => $this->ok((string) json_encode(array_values(array_map(
-                static fn (array $t): array => [...($t['kind'] === 'core' ? [] : [$t['kind'] => $t['slug']]), 'language' => $t['language'], 'status' => 'installed', 'update' => 'available'],
-                array_filter($this->translationUpdates, static fn (array $t): bool => $t['kind'] === $args[1]),
-            )))),
-            count($args) >= 3 && $args[0] === 'language' && $args[2] === 'update' => $this->updateTranslations($args[1]),
             default => new CommandResult(1, '', 'Error: FakeDriver does not support: '.implode(' ', $args)."\n", 1),
         };
     }
@@ -348,16 +341,6 @@ class FakeDriver implements SiteDriver
         $this->addComponent(new ComponentVersion($plugin->type, $plugin->slug, $plugin->version, $active, $plugin->title));
 
         return $this->ok("Success: done.\n");
-    }
-
-    private function updateTranslations(string $kind): CommandResult
-    {
-        $this->writeCalls[] = "language {$kind} update";
-        if (! $this->translationsStuck) {
-            $this->translationUpdates = array_values(array_filter($this->translationUpdates, static fn (array $t): bool => $t['kind'] !== $kind));
-        }
-
-        return $this->ok("Success: Translations updated.\n");
     }
 
     /**
@@ -435,16 +418,32 @@ class FakeDriver implements SiteDriver
         return $this->store($remotePath, (string) file_get_contents($localPath));
     }
 
-    public function applyUpdate(UpdatePackage $package): CommandResult
+    public function installedState(ComponentType $type, string $slug): ?ComponentVersion
+    {
+        $this->stateReads[] = "{$type->value}:{$slug}";
+        if ($this->installedFailure !== null) {
+            throw $this->installedFailure;
+        }
+
+        return match ($type) {
+            ComponentType::Core => new ComponentVersion(ComponentType::Core, 'wordpress', $this->coreVersion),
+            ComponentType::Woocommerce, ComponentType::Plugin, ComponentType::Theme => $this->components["{$type->value}:{$slug}"] ?? null,
+            default => throw new DriverException("El driver no llegeix components de tipus «{$type->value}» un per un."),
+        };
+    }
+
+    public function applyUpdate(UpdatePackage $package): AppliedUpdate
     {
         if (! in_array($package->type, [ComponentType::Core, ComponentType::Woocommerce, ComponentType::Plugin, ComponentType::Theme], true)) {
             throw new DriverException("El driver no instal·la paquets de tipus «{$package->type->value}».");
         }
         $key = $package->type->value.':'.$package->slug;
-        $before = $package->type === ComponentType::Core ? $this->coreVersion : ($this->components[$key]->version ?? null);
-        if ($before === $package->targetVersion) {
-            return $this->ok("{$package->slug} ja és a la versió {$package->targetVersion}.\n");
+        $before = $this->installedState($package->type, $package->slug);
+        if ($before?->version === $package->targetVersion) {
+            return new AppliedUpdate($this->ok("{$package->slug} ja és a la versió {$package->targetVersion}.\n"), $before, true);
         }
+
+        // As the bytes that reach the site are checked there.
 
         $content = is_file($package->localPath) ? (string) file_get_contents($package->localPath) : '';
         if (! hash_equals($package->sha256, hash('sha256', $content)) || strlen($content) !== $package->sizeBytes) {
@@ -473,7 +472,7 @@ class FakeDriver implements SiteDriver
             throw new RemoteCommandFailed("No s'ha pogut instal·lar {$package->slug} {$package->targetVersion} (ara: «{$installed}»).");
         }
 
-        return $this->ok("Success: {$package->slug} {$package->targetVersion}\n");
+        return new AppliedUpdate($this->ok("Success: {$package->slug} {$package->targetVersion}\n"), $this->installedState($package->type, $package->slug) ?? throw new RemoteCommandFailed('El component no és al lloc.'), false);
     }
 
     public function setMaintenanceMode(bool $enabled): void

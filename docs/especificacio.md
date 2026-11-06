@@ -83,9 +83,7 @@ Una actualització només s'aplica si supera les tres capes; si no, queda omesa 
 2. **Anàlisi estàtica:** el paquet nou es descarrega al servidor de l'eina i es passa per PHPCompatibility amb `testVersion` igual al PHP del lloc. Un error bloqueja l'actualització; els avisos van a l'informe.
 3. **Execució real:** després d'actualitzar, la verificació revisa el log d'errors de PHP i els fatals. Qualsevol fatal nou dispara el rollback.
 
-Els paquets descarregats en el pas 2 són els mateixos que s'instal·len: es guarden com a artefactes de l'execució amb el seu checksum. Així el staging i la producció reben exactament el mateix codi. El driver puja l'artefacte (comprovat just abans) a un fitxer temporal privat del directori de treball del lloc, l'instal·la amb l'instal·lador del component sense canviar-ne l'activació i l'esborra sempre, també si falla. Cada component és un pas idempotent: si ja té la versió objectiu no fa res, i després d'instal·lar comprova que el lloc tingui aquesta versió. Cada canvi queda a `run_changes` amb la versió d'abans i la de després.
-
-**Traduccions (excepció explícita):** les traduccions del core, dels plugins i dels temes s'actualitzen amb `wp language … update`, que les descarrega de WordPress.org des del mateix lloc. No són paquets de codi (són fitxers `.po`, `.mo`, `.json` i `.l10n.php`), l'anàlisi de compatibilitat no hi té res a comprovar i l'eina no les guarda com a artefactes.
+Els paquets descarregats en el pas 2 són els mateixos que s'instal·len: es guarden com a artefactes de l'execució amb el seu checksum. Així el staging i la producció reben exactament el mateix codi.
 
 Context: WordPress 7.0 exigeix PHP 7.4 com a mínim, i WooCommerce 11.6 (febrer de 2027) exigirà PHP 8.1. Els llocs per sota d'aquests mínims quedaran congelats en branques antigues, i l'informe ho ha de destacar.
 

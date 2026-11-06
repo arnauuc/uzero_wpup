@@ -47,7 +47,7 @@ use App\Models\SiteSnapshot;
 final readonly class UpdatePlanner
 {
     /** Update order; a safety rule, not configuration. */
-    public const array ORDER = [ComponentType::Core, ComponentType::Woocommerce, ComponentType::Plugin, ComponentType::Theme, ComponentType::Translation];
+    private const array ORDER = [ComponentType::Core, ComponentType::Woocommerce, ComponentType::Plugin, ComponentType::Theme, ComponentType::Translation];
 
     /** Note on an update whose "Requires Plugins" comes from the installed version. */
     public const string INFERRED_PLUGINS = "Dependències deduïdes de la versió instal·lada: no s'han pogut confirmar les de la versió nova.";
