@@ -9,9 +9,11 @@ use App\Console\Concerns\PrintsRunHeader;
 use App\Console\Concerns\SelectsSites;
 use App\Console\WpupCommand;
 use App\Domain\Identity\Ability;
+use App\Domain\Planning\PlannedChange;
 use App\Domain\Planning\PlanReport;
 use App\Domain\Planning\PlanRow;
 use App\Enums\RunType;
+use App\Enums\SkipReason;
 use App\Models\Run;
 
 /**
@@ -64,6 +66,20 @@ final class PlanCommand extends WpupCommand
         return $this->exitCodeWithSkipped($this->launchRuns(RunType::Plan, $active, [], null, $present));
     }
 
+    /**
+     * Why it is skipped, or the note on an update.
+     */
+    private static function reason(PlannedChange $change): string
+    {
+        $label = $change->reason?->label();
+
+        return match (true) {
+            $label === null => $change->detail ?? '',
+            $change->detail === null => $label,
+            default => "{$label} — {$change->detail}",
+        };
+    }
+
     private function printRow(PlanRow $row): void
     {
         $this->printRunHeader($row->site, $row->url, $row->runId, $row->runStatus, $row->failure, 'El pla');
@@ -75,6 +91,7 @@ final class PlanCommand extends WpupCommand
 
         $this->line('PHP '.$plan->phpVersion.' ('.$plan->phpSource->value.')'.($plan->phpVerified ? '' : ': no verificat pel web, és el del CLI'));
         $this->line('Bloquejat: '.($plan->blockedReason === null ? 'no' : "sí: {$plan->blockedReason}"));
+        $this->line('Cal staging primer: '.($plan->requiresStaging() ? "sí: els canvis que l'exigeixen s'ometen fins a F7" : 'no'));
 
         if ($plan->changes === []) {
             $this->line('No hi ha cap actualització pendent.');
@@ -82,13 +99,26 @@ final class PlanCommand extends WpupCommand
             return;
         }
 
-        $this->table(['Component', 'Actual', 'Objectiu', 'Acció', 'Motiu'], array_map(static fn ($c): array => [
-            "{$c->type->value}:{$c->slug}",
+        $this->table(['Component', 'Actual', 'Objectiu', 'Acció', 'Motiu'], array_map(static fn (PlannedChange $c): array => [
+            "{$c->type->value}:{$c->slug}".($c->major ? ' (major)' : ''),
             $c->currentVersion,
             $c->targetVersion,
             $c->action->label(),
-            $c->reason === null ? '' : $c->reason->label().($c->detail === null ? '' : " — {$c->detail}"),
+            self::reason($c),
         ], $plan->changes));
         $this->line($plan->summary().'.');
+
+        $quarantined = array_filter($plan->changes, static fn (PlannedChange $c): bool => $c->reason === SkipReason::Quarantine);
+        if ($quarantined !== []) {
+            $this->line('En quarantena: '.self::names($quarantined).'.');
+        }
+    }
+
+    /**
+     * @param  array<PlannedChange>  $changes
+     */
+    private static function names(array $changes): string
+    {
+        return implode(', ', array_map(static fn (PlannedChange $c): string => $c->slug.($c->quarantineDaysLeft === null ? '' : " ({$c->quarantineDaysLeft} d)"), $changes));
     }
 }

@@ -158,3 +158,33 @@ it('fails when every named site is inactive', function (): void {
 
     expect($exit)->toBe(1)->and(Artisan::output())->toContain('antic: inactiu, no es planifica.')->and(Run::query()->count())->toBe(0);
 });
+
+it('shows quarantine, majors and mandatory staging', function (): void {
+    Site::factory()->create(['name' => 'politica', 'url' => 'https://politica.test']);
+    app(PipelineResolver::class)->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
+        new ScriptedReadOnlyStep('plan', static function (): StepOutcome {
+            $plan = new UpdatePlan('8.3.10', PhpVersionSource::HttpProbe, true, null, [
+                new PlannedChange(ComponentType::Plugin, 'akismet', '5.3', '5.4', PlanAction::Skip, SkipReason::Quarantine, 'Falten 5 dies.', quarantineDaysLeft: 5),
+                new PlannedChange(ComponentType::Plugin, 'big', '2.9', '3.0', PlanAction::Skip, SkipReason::MajorRequiresStaging, 'Canvi major.', major: true),
+            ]);
+
+            return StepOutcome::succeeded($plan->summary(), '', $plan->toArray());
+        }),
+    ]));
+
+    Artisan::call('plan', ['sites' => ['politica'], '--wait' => true]);
+
+    expect(Artisan::output())
+        ->toContain("Cal staging primer: sí: els canvis que l'exigeixen s'ometen fins a F7")
+        ->toContain('| plugin:akismet     | 5.3    | 5.4      | ometre | en quarantena — Falten 5 dies.')
+        ->toContain('| plugin:big (major) | 2.9    | 3.0      | ometre | major pendent: cal staging (F7) — Canvi major.')
+        ->toContain('En quarantena: akismet (5 d).');
+});
+
+it('says when the plan does not need staging', function (): void {
+    Artisan::call('plan', ['sites' => ['botiga-a'], '--wait' => true]);
+
+    // The scripted plan's major skip carries no major flag (as plans stored before UZEROWPUP-127).
+    $output = Artisan::output();
+    expect($output)->toContain('Cal staging primer: no');
+});
