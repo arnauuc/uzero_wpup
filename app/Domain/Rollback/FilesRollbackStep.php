@@ -7,10 +7,12 @@ namespace App\Domain\Rollback;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\PostRestoreCheckFailed;
+use App\Domain\Backups\RestoreMaintenanceStep;
 use App\Domain\Backups\RestoreRefused;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\SiteRestore;
 use App\Domain\Drivers\Exceptions\DriverException;
+use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
 use App\Domain\Runs\Exceptions\RunException;
@@ -34,23 +36,28 @@ use Throwable;
  * files rollback is always safe (spec, "Rollback i comandes noves"): the
  * database is never touched here (UZEROWPUP-59).
  *
- * - The code archive of the run's point: the site-local copy first, then the
- *   external ones, the first whose destination still holds its registered
- *   SHA-256 (SiteRestore::verify); the driver checks it again on the site
- *   before using it.
+ * - The code archive of the run's point, the site-local copy first, then the
+ *   external ones. Each one is checked once, by SiteRestore::restore(): the
+ *   driver checks a site-local copy's size and SHA-256 on the site, and an
+ *   external one is hashed while it is downloaded. A copy that fails that
+ *   check changed nothing, so the next one is tried.
  * - Exact within the archive's scope: SiteDriver::restoreFiles() mirrors it
  *   with deletion, so components the update removed come back and those it
  *   added go, and nothing the archive excluded (uploads unless the profile
  *   included them, caches, the work directory) is touched.
- * - Afterwards the versions on the site must be those from before the update
- *   (RestoredState); any difference fails the step loudly. Only then are the
- *   applied changes marked reverted (RevertedChanges).
+ * - A failure during the mirror may leave the site half restored: the step
+ *   fails saying so, never "nothing restored".
+ * - Afterwards the components the update touched must be back at their
+ *   versions from before (RestoredState); any difference fails the step
+ *   loudly. Only then are the applied changes marked reverted (RevertedChanges).
  * - Idempotent: a retried step mirrors the same archive again and checks
- *   again. The maintenance mode is left as it was (the mirror removes
- *   `.maintenance`), so a shop does not take orders between this step and
- *   the database rollback.
+ *   again.
+ * - Maintenance mode: the mirror removes `.maintenance`. If it was on, or its
+ *   state could not be told, it is switched on again once the mirror was
+ *   attempted, whatever happens, so a shop does not take orders before the
+ *   database rollback.
  *
- * Every attempt is audited (`rollback.files`).
+ * Every attempt is audited (`rollback.files`; restored: no, unknown or yes).
  */
 final readonly class FilesRollbackStep implements Step
 {
@@ -109,7 +116,7 @@ final readonly class FilesRollbackStep implements Step
         if ($site === null) {
             return StepOutcome::failed("L'execució #{$source->id} no té cap lloc: no hi ha res per restaurar.");
         }
-        $audit = ['run_id' => $context->run->id, 'source_run_id' => $source->id, 'backup_id' => null, 'restored' => false];
+        $audit = ['run_id' => $context->run->id, 'source_run_id' => $source->id, 'backup_id' => null, 'restored' => 'no'];
 
         try {
             $driver = ($this->driverFor)($site, $actor);
@@ -118,18 +125,16 @@ final readonly class FilesRollbackStep implements Step
         }
 
         $warnings = [];
+        $maintenance = null;
 
         try {
-            [$row, $warnings] = $this->archive($site, $source, $actor);
-            $audit['backup_id'] = $row->id;
-            $wasMaintenance = $this->maintenanceActive($driver, $warnings);
-
-            $this->restore->purgeTemporaries($driver);
-            $this->restore->restore($site, $driver, $row, $actor);
-            $audit['restored'] = true;
-            if ($wasMaintenance) {
-                $this->keepMaintenance($driver, $warnings);
+            $candidates = $this->candidates($site, $source);
+            $maintenance = RestoreMaintenanceStep::state($driver);
+            if ($maintenance === null) {
+                $warnings[] = "No s'ha pogut saber si el mode manteniment era actiu: s'activarà després de restaurar els fitxers. Revisa'l a mà.";
             }
+            $this->restore->purgeTemporaries($driver);
+            $row = $this->mirror($site, $driver, $candidates, $actor, $audit, $warnings);
 
             try {
                 $installed = $driver->installedComponents();
@@ -147,20 +152,23 @@ final readonly class FilesRollbackStep implements Step
             $reverted = $this->changes->mark($source);
         } catch (RunException $e) {
             // The run itself was stopped (timeout, claim lost): audited, never swallowed.
+            $this->keepMaintenance($driver, $maintenance, $audit, $context->run->id, $warnings);
             $this->record($actor, $site, AuditResult::Failure, $audit + ['reason' => 'run stopped']);
 
             throw $e;
         } catch (RollbackRefused|RestoreRefused|DriverException|PostRestoreCheckFailed $e) {
+            $this->keepMaintenance($driver, $maintenance, $audit, $context->run->id, $warnings);
             $reason = $this->redactor->redact($e->getMessage());
             $this->record($actor, $site, AuditResult::Failure, $audit + ['reason' => $reason]);
-            $done = $audit['restored'] ? " Els fitxers ja s'han restaurat des de la còpia #{$audit['backup_id']}: revisa el lloc." : " No s'ha restaurat res.";
 
-            return StepOutcome::failed($reason.$done, implode("\n", $warnings));
+            return StepOutcome::failed($reason.$this->done($audit), implode("\n", $warnings));
         } catch (Throwable $e) {
+            $this->keepMaintenance($driver, $maintenance, $audit, $context->run->id, $warnings);
             $this->record($actor, $site, AuditResult::Failure, $audit + ['exception' => $e::class]);
 
             throw $e;
         }
+        $this->keepMaintenance($driver, $maintenance, $audit, $context->run->id, $warnings);
 
         $this->record($actor, $site, AuditResult::Success, $audit + ['reverted_changes' => $reverted]);
 
@@ -173,62 +181,88 @@ final readonly class FilesRollbackStep implements Step
     }
 
     /**
-     * The code archive of the run's point whose destination holds its bytes,
-     * the site-local one first, and a warning for each one skipped.
-     *
-     * @return array{Backup, list<string>}
+     * @return non-empty-list<Backup>
      *
      * @throws RollbackRefused
      */
-    private function archive(Site $site, Run $source, AuditActor $actor): array
+    private function candidates(Site $site, Run $source): array
     {
         try {
-            $request = $this->selection->select($site, (string) $source->id, [], [BackupKind::Files], false);
-            $candidates = $this->selection->candidates($site, $request)[BackupKind::Files->value];
+            return $this->selection->ofPoint($site, (string) $source->id, BackupKind::Files);
         } catch (RestoreRefused $e) {
-            throw new RollbackRefused("L'execució #{$source->id} no té cap còpia dels fitxers utilitzable: {$e->getMessage()}");
+            throw new RollbackRefused("L'execució #{$source->id} no té cap còpia dels fitxers utilitzable: {$e->getMessage()} No s'ha restaurat res.");
         }
+    }
 
+    /**
+     * Mirrors the first candidate whose bytes are the registered ones. A copy
+     * refused by its check changed nothing; any other failure may have.
+     *
+     * @param  non-empty-list<Backup>  $candidates
+     * @param  array<string, mixed>  $audit
+     * @param  list<string>  $warnings
+     *
+     * @throws RollbackRefused when no copy holds its bytes (nothing restored)
+     * @throws DriverException when the mirror failed (the site may be half restored)
+     */
+    private function mirror(Site $site, SiteDriver $driver, array $candidates, AuditActor $actor, array &$audit, array &$warnings): Backup
+    {
         $failures = [];
         foreach ($candidates as $row) {
+            $audit['backup_id'] = $row->id;
+            $audit['restored'] = 'unknown';
+
             try {
-                $this->restore->verify($site, $row, $actor);
-            } catch (RestoreRefused $e) {
-                $failures[] = $e->getMessage();
+                $this->restore->restore($site, $driver, $row, $actor);
+            } catch (RestoreRefused|IntegrityCheckFailed $e) {
+                $audit['restored'] = 'no';
+                $failures[] = "Còpia #{$row->id}: {$this->redactor->redact($e->getMessage())}";
 
                 continue;
             }
+            $audit['restored'] = 'yes';
+            if ($failures !== []) {
+                $warnings[] = implode(' ', $failures)." Es fa servir la còpia #{$row->id} de «".($row->backupTarget->name ?? '?').'».';
+            }
 
-            return [$row, $failures === [] ? [] : [implode(' ', $failures)." Es fa servir la còpia #{$row->id} de «".($row->backupTarget->name ?? '?').'».']];
+            return $row;
         }
 
-        throw new RollbackRefused(implode(' ', $failures).' No es restaura res.');
+        $audit['backup_id'] = null;
+
+        throw new RollbackRefused(implode(' ', $failures).' Cap còpia dels fitxers no té el SHA-256 registrat.');
     }
 
     /**
+     * Once the mirror was attempted (it removes `.maintenance`), the mode is
+     * switched on again if it was on or its state is unknown.
+     *
+     * @param  array<string, mixed>  $audit
      * @param  list<string>  $warnings
      */
-    private function maintenanceActive(SiteDriver $driver, array &$warnings): bool
+    private function keepMaintenance(SiteDriver $driver, ?bool $maintenance, array $audit, int $runId, array &$warnings): void
     {
-        try {
-            return $driver->wp(['maintenance-mode', 'is-active', '--skip-plugins', '--skip-themes'])->successful();
-        } catch (DriverException $e) {
-            $warnings[] = "No s'ha pogut saber si el mode manteniment era actiu: {$this->redactor->redact($e->getMessage())}. Revisa'l a mà.";
-
-            return false;
+        if ($audit['restored'] === 'no' || $maintenance === false) {
+            return;
+        }
+        $warning = RestoreMaintenanceStep::switchTo($driver, true, $this->redactor, $runId);
+        if ($warning !== null) {
+            $warnings[] = $warning;
         }
     }
 
     /**
-     * @param  list<string>  $warnings
+     * @param  array<string, mixed>  $audit
      */
-    private function keepMaintenance(SiteDriver $driver, array &$warnings): void
+    private function done(array $audit): string
     {
-        try {
-            $driver->setMaintenanceMode(true);
-        } catch (DriverException $e) {
-            $warnings[] = "No s'ha pogut tornar a activar el mode manteniment: {$this->redactor->redact($e->getMessage())}. Revisa'l a mà.";
-        }
+        $id = is_int($audit['backup_id']) ? $audit['backup_id'] : '?';
+
+        return match ($audit['restored']) {
+            'yes' => " Els fitxers ja s'han restaurat des de la còpia #{$id}: revisa el lloc.",
+            'unknown' => " La restauració dels fitxers des de la còpia #{$id} s'ha interromput: el lloc pot haver quedat restaurat a mitges. Torna a executar el rollback o restaura la còpia a mà.",
+            default => " No s'ha restaurat res.",
+        };
     }
 
     /**

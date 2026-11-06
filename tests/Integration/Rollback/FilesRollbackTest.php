@@ -13,6 +13,9 @@ use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\DriverFactory;
 use App\Domain\Inventory\SiteInventory;
 use App\Domain\Rollback\RevertedChanges;
+use App\Domain\Rollback\RollbackSteps;
+use App\Domain\Runs\Pipeline;
+use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunEngine;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\AuditChannel;
@@ -65,6 +68,8 @@ it('rolls back the files of an update that broke the site: identical tree and ve
     app(BackupTargetRegistry::class)->register(BackupTargetType::SiteLocal, static fn (BackupTargetRecord $r, Site $s, AuditActor $a): BackupTarget => new SiteLocalTarget(
         app(DriverFactory::class)->forSite($s, $a), app(SecretRedactor::class), app(HttpFactory::class), app(SiteLocalSettings::class)->withRoot($storeRoot), $s->url,
     ));
+    // The `wpup rollback` pipeline is UZEROWPUP-61: here, only the steps this task provides.
+    app(PipelineResolver::class)->register(RunType::Rollback, static fn (): Pipeline => new Pipeline(app(RollbackSteps::class)->steps()));
     $driver = app(DriverFactory::class)->forSite($site, AuditActor::system('tests'));
     $plugins = "{$site->wp_path}/wp-content/plugins";
     // Any other plugin of the fixture (a directory or a single file): the mirror must bring it back.

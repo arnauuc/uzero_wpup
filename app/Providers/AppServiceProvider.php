@@ -391,8 +391,6 @@ class AppServiceProvider extends ServiceProvider
                         $app->make(RunAuthorization::class), $app->make(AuditLogger::class), $app->make(SecretRedactor::class), self::configInt('wpup.backups.restore.step_timeout_seconds')),
                 ]);
             });
-            // `wpup rollback <run>` (UZEROWPUP-57, the command is UZEROWPUP-61): undoes the parent update run.
-            $resolver->register(RunType::Rollback, static fn (): Pipeline => new Pipeline($app->make(RollbackSteps::class)->steps()));
             // The tool's own backup (UZEROWPUP-47): a read-only check (also under --dry-run), then the copy.
             $resolver->register(RunType::ToolBackup, static fn (): Pipeline => new Pipeline([
                 new ToolBackupCheckStep($app->make(ToolBackupService::class), $app->make(RunAuthorization::class), self::configInt('wpup.tool_backup.check_timeout_seconds')),

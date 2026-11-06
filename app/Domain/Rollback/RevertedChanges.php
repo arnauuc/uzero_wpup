@@ -17,7 +17,11 @@ use Carbon\CarbonImmutable;
  */
 final class RevertedChanges
 {
-    /** run_changes.step of the component updates (UpdateChanges::STEP, UZEROWPUP-54). */
+    /**
+     * run_changes.step of the component updates.
+     *
+     * TODO(UZEROWPUP-57): use UpdateChanges::STEP once UZEROWPUP-54 is on main.
+     */
     public const string UPDATE_STEP = 'update';
 
     /**

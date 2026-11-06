@@ -15,12 +15,14 @@ use App\Domain\Backups\SiteRestore;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\Data\RemoteFile;
+use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Inventory\SiteInventory;
 use App\Domain\Rollback\FilesRollbackStep;
 use App\Domain\Rollback\RestoredState;
 use App\Domain\Rollback\RevertedChanges;
 use App\Domain\Rollback\RollbackSteps;
+use App\Domain\Runs\Exceptions\RunException;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunAuthorization;
@@ -113,10 +115,9 @@ function filesRollbackRun(Site $site, Run $update, string $channel = 'cli'): Run
         'actor' => $update->actor, 'channel' => AuditChannel::from($channel)]);
 }
 
-it('registers the rollback pipeline with the files rollback', function (): void {
-    $pipeline = app(PipelineResolver::class)->resolve(Run::factory()->create(['type' => RunType::Rollback]));
-
-    expect(array_map(fn ($s): string => $s->name(), $pipeline->steps))->toBe([FilesRollbackStep::NAME]);
+it('gives the rollback steps for 60 and 61 to compose, without registering a rollback pipeline itself', function (): void {
+    expect(array_map(fn ($s): string => $s->name(), app(RollbackSteps::class)->steps()))->toBe([FilesRollbackStep::NAME])
+        ->and(fn () => app(PipelineResolver::class)->resolve(Run::factory()->create(['type' => RunType::Rollback])))->toThrow(RunException::class);
 });
 
 it('puts back the code of the run: updated, added and removed components, and marks the applied changes reverted', function (): void {
@@ -150,7 +151,7 @@ it('puts back the code of the run: updated, added and removed components, and ma
     $audit = AuditLogEntry::query()->where('action', 'rollback.files')->sole();
     $files = Backup::query()->where('run_id', $update->id)->where('kind', BackupKind::Files)->sole();
     expect($audit->result)->toBe(AuditResult::Success)
-        ->and($audit->context)->toMatchArray(['run_id' => $run->id, 'source_run_id' => $update->id, 'backup_id' => $files->id, 'restored' => true, 'reverted_changes' => 2]);
+        ->and($audit->context)->toMatchArray(['run_id' => $run->id, 'source_run_id' => $update->id, 'backup_id' => $files->id, 'restored' => 'yes', 'reverted_changes' => 2]);
 });
 
 it('is idempotent: running the step again restores and checks again, and marks nothing twice', function (): void {
@@ -231,8 +232,77 @@ it('refuses when the site-local copy no longer holds its bytes and there is no o
     $run = app(RunEngine::class)->execute(filesRollbackRun($site, $update));
 
     expect($run->status)->toBe(RunStatus::Failed)
-        ->and($run->steps()->sole()->error)->toContain('SHA-256')
-        ->and($driver->writeCalls)->not->toContain('restoreFiles');
+        ->and($run->steps()->sole()->error)->toContain('SHA-256')->toContain("No s'ha restaurat res")
+        ->and($driver->writeCalls)->not->toContain('restoreFiles')
+        ->and(AuditLogEntry::query()->where('action', 'rollback.files')->sole()->context)->toMatchArray(['restored' => 'no']);
+});
+
+it('says the site may be half restored when the mirror fails, and switches the maintenance mode on again', function (): void {
+    $driver = new class extends FakeDriver
+    {
+        public function restoreFiles(RemoteFile $archive): void
+        {
+            $this->maintenance = false;
+
+            throw new RemoteCommandFailed('rsync: connexió perduda');
+        }
+    };
+    filesRollbackPipeline($driver);
+    [$site, $update] = filesRollbackUpdate($driver);
+    $driver->maintenance = true;
+
+    $run = app(RunEngine::class)->execute(filesRollbackRun($site, $update));
+
+    expect($run->steps()->sole()->error)->not->toContain("No s'ha restaurat res");
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and($run->steps()->sole()->error)->toContain('a mitges')
+        ->and($driver->maintenance)->toBeTrue()
+        ->and($update->changes()->where('result', ChangeResult::Reverted)->count())->toBe(0)
+        ->and(AuditLogEntry::query()->where('action', 'rollback.files')->sole()->context)->toMatchArray(['restored' => 'unknown']);
+});
+
+it('switches the maintenance mode on after the mirror when its state cannot be told', function (): void {
+    $driver = new FakeDriver;
+    filesRollbackPipeline($driver);
+    [$site, $update] = filesRollbackUpdate($driver);
+    $driver->failingCommands = ['maintenance-mode is-active'];
+
+    $run = app(RunEngine::class)->execute(filesRollbackRun($site, $update));
+
+    expect($run->status)->toBe(RunStatus::Succeeded)
+        ->and($driver->maintenance)->toBeTrue()
+        ->and($run->steps()->sole()->output)->toContain("No s'ha pogut saber si el mode manteniment era actiu");
+});
+
+it('leaves the maintenance mode off when it was off', function (): void {
+    $driver = new FakeDriver;
+    filesRollbackPipeline($driver);
+    [$site, $update] = filesRollbackUpdate($driver);
+
+    expect(app(RunEngine::class)->execute(filesRollbackRun($site, $update))->status)->toBe(RunStatus::Succeeded)
+        ->and($driver->maintenance)->toBeFalse();
+});
+
+it('refuses to undo an update when a later update of the site is still applied', function (): void {
+    $driver = new FakeDriver;
+    filesRollbackPipeline($driver);
+    [$site, $update] = filesRollbackUpdate($driver);
+    $later = Run::factory()->create(['type' => RunType::Update, 'site_id' => $site->id, 'status' => RunStatus::Succeeded]);
+    RunChange::factory()->create(['run_id' => $later->id, 'step' => RevertedChanges::UPDATE_STEP, 'result' => ChangeResult::Updated]);
+    $driver->writeCalls = [];
+
+    $run = app(RunEngine::class)->execute(filesRollbackRun($site, $update));
+
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and($run->steps()->sole()->error)->toContain("l'actualització #{$later->id}")->toContain("Reverteix primer la #{$later->id}")
+        ->and($driver->writeCalls)->toBe([]);
+
+    // Once the later one is undone, the older one can be.
+    $later->changes()->update(['result' => ChangeResult::Reverted->value]);
+    Run::factory()->create(['type' => RunType::Update, 'site_id' => $site->id, 'status' => RunStatus::RolledBack]);
+    Run::factory()->create(['type' => RunType::Update, 'site_id' => $site->id, 'status' => RunStatus::Cancelled]);
+
+    expect(app(RunEngine::class)->execute(filesRollbackRun($site, $update))->status)->toBe(RunStatus::Succeeded);
 });
 
 it('refuses a rollback whose parent is not an update of the same site', function (string $case): void {
@@ -252,19 +322,24 @@ it('refuses a rollback whose parent is not an update of the same site', function
         ->and($driver->components['plugin:classic-editor']->version)->toBe('1.7.0');
 })->with(['no parent', 'not an update', 'other site']);
 
-it('compares with the run inventory: anything missing, added or changed is a difference', function (): void {
+it('checks the components the update touched and the plugins and themes that appeared or disappeared, nothing else', function (): void {
     $before = new SiteSnapshot(['core_version' => '6.8.3', 'plugins' => [['slug' => 'woocommerce', 'version' => '10.1.0', 'type' => 'woocommerce'], ['slug' => 'a', 'version' => '1.0']],
         'themes' => [['slug' => 't', 'version' => '2.0']], 'dropins' => [], 'mu_plugins' => [['slug' => 'm', 'version' => '1']]]);
     $now = new InstalledComponents('6.8.3', '8.3', '10.11', [
         new ComponentVersion(ComponentType::Woocommerce, 'woocommerce', '10.1.0'),
         new ComponentVersion(ComponentType::Plugin, 'a', '1.1'),
         new ComponentVersion(ComponentType::Plugin, 'b', '1.0'),
-        new ComponentVersion(ComponentType::MuPlugin, 'm', '1'),
+        new ComponentVersion(ComponentType::MuPlugin, 'm', '2'),
+        new ComponentVersion(ComponentType::Dropin, 'object-cache.php', '1'),
     ]);
+    $changes = [new RunChange(['component_type' => ComponentType::Plugin, 'slug' => 'a', 'version_before' => '0.9', 'result' => ChangeResult::Updated])];
 
-    expect(RestoredState::differences($now, $before, []))->toBe([
+    // a: the inventory's version wins; m and the drop-in were not touched by the update.
+    expect(RestoredState::differences($now, $before, $changes))->toBe([
         'plugin:a: abans 1.0, ara 1.1.',
         'plugin:b: abans no hi era, ara 1.0.',
         'theme:t: abans 2.0, ara no hi és.',
-    ]);
+    ])
+        ->and(RestoredState::differences($now, null, $changes))->toBe(['plugin:a: abans 0.9, ara 1.1.'])
+        ->and(RestoredState::differences($now, $before, []))->toBe(['plugin:b: abans no hi era, ara 1.0.', 'theme:t: abans 2.0, ara no hi és.']);
 });
