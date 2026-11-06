@@ -90,6 +90,8 @@ use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
+use App\Domain\Updates\UpdateChanges;
+use App\Domain\Updates\UpdateSteps;
 use App\Domain\Vulnerabilities\NoVulnerabilitySource;
 use App\Domain\Vulnerabilities\VulnerabilitySource;
 use App\Enums\BackupTargetType;
@@ -470,6 +472,17 @@ class AppServiceProvider extends ServiceProvider
                 ),
             ]));
         });
+        // The update steps of a plan (UZEROWPUP-54); the update run that uses them is UZEROWPUP-60.
+        // Its step timeout must cover the slowest applyUpdate() of the SSH driver (checked there).
+        $this->app->bind(UpdateSteps::class, static fn (Application $app): UpdateSteps => new UpdateSteps(
+            $app->make(ArtifactStore::class),
+            static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+            $app->make(RunAuthorization::class),
+            $app->make(UpdateChanges::class),
+            $app->make(SecretRedactor::class),
+            self::configInt('wpup.updates.component_timeout_seconds'),
+            $app->make(SshSettings::class)->applyUpdateBudgetSeconds(),
+        ));
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(
             runTimeoutSeconds: self::configInt('wpup.runs.timeout_seconds'),
             heartbeatSeconds: self::configInt('wpup.runs.heartbeat_seconds'),
@@ -485,6 +498,7 @@ class AppServiceProvider extends ServiceProvider
             wpCliPhar: self::configString('wpup.ssh.wp_cli.phar'),
             wpCliSha256: self::configString('wpup.ssh.wp_cli.sha256'),
             stagingDir: self::configString('wpup.backups.staging_dir'),
+            packageTimeoutSeconds: self::configInt('wpup.ssh.package_timeout_seconds'),
         ));
         $this->app->bind(SshKeyManager::class, static fn (Application $app): SshKeyManager => new SshKeyManager(
             $app->make(SecretStore::class),

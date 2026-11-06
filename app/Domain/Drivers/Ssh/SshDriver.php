@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Drivers\Ssh;
 
+use App\Domain\Drivers\Data\AppliedUpdate;
 use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
@@ -29,6 +30,7 @@ use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Support\PrivateDirectory;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /**
@@ -335,30 +337,120 @@ final class SshDriver implements SiteDriver
         return new RemoteFile($remotePath, (int) filesize($localPath), $sha256);
     }
 
-    public function applyUpdate(UpdatePackage $package): CommandResult
+    public function applyUpdate(UpdatePackage $package): AppliedUpdate
     {
-        $this->verify($package->file);
-        $zip = $this->path($package->file->path);
+        $install = $this->installCommand($package);
+        [$before, $beforeStatus] = $this->componentState($package->type, $package->slug);
+        if ($before !== null && $before->version === $package->targetVersion) {
+            return new AppliedUpdate(new CommandResult(0, "{$package->slug} ja és a la versió {$package->targetVersion}.\n", '', 0), $before, true);
+        }
 
-        [$current, $install] = match ($package->type) {
-            ComponentType::Core => [['core', 'version'], ['core', 'update', $zip]],
-            ComponentType::Plugin, ComponentType::Woocommerce => [['plugin', 'get', $package->slug, '--field=version'], ['plugin', 'install', $zip, '--force']],
-            ComponentType::Theme => [['theme', 'get', $package->slug, '--field=version'], ['theme', 'install', $zip, '--force']],
+        // One update at a time per site (lock): a package left here is a dead attempt's.
+        $work = escapeshellarg($this->workDir());
+        $this->mustExec("rm -f -- {$work}/package-*.zip {$work}/package-*.zip.part", "L'esborrat dels paquets antics");
+        $name = 'package-'.bin2hex(random_bytes(8)).'.zip';
+        try {
+            $this->uploadPackage($package, $name);
+            $result = $this->wp([...$install, $this->path($name), ...self::SAFE_MODE], $this->settings->packageTimeoutSeconds);
+        } finally {
+            $this->removeUploadedPackage($name);
+        }
+
+        [$after, $afterStatus] = $this->componentState($package->type, $package->slug);
+        if (! $result->successful() || $after === null || $after->version !== $package->targetVersion) {
+            throw new RemoteCommandFailed("No s'ha pogut instal·lar {$package->slug} {$package->targetVersion} (ara: «".($after->version ?? 'no instal·lat').'»).', $result);
+        }
+        if ($before !== null && $afterStatus !== $beforeStatus) {
+            throw new RemoteCommandFailed("La instal·lació de {$package->slug} n'ha canviat l'estat d'activació (de «{$beforeStatus}» a «{$afterStatus}»).", $result);
+        }
+
+        return new AppliedUpdate($result, $after, false);
+    }
+
+    public function installedState(ComponentType $type, string $slug): ?ComponentVersion
+    {
+        return $this->componentState($type, $slug)[0];
+    }
+
+    /**
+     * Uploads the package to $name (through "$name.part") and checks, on the
+     * site, the bytes that arrived against the package's size and SHA-256:
+     * the local file is not hashed again (the caller has just verified it).
+     */
+    private function uploadPackage(UpdatePackage $package, string $name): void
+    {
+        $part = $this->path($name.'.part');
+        $this->transfer->upload($package->localPath, $part, $this->settings->packageTimeoutSeconds);
+        $stat = $this->statFile($part, true, $name, $this->settings->packageTimeoutSeconds);
+        if ($stat === null || $stat[0] !== $package->sizeBytes || ! hash_equals($package->sha256, (string) $stat[2])) {
+            throw IntegrityCheckFailed::checksumMismatch($name);
+        }
+        $this->mustExec('mv -f -- '.escapeshellarg($part).' '.escapeshellarg($this->path($name)), 'La pujada del paquet');
+    }
+
+    /**
+     * Never hides the install's own result or error: a failed removal is only
+     * logged (exit code or exception class, never output) and the file is left
+     * for SiteLocalTarget::purgeStale() and the next applyUpdate().
+     */
+    private function removeUploadedPackage(string $name): void
+    {
+        try {
+            $result = $this->exec('rm -f -- '.escapeshellarg($this->path($name)).' '.escapeshellarg($this->path($name.'.part')));
+            if (! $result->successful()) {
+                Log::warning('Could not remove an uploaded package from the site; it is left for the stale cleanup.', ['site' => $this->target->label(), 'file' => $name, 'exit_code' => $result->exitCode]);
+            }
+        } catch (DriverException $e) {
+            Log::warning('Could not remove an uploaded package from the site; it is left for the stale cleanup.', ['site' => $this->target->label(), 'file' => $name, 'error' => $e::class]);
+        }
+    }
+
+    /**
+     * The installer of each component type, before the package path. It never
+     * activates anything. The core keeps its target, so WP-CLI removes the
+     * files the new release no longer has.
+     *
+     * @return list<string>
+     */
+    private function installCommand(UpdatePackage $package): array
+    {
+        return match ($package->type) {
+            ComponentType::Core => ['core', 'update', '--version='.$package->targetVersion],
+            ComponentType::Plugin, ComponentType::Woocommerce => ['plugin', 'install', '--force'],
+            ComponentType::Theme => ['theme', 'install', '--force'],
             default => throw new DriverException("El driver SSH no instal·la paquets de tipus «{$package->type->value}»."),
         };
+    }
 
-        $installed = $this->wp($current);
-        if ($installed->successful() && trim($installed->stdout) === $package->targetVersion) {
-            return new CommandResult(0, "{$package->slug} ja és a la versió {$package->targetVersion}.\n", '', $installed->durationMs);
+    /**
+     * The component as installedComponents() reports it, with its raw WP-CLI
+     * status (to compare activation exactly), or [null, ''] when it is not
+     * installed. One WP-CLI call.
+     *
+     * @return array{ComponentVersion|null, string}
+     */
+    private function componentState(ComponentType $type, string $slug): array
+    {
+        if ($type === ComponentType::Core) {
+            $version = trim($this->wpOk(['core', 'version', ...self::SAFE_MODE], 'La lectura de la versió del core')->stdout);
+
+            return [new ComponentVersion(ComponentType::Core, 'wordpress', $version), ''];
+        }
+        $kind = match ($type) {
+            ComponentType::Plugin, ComponentType::Woocommerce => 'plugin',
+            ComponentType::Theme => 'theme',
+            default => throw new DriverException("El driver SSH no llegeix components de tipus «{$type->value}» un per un."),
+        };
+        foreach ($this->wpJson([$kind, 'list', '--name='.$slug, '--fields=name,version,status,title', '--format=json', '--skip-update-check', ...self::SAFE_MODE]) as $row) {
+            if (self::field($row, 'name') === $slug) {
+                $status = self::field($row, 'status');
+                $active = $kind === 'theme' ? $status !== 'inactive' : str_starts_with($status, 'active');
+
+                return [new ComponentVersion($type, $slug, self::field($row, 'version'), $active, self::field($row, 'title')), $status];
+            }
         }
 
-        $result = $this->wp($install, $this->settings->transferTimeoutSeconds);
-        $after = trim($this->wp($current)->stdout);
-        if (! $result->successful() || $after !== $package->targetVersion) {
-            throw new RemoteCommandFailed("No s'ha pogut instal·lar {$package->slug} {$package->targetVersion} (ara: «{$after}»).", $result);
-        }
-
-        return $result;
+        return [null, ''];
     }
 
     public function setMaintenanceMode(bool $enabled): void
@@ -657,12 +749,12 @@ final class SshDriver implements SiteDriver
      *
      * @return array{int, int, string|null}|null
      */
-    private function statFile(string $absolute, bool $withChecksum, string $name): ?array
+    private function statFile(string $absolute, bool $withChecksum, string $name, ?int $timeoutSeconds = null): ?array
     {
         $result = $this->mustExec(
             FileOutput::statCommand(escapeshellarg($absolute), $withChecksum),
             "La lectura de «{$name}»",
-            $withChecksum ? $this->settings->transferTimeoutSeconds : null,
+            $timeoutSeconds ?? ($withChecksum ? $this->settings->transferTimeoutSeconds : null),
         );
 
         return FileOutput::stat($result->stdout, $withChecksum, $name);

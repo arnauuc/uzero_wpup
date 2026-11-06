@@ -111,6 +111,17 @@ return [
     ],
 
     /*
+     * Applying the updates (UZEROWPUP-54): one step per component, installed
+     * from the run's analysed artifact. Step timeout in seconds; it must be at
+     * least SshSettings::applyUpdateBudgetSeconds() (connect + 3 ×
+     * ssh.package_timeout_seconds + 6 × ssh.command_timeout_seconds, 3615 s
+     * by default), checked when the steps are built.
+     */
+    'updates' => [
+        'component_timeout_seconds' => 3900,
+    ],
+
+    /*
      * Compatibility, layer 2 (UZEROWPUP-50): every new plugin or theme package
      * goes through PHP_CodeSniffer + PHPCompatibility with testVersion equal to
      * the site's PHP minor. An error blocks that component's update; warnings go
@@ -512,6 +523,8 @@ return [
         'connect_timeout_seconds' => 15,
         'command_timeout_seconds' => 300,
         'transfer_timeout_seconds' => 3600,
+        // Each of the upload, the on-site checksum and the install of a package (UZEROWPUP-54).
+        'package_timeout_seconds' => 600,
         'work_dir' => '.wpup',
         'wp_cli' => [
             'phar' => storage_path('app/tools/wp-cli-2.12.0.phar'),

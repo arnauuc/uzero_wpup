@@ -220,7 +220,8 @@ final class SiteLocalTarget implements BackupTarget
     /**
      * Removes this target's own temporary files older than $olderThanSeconds
      * that a crash left behind: uploads under the work directory
-     * ("store-….part"), temporary files of a restore (SiteDriver::RESTORE_TEMP_PATTERN)
+     * ("store-….part"), temporary files of a restore (SiteDriver::RESTORE_TEMP_PATTERN),
+     * packages an interrupted update left (SiteDriver::PACKAGE_TEMP_PATTERN, UZEROWPUP-54)
      * and canaries in the store. Nothing else is touched.
      * Returns how many were removed.
      *
@@ -235,7 +236,8 @@ final class SiteLocalTarget implements BackupTarget
             foreach ($this->driver->listWorkFiles('') as $file) {
                 $canary = str_starts_with($file->path, $this->settings->root.'/')
                     && preg_match(self::CANARY_PATTERN, substr($file->path, strlen($this->settings->root) + 1)) === 1;
-                $temporary = preg_match(self::TEMP_PATTERN, $file->path) === 1 || preg_match(SiteDriver::RESTORE_TEMP_PATTERN, $file->path) === 1;
+                $temporary = preg_match(self::TEMP_PATTERN, $file->path) === 1 || preg_match(SiteDriver::RESTORE_TEMP_PATTERN, $file->path) === 1
+                    || preg_match(SiteDriver::PACKAGE_TEMP_PATTERN, $file->path) === 1;
                 if (($canary || $temporary) && $file->modifiedAt !== null && $file->modifiedAt < $cutoff) {
                     $this->driver->removeWorkFile($file->path);
                     $removed++;
