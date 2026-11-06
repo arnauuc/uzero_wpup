@@ -62,5 +62,7 @@ header('X-Robots-Tag: noindex');
 echo json_encode(array(
     'php_version' => PHP_VERSION,
     'sapi' => PHP_SAPI,
+    // The web's own error_log (UZEROWPUP-56): the CLI may be configured differently.
+    'error_log' => (string) ini_get('error_log'),
     'extensions' => $wpupExtensions,
 ));
