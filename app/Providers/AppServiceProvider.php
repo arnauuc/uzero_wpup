@@ -61,6 +61,8 @@ use App\Domain\Inventory\SitePrerequisites;
 use App\Domain\Inventory\SiteState;
 use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
+use App\Domain\Maintenance\MaintenanceGuard;
+use App\Domain\Maintenance\MaintenanceSteps;
 use App\Domain\Notifications\LogSiteBlockNotifier;
 use App\Domain\Notifications\SiteBlockNotifier;
 use App\Domain\Planning\ChangeAnalyzer;
@@ -512,9 +514,23 @@ class AppServiceProvider extends ServiceProvider
                 self::configInt('wpup.updates.post_update.command_timeout_seconds'),
                 self::configInt('wpup.updates.post_update.overhead_seconds'),
                 self::configCommands('wpup.updates.post_update.page_caches'),
+                self::configInt('wpup.updates.maintenance.command_timeout_seconds'),
             ),
             self::configInt('wpup.updates.component_timeout_seconds'),
             $app->make(SshSettings::class)->applyUpdateBudgetSeconds(),
+            $app->make(MaintenanceGuard::class),
+        ));
+        // Maintenance mode around the update (UZEROWPUP-53); the update run composes the steps (UZEROWPUP-60).
+        $this->app->bind(MaintenanceGuard::class, static fn (Application $app): MaintenanceGuard => new MaintenanceGuard(
+            static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+            $app->make(RunAuthorization::class),
+            $app->make(SecretRedactor::class),
+            config()->boolean('wpup.updates.maintenance.default'),
+            self::configInt('wpup.updates.maintenance.command_timeout_seconds'),
+        ));
+        $this->app->bind(MaintenanceSteps::class, static fn (Application $app): MaintenanceSteps => new MaintenanceSteps(
+            $app->make(MaintenanceGuard::class),
+            self::configInt('wpup.updates.maintenance.step_timeout_seconds'),
         ));
         // The minimal layer-3 check around the updates (UZEROWPUP-56).
         $this->app->bind(SmokeCheckSettings::class, static fn (): SmokeCheckSettings => new SmokeCheckSettings(

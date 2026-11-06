@@ -10,6 +10,7 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
+use App\Domain\Maintenance\MaintenanceGuard;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Planning\UpdatePlan;
@@ -251,4 +252,66 @@ it('records the change as failed on a timeout or an unexpected error, and lets i
     expect(fn () => classicStep($driver)->run($context))->toThrow(StepTimedOut::class)
         ->and(updateRows($run))->toBe([['plugin', 'classic-editor', '1.6.3', null, 'failed']])
         ->and($driver->files)->toBe([]);
+});
+
+function maintenanceUpdateGuard(FakeDriver $driver, int $commandTimeout = 60): MaintenanceGuard
+{
+    return new MaintenanceGuard(
+        static fn (Site $s, AuditActor $a): SiteDriver => $driver,
+        app(RunAuthorization::class), app(SecretRedactor::class), true, $commandTimeout,
+    );
+}
+
+it('re-asserts the maintenance file before each update, also after a core update deleted it', function (): void {
+    $driver = new FakeDriver;
+    $driver->maintenance = true;
+    [$run, $context] = updateRun();
+    $guard = maintenanceUpdateGuard($driver);
+    $guard->remember($run, false);
+    $steps = (new UpdateSteps(
+        app(ArtifactStore::class), static fn (Site $s, AuditActor $a): SiteDriver => $driver,
+        app(RunAuthorization::class), new UpdateChanges, app(SecretRedactor::class),
+        new PostUpdateSettings(6600, 1800, 120, 900, []), 120, 60, $guard,
+    ))->for(new UpdatePlan('8.3.14', PhpVersionSource::PleskHandler, true, null, fakeSiteChanges()));
+
+    // core, WooCommerce, classic-editor, storefront, post-update
+    $steps[0]->run($context);
+    expect($driver->maintenance)->toBeFalse(); // WordPress deleted .maintenance
+    $steps[1]->run($context);
+    expect($driver->maintenance)->toBeTrue();
+
+    $driver->maintenanceExpired = true; // older than 10 minutes: WP-CLI says inactive
+    $steps[2]->run($context);
+    expect($driver->maintenanceExpired)->toBeFalse()->and($driver->maintenance)->toBeTrue();
+
+    $driver->maintenance = false;
+    $steps[4]->run($context);
+    expect($driver->maintenance)->toBeTrue();
+});
+
+it('never writes a maintenance file the run does not own', function (): void {
+    $driver = new FakeDriver;
+    [$run, $context] = updateRun();
+    $steps = (new UpdateSteps(
+        app(ArtifactStore::class), static fn (Site $s, AuditActor $a): SiteDriver => $driver,
+        app(RunAuthorization::class), new UpdateChanges, app(SecretRedactor::class),
+        new PostUpdateSettings(6600, 1800, 120, 900, []), 120, 60, maintenanceUpdateGuard($driver),
+    ))->for(new UpdatePlan('8.3.14', PhpVersionSource::PleskHandler, true, null, fakeSiteChanges()));
+
+    $steps[2]->run($context);
+
+    expect($driver->maintenance)->toBeFalse();
+});
+
+it('counts the maintenance refresh in the step budgets', function (): void {
+    $driver = new FakeDriver;
+    $build = static fn (int $component, int $post) => new UpdateSteps(
+        app(ArtifactStore::class), static fn (Site $s, AuditActor $a): SiteDriver => $driver,
+        app(RunAuthorization::class), new UpdateChanges, app(SecretRedactor::class),
+        new PostUpdateSettings($post, 1800, 120, 900, [], 60), $component, 60, maintenanceUpdateGuard($driver),
+    );
+
+    expect(fn () => $build(100, 5100))->toThrow(InvalidArgumentException::class, 'refresc')
+        ->and(fn () => $build(120, 5099))->toThrow(InvalidArgumentException::class)
+        ->and($build(120, 5100))->toBeInstanceOf(UpdateSteps::class);
 });

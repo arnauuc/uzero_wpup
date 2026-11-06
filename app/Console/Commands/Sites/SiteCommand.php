@@ -42,7 +42,9 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         {--no-include-uploads : Exclou uploads de la còpia}
         {--external-backup= : Còpia externa: plesk, dropbox, plugin, other, none}
         {--external-backup-notes= : Notes de la còpia externa (màx. 500 caràcters; cal haver-ne declarat el tipus; buides, les esborra)}
-        {--clear=* : Camp a esborrar: tag, php-binary, window, verify-url, mask, checkout-product, freeze, exclude, notify, external-backup}';
+        {--maintenance : Activa el mode manteniment durant l\'actualització}
+        {--no-maintenance : No activis el mode manteniment durant l\'actualització}
+        {--clear=* : Camp a esborrar: tag, php-binary, window, verify-url, mask, checkout-product, freeze, exclude, notify, external-backup, maintenance}';
 
     /** CLI names accepted by --clear mapped to the canonical field names. */
     private const CLEAR_MAP = [
@@ -56,6 +58,7 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         'exclude' => 'excluded_components',
         'notify' => 'notification_channels',
         'external-backup' => 'external_backup',
+        'maintenance' => 'maintenance_mode',
     ];
 
     protected function ability(): Ability
@@ -100,6 +103,7 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
             includeUploads: $this->toggle('include-uploads', 'no-include-uploads'),
             externalBackup: $this->stringOption('external-backup'),
             externalBackupNotes: $this->rawStringOption('external-backup-notes'),
+            maintenance: $this->toggle('maintenance', 'no-maintenance'),
         );
     }
 

@@ -30,7 +30,7 @@ final class SiteImportParser
     public const COLUMNS = [
         'name', 'url', 'wp_path', 'php_binary', 'tags', 'strategy', 'window_days', 'window_start', 'window_end',
         'auto_update', 'verify_urls', 'mask', 'diff_threshold', 'checkout_product', 'freeze', 'exclude', 'notify',
-        'include_uploads', 'external_backup', 'external_backup_notes', 'server', 'hostname', 'ssh_port', 'panel', 'account', 'driver',
+        'include_uploads', 'external_backup', 'external_backup_notes', 'maintenance', 'server', 'hostname', 'ssh_port', 'panel', 'account', 'driver',
     ];
 
     /** Nested YAML keys mapped to flat columns. */
@@ -45,6 +45,7 @@ final class SiteImportParser
         'tags' => 'tags', 'verify_urls' => 'verify_urls', 'mask' => 'mask_selectors', 'freeze' => 'frozen_components',
         'exclude' => 'excluded_components', 'notify' => 'notification_channels', 'php_binary' => 'php_binary',
         'checkout_product' => 'checkout_product', 'external_backup' => 'external_backup',
+        'maintenance' => 'maintenance_mode',
     ];
 
     private const SECRET_KEY = '/pass|pwd|secret|token|key|private|credential|auth/i';
@@ -258,6 +259,7 @@ final class SiteImportParser
             includeUploads: $this->bool($record, 'include_uploads', $local),
             externalBackup: $this->text($record, 'external_backup', $local),
             externalBackupNotes: $this->text($record, 'external_backup_notes', $local),
+            maintenance: $this->bool($record, 'maintenance', $local),
         );
 
         foreach ($local as $message) {

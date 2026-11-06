@@ -11,6 +11,7 @@ use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
+use App\Domain\Maintenance\MaintenanceGuard;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Runs\RunAuthorization;
@@ -19,6 +20,7 @@ use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\ComponentType;
+use App\Models\Run;
 use App\Models\Site;
 use Closure;
 
@@ -86,6 +88,7 @@ PHP;
         private RunAuthorization $authorization,
         private SecretRedactor $redactor,
         private PostUpdateSettings $settings,
+        private ?MaintenanceGuard $maintenance = null,
     ) {}
 
     public function name(): string
@@ -123,7 +126,7 @@ PHP;
         try {
             $driver = ($this->driverFor)($site, $actor);
             $installed = $driver->installedComponents();
-            $failure = $this->migrate($driver, $installed, $log);
+            $failure = $this->migrate($context->run, $driver, $installed, $log);
             if ($failure !== null) {
                 return StepOutcome::failed($this->redactor->redact("La migració de la base de dades ha fallat: {$failure}"), $this->redactor->redact(implode("\n", $log)));
             }
@@ -150,8 +153,10 @@ PHP;
      *
      * @throws DriverException
      */
-    private function migrate(SiteDriver $driver, InstalledComponents $installed, array &$log): ?string
+    private function migrate(Run $run, SiteDriver $driver, InstalledComponents $installed, array &$log): ?string
     {
+        // Each long command finds the maintenance file in place (UZEROWPUP-53).
+        $this->maintenance?->refresh($driver, $run);
         $core = $this->command($driver, ['core', 'update-db', ...self::SAFE_MODE], $this->settings->updateDbTimeoutSeconds, $log);
         if (! $core->successful()) {
             return '`wp core update-db` ha acabat amb el codi '.$core->exitCode.'.';
@@ -166,6 +171,7 @@ PHP;
         if (! $this->updated(ComponentType::Woocommerce) && $this->woocommerceState($driver, $log) === 'ok') {
             return null;
         }
+        $this->maintenance?->refresh($driver, $run);
         $update = $this->command($driver, ['wc', 'update', '--skip-themes'], $this->settings->updateDbTimeoutSeconds, $log);
         if (! $update->successful()) {
             return '`wp wc update` ha acabat amb el codi '.$update->exitCode.'.';

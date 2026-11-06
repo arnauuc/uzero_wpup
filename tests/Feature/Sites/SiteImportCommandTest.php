@@ -185,3 +185,14 @@ it('imports the external backup type with its notes', function (): void {
 
     expect(Site::query()->where('name', 'botiga-n')->sole()->profile?->external_backup)->toBe(['type' => 'plesk', 'notes' => 'Plesk diària, 14 dies']);
 });
+
+it('imports the maintenance mode and clears it with an empty cell', function (): void {
+    $csv = "name,url,wp_path,maintenance,server,hostname,account\n"
+        .'botiga-m,https://botiga-m.example.test,/var/www/m,no,srv-m,srv-m.example.test,botiga_m'."\n";
+    command('site:import', importParams(importFile($csv, 'csv')))->assertSuccessful();
+    expect(Site::query()->where('name', 'botiga-m')->sole()->profile?->maintenance_mode)->toBeFalse();
+
+    $csv = "name,maintenance\nbotiga-m,\n";
+    command('site:import', importParams(importFile($csv, 'csv')))->assertSuccessful();
+    expect(Site::query()->where('name', 'botiga-m')->sole()->profile?->maintenance_mode)->toBeNull();
+});

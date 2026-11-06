@@ -248,6 +248,34 @@ it('trims the notes, clears them with an empty value and rejects whitespace-only
     expect(Site::query()->sole()->profile?->external_backup)->toBe(['type' => 'none', 'notes' => 'nota']);
 });
 
+it('sets the maintenance mode of the profile, audits it and clears it back to the default', function (): void {
+    command('site:add', addParams())->assertSuccessful();
+    expect(Site::query()->sole()->profile?->maintenance_mode)->toBeNull();
+
+    command('site:edit', ['name' => 'botiga-a', '--no-maintenance' => true, '--dry-run' => true, '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->maintenance_mode)->toBeNull();
+
+    command('site:edit', ['name' => 'botiga-a', '--no-maintenance' => true, '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->maintenance_mode)->toBeFalse();
+    $entry = AuditLogEntry::query()->where('action', 'site.edit')->latest('id')->firstOrFail();
+    expect(((array) ($entry->context['changes'] ?? []))['maintenance_mode'] ?? null)->toEqual(['from' => null, 'to' => false]);
+
+    command('site:edit', ['name' => 'botiga-a', '--maintenance' => true, '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->maintenance_mode)->toBeTrue();
+
+    command('site:edit', ['name' => 'botiga-a', '--clear' => ['maintenance'], '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->maintenance_mode)->toBeNull();
+});
+
+it('rejects --maintenance together with --no-maintenance or --clear=maintenance', function (): void {
+    command('site:add', addParams())->assertSuccessful();
+
+    command('site:edit', ['name' => 'botiga-a', '--maintenance' => true, '--no-maintenance' => true, '--no-interaction' => true])
+        ->expectsOutputToContain('incompatibles')->assertFailed();
+    command('site:edit', ['name' => 'botiga-a', '--maintenance' => true, '--clear' => ['maintenance'], '--no-interaction' => true])
+        ->expectsOutputToContain('alhora')->assertFailed();
+});
+
 it('accepts frozen components pinned to a version and rejects a bad version', function (): void {
     command('site:add', addParams(['--freeze' => ['akismet@5.3', 'plugin:woocommerce-subscriptions']]))->assertSuccessful();
     expect(Site::query()->where('name', 'botiga-a')->sole()->profile?->frozen_components)->toBe(['akismet@5.3', 'plugin:woocommerce-subscriptions']);

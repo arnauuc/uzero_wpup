@@ -7,7 +7,6 @@ namespace App\Domain\Rollback;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\PostRestoreCheckFailed;
-use App\Domain\Backups\RestoreMaintenanceStep;
 use App\Domain\Backups\RestoreRefused;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\SiteRestore;
@@ -15,6 +14,7 @@ use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
+use App\Domain\Maintenance\MaintenanceMode;
 use App\Domain\Runs\Exceptions\RunException;
 use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\Step;
@@ -130,7 +130,7 @@ final readonly class FilesRollbackStep implements Step
 
         try {
             $candidates = $this->candidates($site, $source);
-            $maintenance = RestoreMaintenanceStep::state($driver);
+            $maintenance = MaintenanceMode::state($driver);
             if ($maintenance === null) {
                 $warnings[] = "No s'ha pogut saber si el mode manteniment era actiu: s'activarà després de restaurar els fitxers. Revisa'l a mà.";
             }
@@ -246,7 +246,7 @@ final readonly class FilesRollbackStep implements Step
         if ($audit['restored'] === 'no' || $maintenance === false) {
             return;
         }
-        $warning = RestoreMaintenanceStep::switchTo($driver, true, $this->redactor, $runId);
+        $warning = MaintenanceMode::switchTo($driver, true, $this->redactor, $runId);
         if ($warning !== null) {
             $warnings[] = $warning;
         }
