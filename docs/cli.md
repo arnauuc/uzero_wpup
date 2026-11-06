@@ -148,6 +148,16 @@ sudo -u wpup wpup site:import llocs.yaml --dry-run
 sudo -u wpup wpup site:import llocs.csv
 ```
 
+## Avisos d'entorn: mínims futurs (ADR-0007, UZEROWPUP-52)
+
+`wpup inventory` i `wpup plan` destaquen els llocs que una versió, ja publicada o futura, deixarà congelats a la branca actual (p. ex. WordPress 7.0 exigeix PHP 7.4; WooCommerce 11.6, febrer de 2027, exigeix PHP 8.1).
+
+- **Taula editable:** `config/wpup.php` → `future_minimums`. Cada fila porta `component` (`wordpress` o `woocommerce`), `label`, `version`, `min_php` i/o `min_wp` (almenys un), `effective` (`AAAA-MM` o `null`), `released` (`true` si ja és publicada) i `note` amb la font. Convé verificar cada fila contra l'anunci oficial. Una fila mal formada fa que s'ignori tota la taula i es registri un error al log; la resta de l'eina no s'atura.
+- **Quan avisa:** el component (WooCommerce, només si és actiu) és més antic que la versió de la fila i el lloc no en compleix el PHP o el WordPress mínim. «Quedarà congelat abans de WooCommerce 11.6 (febrer de 2027): exigeix PHP 8.1 i el lloc té PHP 7.4.33.» Si la fila ja és en vigor (`released` o `effective` passada), diu «Congelat».
+- **PHP:** el del web verificat per la sonda, igual que el pla; si només hi ha el del CLI, l'avís ho indica («no verificat pel web»).
+- **`wpup inventory`:** fila «Entorn» (`ok`, `AVÍS: …` o `no avaluat` si una versió no s'ha pogut llegir o no hi ha inventari). `--json` afegeix `environment_warnings` i `environment_evaluated` per lloc, i `--csv` la columna `environment_warnings` (`no avaluat` quan no s'ha pogut avaluar).
+- **`wpup plan`:** imprimeix «Avís d'entorn: …» i, amb `--json`, `plan.environment_warnings`; també queda desat al pla de l'execució perquè l'informe (F5) el mostri. S'avalua contra les versions objectiu del pla: un pla que ja puja el WordPress mínim no avisa per aquest motiu.
+
 ## `plan` i la política de versions (ADR-0005)
 
 `wpup plan [llocs…|--tag=…|--all]` encua un inventari fresc i calcula què s'actualitzaria i què s'ometria, i per què, sense tocar el lloc. Hi aplica la política de versions:
