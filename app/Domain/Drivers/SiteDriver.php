@@ -9,6 +9,7 @@ use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\Data\LogCursor;
+use App\Domain\Drivers\Data\LogScan;
 use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\Data\ProbeResult;
 use App\Domain\Drivers\Data\RemoteFile;
@@ -232,10 +233,36 @@ interface SiteDriver
 
     /**
      * Current end of the PHP error log, to read only new lines later.
+     * $webLogPath is the error_log the web's PHP reported (UZEROWPUP-56): it
+     * wins over the CLI's own setting when it exists and is readable; null
+     * (or an unusable one) falls back to the CLI's, which the caller can tell
+     * from the cursor's path.
      *
      * @throws DriverException
      */
-    public function phpLogCursor(): LogCursor;
+    public function phpLogCursor(?string $webLogPath = null): LogCursor;
+
+    /**
+     * Candidate fatal lines (UZEROWPUP-56) of the WHOLE region written since
+     * $cursor, filtered on the site's side, so a log that grew past any read
+     * cap is not cut: at most $maxLines are returned (LogScan::$capped says
+     * if there were more). A rotated log is read from its start, and from the
+     * rotated sibling too, from the old offset, as far as it can be found.
+     *
+     * @throws DriverException
+     */
+    public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan;
+
+    /**
+     * Candidate fatal lines in the $windowBytes before $cursor (what was
+     * already in the log before the update), at most $maxLines: the most
+     * recent ones when there are more.
+     *
+     * @return list<string>
+     *
+     * @throws DriverException
+     */
+    public function phpLogFatalsBefore(LogCursor $cursor, int $windowBytes, int $maxLines): array;
 
     /**
      * Lines appended to the PHP error log since $cursor (bounded by $maxBytes).

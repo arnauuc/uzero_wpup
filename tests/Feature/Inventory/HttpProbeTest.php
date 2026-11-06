@@ -19,13 +19,13 @@ use Tests\Support\FakeDriver;
  */
 
 /**
- * @return array{0: SiteSnapshot, 1: array{binary: string, cli_version: string, warnings: list<string>, sapi: ?string, extensions: list<string>, blocked_reason: ?string}}
+ * @return array{0: SiteSnapshot, 1: array{binary: string, cli_version: string, warnings: list<string>, sapi: ?string, error_log: ?string, extensions: list<string>, blocked_reason: ?string}}
  */
 function probeInventory(FakeDriver $driver): array
 {
     $run = Run::factory()->create(['type' => 'inventory', 'site_id' => Site::factory()->create(['url' => 'https://botiga.test'])->id]);
     $snapshot = app(SiteInventory::class)->take($run->site()->firstOrFail(), $driver, $run);
-    /** @var array{binary: string, cli_version: string, warnings: list<string>, sapi: ?string, extensions: list<string>, blocked_reason: ?string} $php */
+    /** @var array{binary: string, cli_version: string, warnings: list<string>, sapi: ?string, error_log: ?string, extensions: list<string>, blocked_reason: ?string} $php */
     $php = $snapshot->environment['php'] ?? [];
 
     return [$snapshot, $php];
@@ -44,6 +44,19 @@ it('takes the PHP version from the web and removes the probe', function (): void
         ->and($php['blocked_reason'])->toBeNull()
         ->and($driver->webFiles)->toBe([]);
 });
+
+it('keeps the error_log the web reported, only when it is an absolute path', function (?string $reported, ?string $stored): void {
+    Http::fake(['*' => Http::response(['php_version' => '8.3.14', 'error_log' => $reported])]);
+
+    [, $php] = probeInventory(new FakeDriver);
+
+    expect($php['error_log'])->toBe($stored);
+})->with([
+    'absolute' => ['/var/www/logs/php_error.log', '/var/www/logs/php_error.log'],
+    'syslog' => ['syslog', null],
+    'empty' => ['', null],
+    'missing' => [null, null],
+]);
 
 it('sends a single-use token and stores only its hash in the probe', function (): void {
     Http::fake(['*' => Http::response(['php_version' => '8.3.14'])]);

@@ -175,6 +175,43 @@ return [
     ],
 
     /*
+     * Compatibility, layer 3 minimal (UZEROWPUP-56): after the updates, the home
+     * of the site and the new lines of the PHP error log (from the position
+     * saved before). A new fatal, a 5xx or no answer at all fails the step and
+     * so triggers the rollback.
+     * - step_timeout_seconds must cover connect + 8 SSH commands + every home
+     *   request with all its redirects and the pauses (ssh.* and the values below); checked when the steps
+     *   are built.
+     * - http_attempts: how many requests of the home (each with its own cache
+     *   buster, http_attempt_pause_seconds apart); ANY 5xx or connection failure
+     *   fails. A worker still serving old code right after an update may answer
+     *   differently from the next one. The log is read once, after all of them.
+     * - fatal_patterns are PCRE, anchored to the PHP log format (after the
+     *   [date] prefix): application messages that merely mention "Fatal error"
+     *   do not count. Uncaught exceptions are PHP Fatal error lines.
+     * - max_candidate_lines: the site greps its whole new log region for fatal
+     *   lines and returns at most this many (more ⇒ a warning).
+     * - signature_window_bytes: how far before the baseline to look for fatals
+     *   that were already there (a repeat of one is only a warning).
+     * Reported lines are redacted and cut to line_max_chars.
+     */
+    'smoke_check' => [
+        'step_timeout_seconds' => 3000,
+        'http_timeout_seconds' => 30,
+        'max_redirects' => 5,
+        'http_attempts' => 3,
+        'http_attempt_pause_seconds' => 2,
+        'verify_tls' => (bool) env('WPUP_SMOKE_CHECK_VERIFY_TLS', true),
+        'max_candidate_lines' => 200,
+        'signature_window_bytes' => 1048576,
+        'reported_lines' => 5,
+        'line_max_chars' => 300,
+        'fatal_patterns' => [
+            '/^(?:\[[^\]]*\]\s*)*(?:AH\d+:\s*Got error \')?(?:PHP message:\s*)?PHP (?:Fatal error|Parse error):\s/',
+        ],
+    ],
+
+    /*
      * Compatibility, layer 2 (UZEROWPUP-50): every new plugin or theme package
      * goes through PHP_CodeSniffer + PHPCompatibility with testVersion equal to
      * the site's PHP minor. An error blocks that component's update; warnings go
@@ -415,6 +452,9 @@ return [
      */
     'rollback' => [
         'files_timeout_seconds' => 3600,
+        // The database of the run's point, put back only when nothing was written to
+        // the orders or users since the copy (UZEROWPUP-59).
+        'database_timeout_seconds' => 3600,
     ],
 
     /*

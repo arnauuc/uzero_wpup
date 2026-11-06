@@ -286,7 +286,7 @@ it('keeps asking for the confirmation when nothing was written, and treats a cop
 
     $run = app(RunEngine::class)->execute(restoreRun($site, $point, [BackupKind::Database]));
 
-    // Restoring without the confirmation when nothing was written is UZEROWPUP-59.
+    // A manual restore always asks; only an update's rollback restores by itself (UZEROWPUP-59).
     expect($run->status)->toBe(RunStatus::Failed)
         ->and(restoreStepOf($run, RestoreCheckStep::NAME)->error)->toContain('--accept-data-loss')->toContain($message)
         ->and($driver->writeCalls)->not->toContain('restoreDatabase');

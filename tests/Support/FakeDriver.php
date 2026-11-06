@@ -11,6 +11,7 @@ use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\Data\LogCursor;
+use App\Domain\Drivers\Data\LogScan;
 use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\Data\ProbeCheck;
 use App\Domain\Drivers\Data\ProbeResult;
@@ -323,7 +324,7 @@ class FakeDriver implements SiteDriver
             count($args) === 3 && $args[0] === 'cli' && $args[1] === 'has-command' => in_array($args[2], $this->cliCommands, true) ? $this->ok('') : new CommandResult(1, '', '', 1),
             $args === ['eval', PostUpdateStep::WC_DB_SNIPPET, '--skip-themes'] => $this->ok($this->wcFails || $this->wcDbUpdateNeeded === null ? 'unknown' : ($this->wcDbUpdateNeeded ? 'pending' : 'ok')),
             isset($this->commandResults[self::commandKey($args)]) => $this->commandResults[self::commandKey($args)],
-            in_array($args, [['maintenance-mode', 'activate', '--force'], ['maintenance-mode', 'activate', '--force', '--skip-plugins', '--skip-themes']], true) => $this->forceMaintenance(),
+            in_array($args, [['maintenance-mode', 'activate', '--force'], ['maintenance-mode', 'activate', '--force', '--skip-plugins', '--skip-themes']], true) => $this->refreshMaintenance(),
             in_array($args, [['maintenance-mode', 'is-active'], ['maintenance-mode', 'is-active', '--skip-plugins', '--skip-themes']], true) => $this->maintenance && ! $this->maintenanceExpired
                 ? $this->ok('')
                 : new CommandResult(1, '', '', 1),
@@ -520,12 +521,15 @@ class FakeDriver implements SiteDriver
         return new AppliedUpdate($this->ok("Success: {$package->slug} {$package->targetVersion}\n"), $this->installedState($package->type, $package->slug) ?? throw new RemoteCommandFailed('El component no és al lloc.'), false);
     }
 
-    private function forceMaintenance(): CommandResult
+    /** `wp maintenance-mode activate --force`: `.maintenance` written again with the current time. */
+    private function refreshMaintenance(): CommandResult
     {
+        $this->writeCalls[] = 'refreshMaintenance';
         $this->maintenance = true;
         $this->maintenanceExpired = false;
+        $this->maintenanceUpgrading = null;
 
-        return $this->ok("Success: Enabled Maintenance mode.\n");
+        return $this->ok("Success: Activated Maintenance mode.\n");
     }
 
     public function setMaintenanceMode(bool $enabled): void
@@ -579,9 +583,39 @@ class FakeDriver implements SiteDriver
         }
     }
 
-    public function phpLogCursor(): LogCursor
+    /** The web error_log the last phpLogCursor() call was given. */
+    public ?string $requestedWebLog = null;
+
+    /** Simulates a rotation: the cursor's offset is past the log's end, and these lines are in the rotated sibling. */
+    public bool $logRotated = false;
+
+    /** @var list<string> */
+    public array $rotatedSiblingLines = [];
+
+    /** How many candidates phpLogFatalsSince() returns at most, whatever the caller asks. */
+    public ?int $logCandidateLimit = null;
+
+    public function phpLogCursor(?string $webLogPath = null): LogCursor
     {
-        return new LogCursor('fake.log', count($this->phpLog));
+        $this->requestedWebLog = $webLogPath;
+
+        return new LogCursor($webLogPath ?? 'fake.log', count($this->phpLog));
+    }
+
+    public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan
+    {
+        $lines = $this->logRotated ? [...$this->rotatedSiblingLines, ...$this->phpLog] : array_slice($this->phpLog, $cursor->offset);
+        $lines = array_values(array_filter($lines, static fn (string $l): bool => preg_match('/PHP (Fatal error|Parse error):/', $l) === 1));
+        $limit = min($maxLines, $this->logCandidateLimit ?? $maxLines);
+
+        return new LogScan(array_slice($lines, 0, $limit), count($lines) > $limit, $this->logRotated, $this->logRotated && $this->rotatedSiblingLines !== []);
+    }
+
+    public function phpLogFatalsBefore(LogCursor $cursor, int $windowBytes, int $maxLines): array
+    {
+        $lines = array_slice($this->phpLog, 0, $cursor->offset);
+
+        return array_slice(array_values(array_filter($lines, static fn (string $l): bool => preg_match('/PHP (Fatal error|Parse error):/', $l) === 1)), -$maxLines);
     }
 
     public function phpLogSince(LogCursor $cursor, int $maxBytes = 1_048_576): array
