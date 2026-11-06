@@ -19,6 +19,17 @@ final class ToolBackupKey
 
     private const string PATTERN = '/^tool\/wpup-(\d{8}-\d{6})\.tar\.age$/';
 
+    /** Uploads waiting for their SHA-256 check: never a final key, never kept. */
+    public const string PENDING_PREFIX = 'tool/pending/';
+
+    /**
+     * Where a copy is uploaded before its checksum is checked; unique per run.
+     */
+    public static function pendingFor(DateTimeInterface $at): string
+    {
+        return self::PENDING_PREFIX.substr(self::for($at), strlen(self::PREFIX), -strlen('.tar.age')).'-'.bin2hex(random_bytes(4)).'.tar.age';
+    }
+
     public static function for(DateTimeInterface $at): string
     {
         return self::PREFIX.'wpup-'.CarbonImmutable::instance($at)->setTimezone(self::timezone())->format('Ymd-His').'.tar.age';

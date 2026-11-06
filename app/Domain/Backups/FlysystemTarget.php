@@ -26,7 +26,7 @@ use League\Flysystem\Visibility;
  *   UZEROWPUP-19); the existence check right before publishing narrows the
  *   window further but is not atomic on every adapter.
  */
-final readonly class FlysystemTarget implements BackupTarget
+final readonly class FlysystemTarget implements RenamableBackupTarget
 {
     /** Starts with ".", which BackupKey forbids: never clashes with a real key. */
     private const string TMP_DIR = '.wpup-tmp';
@@ -72,6 +72,24 @@ final readonly class FlysystemTarget implements BackupTarget
             $this->discard($partial);
 
             throw BackupTargetException::failed("L'escriptura", $key, $this->reason($e));
+        }
+    }
+
+    public function rename(string $from, string $to): void
+    {
+        BackupKey::valid($from);
+        BackupKey::valid($to);
+
+        try {
+            if (! $this->filesystem->fileExists($from)) {
+                throw BackupTargetException::notFound($from);
+            }
+            if ($this->filesystem->fileExists($to)) {
+                throw BackupTargetException::alreadyExists($to);
+            }
+            $this->filesystem->move($from, $to, self::PRIVATE_FILES);
+        } catch (FilesystemException $e) {
+            throw BackupTargetException::failed('El canvi de nom', $to, $this->reason($e));
         }
     }
 
