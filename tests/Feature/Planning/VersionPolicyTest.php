@@ -380,3 +380,25 @@ it('purges the versions no inventory has offered for the retention period', func
     expect(app(PackageVersions::class)->purge(CarbonImmutable::now()))->toBe(1)
         ->and(PackageVersion::query()->pluck('slug')->all())->toBe(['recent']);
 });
+
+it('asks the vulnerability source about a component frozen at a version, and applies a fix within the cap', function (): void {
+    $calls = knownVulnerabilities(['capped' => [new KnownVulnerability('CVE-1', '1.3')], 'whole' => [new KnownVulnerability('CVE-2', '1.3')], 'above' => [new KnownVulnerability('CVE-3', '1.5')]]);
+
+    $site = Site::factory()->create();
+    $snapshot = SiteSnapshot::factory()->create([
+        'site_id' => $site->id, 'core_version' => '6.8.1', 'plugins' => [], 'environment' => ['prerequisites' => []],
+        'pending_updates' => [offer('plugin', 'capped', '1.0', '1.5'), offer('plugin', 'whole', '1.0', '1.5'), offer('plugin', 'above', '1.0', '1.5')],
+    ]);
+    $profile = SiteProfile::factory()->create(['site_id' => $site->id, 'frozen_components' => ['capped@1.3', 'whole', 'above@1.4']]);
+    $plan = app(UpdatePlanner::class)->plan($snapshot, $site, $profile, '8.3.10', PhpVersionSource::HttpProbe);
+
+    // The fix (1.3) is within the cap: the security path applies, with its unknown-requirements rule.
+    expect(policyChange($plan, 'capped')->bypass)->toBe(QuarantineBypass::Vulnerability)
+        ->and(policyChange($plan, 'capped')->targetVersion)->toBe('1.3')
+        ->and(policyChange($plan, 'capped')->reason)->toBe(SkipReason::Other)
+        // Fully frozen: never asked. Fix above the cap: still frozen.
+        ->and(policyChange($plan, 'whole')->reason)->toBe(SkipReason::Frozen)
+        ->and(policyChange($plan, 'above')->reason)->toBe(SkipReason::Frozen)
+        ->and(policyChange($plan, 'above')->detail)->toContain("no s'instal·len versions intermèdies");
+    expect(array_map(static fn (InstalledComponent $c): string => $c->slug, $calls[0] ?? []))->toBe(['capped', 'above']);
+});

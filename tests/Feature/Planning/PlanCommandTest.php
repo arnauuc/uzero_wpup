@@ -19,6 +19,7 @@ use App\Enums\UserRole;
 use App\Models\AuditLogEntry;
 use App\Models\Run;
 use App\Models\Site;
+use App\Models\SiteProfile;
 use App\Models\User;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Redis;
@@ -190,7 +191,7 @@ it('lets an admin include frozen components: audited apart and stored on the run
     command('plan', ['sites' => ['botiga-a'], '--include' => ['akismet', 'plugin:hello']])->assertSuccessful();
 
     expect(Run::query()->sole()->flags)->toBe(['include' => ['akismet', 'plugin:hello']])
-        ->and(AuditLogEntry::query()->where('action', 'plan.profile_overridden')->sole()->context)->toEqual(['include' => ['akismet', 'plugin:hello'], 'sites' => ['botiga-a']])
+        ->and(AuditLogEntry::query()->where('action', 'plan.profile_overridden')->sole()->context)->toEqual(['include' => ['akismet', 'plugin:hello'], 'matched' => [], 'sites' => ['botiga-a']])
         ->and(AuditLogEntry::query()->where('action', 'plan.version_policy_overridden')->count())->toBe(0);
 });
 
@@ -201,6 +202,26 @@ it('rejects an invalid --include before queueing anything', function (): void {
     $exit = Artisan::call('plan', ['sites' => ['botiga-a'], '--include' => ['akismet@5.3']]);
 
     expect($exit)->toBe(1)->and(Artisan::output())->toContain('no és vàlid')->and(Run::query()->count())->toBe(0);
+});
+
+it('warns about an --include that matches nothing, and audits both lists', function (): void {
+    User::factory()->create(['unix_username' => 'admin1', 'role' => UserRole::Admin]);
+    actingAsOperator('admin1');
+    SiteProfile::factory()->create(['site_id' => Site::query()->where('name', 'botiga-a')->value('id'), 'frozen_components' => ['akismet@5.3'], 'excluded_components' => ['theme:storefront']]);
+
+    command('plan', ['sites' => ['botiga-a'], '--include' => ['plugin:akismet', 'akismt', 'storefront']])
+        ->expectsOutputToContain('--include=akismt no coincideix amb cap component congelat o exclòs.')
+        ->assertSuccessful();
+
+    expect(AuditLogEntry::query()->where('action', 'plan.profile_overridden')->sole()->context)
+        ->toEqual(['include' => ['plugin:akismet', 'akismt', 'storefront'], 'matched' => ['plugin:akismet', 'storefront'], 'sites' => ['botiga-a']]);
+});
+
+it('rejects an uppercase --include', function (): void {
+    User::factory()->create(['unix_username' => 'admin1', 'role' => UserRole::Admin]);
+    actingAsOperator('admin1');
+
+    expect(Artisan::call('plan', ['sites' => ['botiga-a'], '--include' => ['Akismet']]))->toBe(1)->and(Run::query()->count())->toBe(0);
 });
 
 it('shows the included components and warns that an unlicensed one cannot be forced', function (): void {

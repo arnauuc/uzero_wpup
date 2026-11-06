@@ -253,5 +253,15 @@ it('accepts frozen components pinned to a version and rejects a bad version', fu
     expect(Site::query()->where('name', 'botiga-a')->sole()->profile?->frozen_components)->toBe(['akismet@5.3', 'plugin:woocommerce-subscriptions']);
 
     command('site:add', addParams(['name' => 'botiga-b', '--freeze' => ['akismet@abc']]))->expectsOutputToContain('La versió de «akismet@abc» no és vàlida')->assertFailed();
-    command('site:add', addParams(['name' => 'botiga-c', '--exclude' => ['akismet@5.3']]))->expectsOutputToContain('El component «akismet@5.3» no és vàlid.')->assertFailed();
+    command('site:add', addParams(['name' => 'botiga-c', '--exclude' => ['akismet@5.3']]))->expectsOutputToContain('El component «akismet@5.3» no és vàlid')->assertFailed();
 });
+
+it('validates frozen versions strictly and component names in lowercase', function (string $option, string $value, string $message): void {
+    command('site:add', addParams([$option => [$value]]))->expectsOutputToContain($message)->assertFailed();
+})->with([
+    'suffix' => ['--freeze', 'akismet@5.3-beta', 'La versió de «akismet@5.3-beta» no és vàlida'],
+    'five parts' => ['--freeze', 'akismet@1.2.3.4.5', 'no és vàlida'],
+    'too long' => ['--freeze', 'akismet@1'.str_repeat('.1', 20), 'no és vàlida'],
+    'uppercase' => ['--freeze', 'Akismet', 'no és vàlid'],
+    'uppercase excluded' => ['--exclude', 'Akismet', 'no és vàlid'],
+]);

@@ -128,7 +128,7 @@ final readonly class UpdatePlanner
         foreach ($candidates as $i => $candidate) {
             $change = $candidate['change'];
             $quarantines[$i] = $this->quarantine($change, $since[$candidate['package']->id()] ?? null, $now);
-            if ($quarantines[$i] !== null && $blocked === null && $candidate['licensed'] && $profileSkip($change) === null) {
+            if ($quarantines[$i] !== null && $blocked === null && $candidate['licensed'] && self::mayBeAsked($profileSkip($change), $frozen, $change)) {
                 $asked[$i] = new InstalledComponent($change->type, $change->slug, $candidate['from_org'] ? ($candidate['wporg_slug'] ?? $change->slug) : null, $change->currentVersion);
             }
         }
@@ -142,9 +142,11 @@ final readonly class UpdatePlanner
                 $quarantine = null;
             }
             $change = $candidate['change'];
+            // After the security fix: the frozen version is compared with the version that would be installed.
+            $profile = $profileSkip($change);
             $decision = match (true) {
                 $blocked !== null => [SkipReason::SiteBlocked, $blocked],
-                $profileSkip($change) !== null => $profileSkip($change),
+                $profile !== null => $profile,
                 $candidate['licensed'] === false => [SkipReason::NoLicense, 'No hi ha cap paquet descarregable: falta la llicència.'.(self::listed($options->include, $change) ? ' --include no ho pot forçar.' : '')],
                 $candidate['unverified_fix'] !== null => [SkipReason::Other, $candidate['unverified_fix']],
                 default => $this->incompatibility($candidate, $phpVersion, $targets, $skippedTargets, $otherCoreOffers)
@@ -622,11 +624,39 @@ final readonly class UpdatePlanner
         }
 
         $target = WpVersion::parse($change->targetVersion);
-        if ($target !== null && $target->compare($cap[0]) <= 0) {
+        if ($target === null) {
+            return [SkipReason::Frozen, "El component és al perfil del lloc congelat a {$cap[1]}: versió oferta il·legible ({$change->targetVersion})."];
+        }
+        if ($target->compare($cap[0]) <= 0) {
             return null;
         }
 
-        return [SkipReason::Frozen, "El component és al perfil del lloc congelat a {$cap[1]}; la versió {$change->targetVersion} la supera."];
+        return [SkipReason::Frozen, "El component és al perfil del lloc congelat a {$cap[1]}: la versió oferta ({$change->targetVersion}) el supera i no s'instal·len versions intermèdies."];
+    }
+
+    /**
+     * Whether the vulnerability source should be asked about the component: not skipped by
+     * the profile, or only because the offered version is above its frozen version (a
+     * fix at or below it can still be applied). Never for an excluded or fully frozen one.
+     *
+     * @param  array{SkipReason, string}|null  $profileSkip
+     * @param  list<string>  $frozen
+     */
+    private static function mayBeAsked(?array $profileSkip, array $frozen, PlannedChange $change): bool
+    {
+        if ($profileSkip === null) {
+            return true;
+        }
+        if ($profileSkip[0] !== SkipReason::Frozen) {
+            return false;
+        }
+        foreach (self::entries($frozen, $change) as $version) {
+            if ($version === null || WpVersion::parse($version) === null) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -637,14 +667,11 @@ final readonly class UpdatePlanner
      */
     private static function entries(array $list, PlannedChange $change): array
     {
-        $names = [$change->slug, "{$change->type->value}:{$change->slug}"];
-        if ($change->type === ComponentType::Woocommerce) {
-            $names[] = "plugin:{$change->slug}";
-        }
+        $names = ComponentName::namesOf($change->type, $change->slug);
 
         $found = [];
         foreach ($list as $entry) {
-            [$name, $version] = array_pad(explode('@', $entry, 2), 2, null);
+            [$name, $version] = ComponentName::split($entry);
             if (in_array($name, $names, true)) {
                 $found[] = $version;
             }

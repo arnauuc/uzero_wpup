@@ -449,7 +449,7 @@ it('lets a component frozen at a version update up to it, not beyond', function 
     expect($change->action)->toBe($updates ? PlanAction::Update : PlanAction::Skip)
         ->and($change->reason)->toBe($updates ? null : SkipReason::Frozen);
     if (! $updates) {
-        expect($change->detail)->toContain('congelat a 5.3')->toContain($target);
+        expect($change->detail)->toContain('congelat a 5.3')->toContain("la versió oferta ({$target}) el supera")->toContain("no s'instal·len versions intermèdies");
     }
 })->with([
     'below' => ['akismet@5.3', '5.2', true],
@@ -524,4 +524,10 @@ it('round-trips --include through the options flags', function (): void {
         ->and($options->versionPolicyFlags())->toBe(['skip_quarantine' => true])
         ->and((new PlanOptions(include: ['a']))->any())->toBeTrue()
         ->and((new PlanOptions)->toFlags())->toBe([]);
+});
+
+it('says so when the offered version of a capped component cannot be read', function (): void {
+    $change = changeOf(planFor([pending('plugin', 'akismet', '5.1', 'nightly')], [], ['frozen_components' => ['akismet@5.3']]), 'akismet');
+
+    expect($change->reason)->toBe(SkipReason::Frozen)->and($change->detail)->toContain('versió oferta il·legible');
 });

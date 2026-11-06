@@ -7,7 +7,7 @@ namespace App\Domain\Sites;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\SiteLocalDestination;
-use App\Domain\Planning\WpVersion;
+use App\Domain\Planning\ComponentName;
 use App\Enums\AuditResult;
 use App\Enums\HostingPanel;
 use App\Enums\SiteDriverType;
@@ -42,8 +42,6 @@ final readonly class SiteAdministration
     private const ABSOLUTE_PATH = '#^/[A-Za-z0-9._/-]*$#';
 
     private const TIME = '/^(?:[01]\d|2[0-3]):[0-5]\d$/';
-
-    private const COMPONENT = '/^[A-Za-z0-9][A-Za-z0-9_.:\/-]{0,127}$/';
 
     private const HOSTNAME = '/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/';
 
@@ -243,12 +241,11 @@ final readonly class SiteAdministration
             if ($components !== null) {
                 foreach ($components as $component) {
                     // Frozen only: `slug@version` lets the component update up to that version.
-                    $name = explode('@', $component, 2)[0];
-                    $version = str_contains($component, '@') ? substr($component, strlen($name) + 1) : null;
-                    if (preg_match(self::COMPONENT, $column === 'frozen_components' ? $name : $component) !== 1) {
-                        $errors[] = "El component «{$component}» no és vàlid.";
-                    } elseif ($version !== null && ! WpVersion::isValid($version)) {
-                        $errors[] = "La versió de «{$component}» no és vàlida (cal slug@versió, p. ex. akismet@5.3).";
+                    [$name, $version] = $column === 'frozen_components' ? ComponentName::split($component) : [$component, null];
+                    if (! ComponentName::isValid($name)) {
+                        $errors[] = "El component «{$component}» no és vàlid (en minúscules: slug o tipus:slug).";
+                    } elseif ($version !== null && ! ComponentName::isValidVersion($version)) {
+                        $errors[] = "La versió de «{$component}» no és vàlida (cal slug@versió amb xifres i punts, p. ex. akismet@5.3).";
                     }
                 }
                 $profile[$column] = $components;
