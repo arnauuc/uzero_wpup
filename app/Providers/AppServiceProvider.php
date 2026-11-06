@@ -20,6 +20,7 @@ use App\Domain\Backups\Dropbox\DropboxCredentialVerifier;
 use App\Domain\Backups\Dropbox\DropboxSettings;
 use App\Domain\Backups\Dropbox\DropboxTargetFactory;
 use App\Domain\Backups\FilesBackup;
+use App\Domain\Backups\NewWritesDetector;
 use App\Domain\Backups\PreRestoreBackupStep;
 use App\Domain\Backups\RestoreCheckStep;
 use App\Domain\Backups\RestoreMaintenanceStep;
@@ -27,6 +28,7 @@ use App\Domain\Backups\RestorePointGate;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\RestoreStep;
+use App\Domain\Backups\ShopWritesReader;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\SiteRestore;
@@ -316,6 +318,16 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.wordpress_org.stale_after_seconds'),
             self::configInt('wpup.inventory.wordpress_org.cache_ttl_seconds'),
         ));
+        $this->app->bind(ShopWritesReader::class, static fn (Application $app): ShopWritesReader => new ShopWritesReader(
+            $app->make(WpCliReader::class),
+            self::configInt('wpup.backups.watermark.timeout_seconds'),
+            array_values(array_filter(config()->array('wpup.backups.watermark.order_types'), is_string(...))),
+            self::configInt('wpup.backups.watermark.scan_cap'),
+            self::configInt('wpup.backups.watermark.max_listed'),
+            self::configInt('wpup.backups.watermark.max_roles'),
+            self::configInt('wpup.backups.watermark.margin_seconds'),
+            self::configInt('wpup.backups.watermark.error_chars'),
+        ));
         $this->app->bind(SiteState::class, static fn (Application $app): SiteState => new SiteState(
             $app->make(WpCliReader::class),
             self::configInt('wpup.inventory.state.command_timeout_seconds'),
@@ -402,7 +414,7 @@ class AppServiceProvider extends ServiceProvider
 
                 return new Pipeline([
                     new InventoryStep($app->make(SiteInventory::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.inventory.step_timeout_seconds'), readOnlySite: true, advisory: true),
-                    new RestoreCheckStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.restore.check_timeout_seconds')),
+                    new RestoreCheckStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $app->make(NewWritesDetector::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.restore.check_timeout_seconds')),
                     $maintenance,
                     new PreRestoreBackupStep($app->make(RestorePointService::class), $maintenance, $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.step_timeout_seconds')),
                     new RestoreStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(RestorePointGate::class), $maintenance, $driverFor,

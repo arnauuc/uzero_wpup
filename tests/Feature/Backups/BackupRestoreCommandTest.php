@@ -125,7 +125,7 @@ it('never lets --force restore a shop database, or restore without the point of 
     expect($exit)->toBe(1)->and(Artisan::output())->toContain($message)
         ->and(Run::query()->count())->toBe(0);
 })->with([
-    'shop without --accept-data-loss' => [['--db' => true], 'Cal --accept-data-loss'],
+    'shop without --accept-data-loss' => [['--db' => true], 'Sense connectar-se al lloc no es pot saber quins són. Cal --accept-data-loss'],
     'shop with --accept-data-loss' => [['--db' => true, '--accept-data-loss' => true], "esborra dades d'una botiga: cal confirmar-la en un terminal interactiu, també amb --force"],
     'without the point' => [['--files' => true, '--without-pre-backup' => true], "sense punt de l'estat actual: cal confirmar-la en un terminal interactiu"],
 ]);

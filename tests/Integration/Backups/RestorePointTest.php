@@ -74,10 +74,11 @@ foreach (['wp83', 'wp74'] as $fixture) {
                     : explode(' ', Fixtures::run($fixture, 'sha256sum "$HOME/.wpup/"'.escapeshellarg("{$root}/{$backup->path}")))[0];
                 expect($actual)->toBe($backup->sha256);
             }
-            // Dump and archive moved into the store: nothing left in the work directory.
-            expect(Fixtures::run($fixture, 'ls "$HOME/.wpup" | grep -cE "^(db|files)-run" || true'))->toBe("0\n");
+            // Dump and archive of this run moved into the store: nothing of it left in the work
+            // directory (files of other, interrupted runs are not this test's to judge).
+            expect(Fixtures::run($fixture, 'ls "$HOME/.wpup" | grep -cE "^(db|files)-run'.$run->id.'-" || true'))->toBe("0\n");
         } finally {
-            Fixtures::run($fixture, 'rm -rf "$HOME/.wpup/"'.escapeshellarg($root));
+            Fixtures::run($fixture, 'rm -rf "$HOME/.wpup/"'.escapeshellarg($root)." \"\$HOME/.wpup/db-run{$run->id}-\"* \"\$HOME/.wpup/files-run{$run->id}-\"*");
             File::deleteDirectory($external);
         }
     });

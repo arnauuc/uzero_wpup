@@ -217,6 +217,25 @@ return [
         'database' => [
             'file_name' => 'db-%s-%s.sql.gz',
         ],
+        // Order and user watermark of a database copy (UZEROWPUP-58, AGENTS.md rule 4):
+        // read right before the dump and compared before restoring it.
+        'watermark' => [
+            'timeout_seconds' => 120,
+            // Post types of orders in the classic posts storage (HPOS keeps every type in wc_orders).
+            'order_types' => ['shop_order', 'shop_order_refund', 'shop_order_placehold', 'shop_subscription'],
+            // A row created or modified this long before the read also counts as written:
+            // a transaction that reserved a lower ID may commit after the read.
+            'margin_seconds' => 300,
+            // At most this many distinct orders (and users) are collected per table;
+            // more makes the count "at least".
+            'scan_cap' => 1000,
+            // Orders and users listed to the operator (newest first; the rest are counted),
+            // and roles per user.
+            'max_listed' => 50,
+            'max_roles' => 5,
+            // Characters of WP-CLI's error kept in the reason.
+            'error_chars' => 300,
+        ],
         // Code archive (UZEROWPUP-39, ADR-0009): core, plugins, themes, mu-plugins,
         // drop-ins and wp-config.php. Paths relative to the WordPress root; tar and
         // rsync patterns ("*") are allowed.
