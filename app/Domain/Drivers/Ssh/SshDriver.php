@@ -337,28 +337,76 @@ final class SshDriver implements SiteDriver
 
     public function applyUpdate(UpdatePackage $package): CommandResult
     {
-        $this->verify($package->file);
-        $zip = $this->path($package->file->path);
-
-        [$current, $install] = match ($package->type) {
-            ComponentType::Core => [['core', 'version'], ['core', 'update', $zip]],
-            ComponentType::Plugin, ComponentType::Woocommerce => [['plugin', 'get', $package->slug, '--field=version'], ['plugin', 'install', $zip, '--force']],
-            ComponentType::Theme => [['theme', 'get', $package->slug, '--field=version'], ['theme', 'install', $zip, '--force']],
-            default => throw new DriverException("El driver SSH no instal·la paquets de tipus «{$package->type->value}»."),
-        };
-
-        $installed = $this->wp($current);
-        if ($installed->successful() && trim($installed->stdout) === $package->targetVersion) {
-            return new CommandResult(0, "{$package->slug} ja és a la versió {$package->targetVersion}.\n", '', $installed->durationMs);
+        $install = $this->installCommand($package);
+        $before = $this->installedState($package);
+        if ($before !== null && $before['version'] === $package->targetVersion) {
+            return new CommandResult(0, "{$package->slug} ja és a la versió {$package->targetVersion}.\n", '', 0);
         }
 
-        $result = $this->wp($install, $this->settings->transferTimeoutSeconds);
-        $after = trim($this->wp($current)->stdout);
-        if (! $result->successful() || $after !== $package->targetVersion) {
-            throw new RemoteCommandFailed("No s'ha pogut instal·lar {$package->slug} {$package->targetVersion} (ara: «{$after}»).", $result);
+        $sha256 = is_file($package->localPath) ? hash_file('sha256', $package->localPath) : false;
+        if ($sha256 === false || ! hash_equals($package->sha256, $sha256) || filesize($package->localPath) !== $package->sizeBytes) {
+            throw IntegrityCheckFailed::checksumMismatch(basename($package->localPath));
+        }
+
+        // One update at a time per site (lock): a package left here is a dead attempt's.
+        $work = escapeshellarg($this->workDir());
+        $this->mustExec("rm -f -- {$work}/package-*.zip {$work}/package-*.zip.part", "L'esborrat dels paquets antics");
+        $name = 'package-'.bin2hex(random_bytes(8)).'.zip';
+        try {
+            // upload() checks the bytes on the site against the local file, which matches the package.
+            $this->upload($package->localPath, $name);
+            $result = $this->wp([...$install, $this->path($name), ...self::SAFE_MODE], $this->settings->transferTimeoutSeconds);
+        } finally {
+            $this->mustExec('rm -f -- '.escapeshellarg($this->path($name)).' '.escapeshellarg($this->path($name).'.part'), "L'esborrat del paquet pujat");
+        }
+
+        $after = $this->installedState($package);
+        if (! $result->successful() || $after === null || $after['version'] !== $package->targetVersion) {
+            throw new RemoteCommandFailed("No s'ha pogut instal·lar {$package->slug} {$package->targetVersion} (ara: «".($after['version'] ?? 'no instal·lat').'»).', $result);
+        }
+        if ($before !== null && $after['status'] !== $before['status']) {
+            throw new RemoteCommandFailed("La instal·lació de {$package->slug} n'ha canviat l'estat d'activació (de «{$before['status']}» a «{$after['status']}»).", $result);
         }
 
         return $result;
+    }
+
+    /**
+     * The installer of each component type, before the package path. It never
+     * activates anything. The core keeps its target, so WP-CLI removes the
+     * files the new release no longer has.
+     *
+     * @return list<string>
+     */
+    private function installCommand(UpdatePackage $package): array
+    {
+        return match ($package->type) {
+            ComponentType::Core => ['core', 'update', '--version='.$package->targetVersion],
+            ComponentType::Plugin, ComponentType::Woocommerce => ['plugin', 'install', '--force'],
+            ComponentType::Theme => ['theme', 'install', '--force'],
+            default => throw new DriverException("El driver SSH no instal·la paquets de tipus «{$package->type->value}»."),
+        };
+    }
+
+    /**
+     * Installed version and activation status of the package's component, or
+     * null when it is not installed. The core has no status.
+     *
+     * @return array{version: string, status: string}|null
+     */
+    private function installedState(UpdatePackage $package): ?array
+    {
+        if ($package->type === ComponentType::Core) {
+            return ['version' => trim($this->wpOk(['core', 'version', ...self::SAFE_MODE], 'La lectura de la versió del core')->stdout), 'status' => ''];
+        }
+        $kind = $package->type === ComponentType::Theme ? 'theme' : 'plugin';
+        foreach ($this->wpJson([$kind, 'list', '--name='.$package->slug, '--fields=name,version,status', '--format=json', '--skip-update-check', ...self::SAFE_MODE]) as $row) {
+            if (self::field($row, 'name') === $package->slug) {
+                return ['version' => self::field($row, 'version'), 'status' => self::field($row, 'status')];
+            }
+        }
+
+        return null;
     }
 
     public function setMaintenanceMode(bool $enabled): void

@@ -41,6 +41,28 @@ final readonly class PendingUpdate
     ) {}
 
     /**
+     * A stored entry (toArray()); null when it is malformed.
+     *
+     * @param  array<mixed>  $data
+     */
+    public static function fromArray(array $data): ?self
+    {
+        $string = static fn (string $key): ?string => is_string($data[$key] ?? null) ? $data[$key] : null;
+        $type = $string('type');
+        $slug = $string('slug');
+        $current = $string('current_version');
+        $new = $string('new_version');
+        $source = $string('source');
+        if ($type === null || $slug === null || $current === null || $new === null || $source === null) {
+            return null;
+        }
+        $requires = is_array($data['requires_plugins'] ?? null) ? array_values(array_filter($data['requires_plugins'], is_string(...))) : null;
+
+        return new self($type, $slug, $string('wporg_slug'), $current, $new, $string('package_host'), $string('requires_php'), $string('requires_wp'), $string('requires_wc'),
+            $source, ($data['licensed'] ?? true) !== false, $requires, ($data['requires_plugins_inferred'] ?? false) === true);
+    }
+
+    /**
      * @return array{type: string, slug: string, wporg_slug: ?string, current_version: string, new_version: string, package_host: ?string, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, source: string, licensed: bool, requires_plugins: list<string>|null, requires_plugins_inferred: bool}
      */
     public function toArray(): array

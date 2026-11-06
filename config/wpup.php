@@ -104,6 +104,19 @@ return [
     ],
 
     /*
+     * Applying the updates (UZEROWPUP-54): one step per component, installed
+     * from the tool's artifact (the upload and the installer run with
+     * wpup.ssh.transfer_timeout_seconds), then the translations. Step timeouts
+     * in seconds.
+     */
+    'updates' => [
+        'component_timeout_seconds' => 1800,
+        'translations_timeout_seconds' => 900,
+        // Each `wp language … list|update` command.
+        'translations_command_timeout_seconds' => 600,
+    ],
+
+    /*
      * Site catalogue (UZEROWPUP-25). `default_window` applies to sites without
      * their own maintenance window (ADR-0006); the other lists are the values a
      * profile may use.

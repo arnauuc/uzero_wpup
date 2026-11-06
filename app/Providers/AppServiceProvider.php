@@ -9,6 +9,7 @@ use App\Domain\Artifacts\ArtifactSettings;
 use App\Domain\Artifacts\ArtifactStore;
 use App\Domain\Artifacts\DnsHostResolver;
 use App\Domain\Artifacts\HostResolver;
+use App\Domain\Artifacts\PackageArtifacts;
 use App\Domain\Artifacts\PackageUrlGuard;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
@@ -79,6 +80,8 @@ use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
+use App\Domain\Updates\UpdateChanges;
+use App\Domain\Updates\UpdateSteps;
 use App\Enums\BackupTargetType;
 use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
@@ -395,6 +398,19 @@ class AppServiceProvider extends ServiceProvider
                 new PlanStep($app->make(UpdatePlanner::class), self::configInt('wpup.planning.step_timeout_seconds'), self::configInt('wpup.planning.verified_php_max_age_seconds')),
             ]));
         });
+        // The update steps of a plan (UZEROWPUP-54); the update run that uses them is UZEROWPUP-60.
+        $this->app->bind(UpdateSteps::class, static fn (Application $app): UpdateSteps => new UpdateSteps(
+            $app->make(PackageArtifacts::class),
+            $app->make(ArtifactStore::class),
+            static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+            $app->make(RunAuthorization::class),
+            $app->make(UpdateChanges::class),
+            $app->make(SecretRedactor::class),
+            $app->make(WpCliReader::class),
+            self::configInt('wpup.updates.component_timeout_seconds'),
+            self::configInt('wpup.updates.translations_timeout_seconds'),
+            self::configInt('wpup.updates.translations_command_timeout_seconds'),
+        ));
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(
             runTimeoutSeconds: self::configInt('wpup.runs.timeout_seconds'),
             heartbeatSeconds: self::configInt('wpup.runs.heartbeat_seconds'),

@@ -38,6 +38,9 @@ interface SiteDriver
     /** Temporary files of a restore in the work directory (restoreDatabase(), uploaded copies). */
     public const string RESTORE_TEMP_PATTERN = '#^restore-[0-9a-f]{16}\.(sql|db\.sql\.gz|files\.tar\.gz)$#D';
 
+    /** Packages uploaded by applyUpdate() to the work directory, while they are installed. */
+    public const string PACKAGE_TEMP_PATTERN = '#^package-[0-9a-f]{16}\.zip(\.part)?$#D';
+
     /**
      * Connectivity and prerequisites, without changing anything (`site:test`).
      */
@@ -144,10 +147,27 @@ interface SiteDriver
     public function upload(string $localPath, string $remotePath): RemoteFile;
 
     /**
-     * Installs a package that was uploaded by the tool (never downloaded by the
-     * site). Idempotent: does nothing if the target version is installed.
+     * Installs a package of the tool server on the site (UZEROWPUP-54): the
+     * site never downloads it. Core, WooCommerce, plugins and themes only.
      *
-     * @throws DriverException
+     * - Idempotent: if the target version is installed it uploads nothing and
+     *   changes nothing (a resumed step calls it again).
+     * - The local file must match $package's size and SHA-256 before anything
+     *   is uploaded; the upload is checked again on the site.
+     * - The upload is a plain name of the work directory matching
+     *   PACKAGE_TEMP_PATTERN (random, private, outside the docroot), always
+     *   removed afterwards, also on failure; leftovers of a dead attempt are
+     *   removed before a new upload.
+     * - Installed with the component's own installer, overwriting the files,
+     *   never activating nor deactivating anything: the activation state after
+     *   is the one before, or it fails.
+     * - Afterwards the installed version must be the target, or it fails.
+     *
+     * TODO(F6, AgentDriver): the same contract over the agent, which receives
+     * the bytes in chunks into its private directory and installs them with
+     * the WordPress upgrader classes.
+     *
+     * @throws DriverException including IntegrityCheckFailed when the bytes do not match
      */
     public function applyUpdate(UpdatePackage $package): CommandResult;
 

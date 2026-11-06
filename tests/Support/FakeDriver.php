@@ -169,6 +169,21 @@ class FakeDriver implements SiteDriver
     /** @var list<string> names of the driver methods that change the site, in call order (UZEROWPUP-36) */
     public array $writeCalls = [];
 
+    /** @var list<string> work-directory names of every package applyUpdate() uploaded */
+    public array $uploadedPackages = [];
+
+    /** Thrown by applyUpdate() after the upload, as a failed installer would. */
+    public ?\Throwable $installFailure = null;
+
+    /** The version applyUpdate() really installs; null: the target (a package with another version inside). */
+    public ?string $installsVersion = null;
+
+    /** @var list<array{kind: string, slug: string, language: string}> translations with an update available */
+    public array $translationUpdates = [];
+
+    /** Translations `wp language … update` does not manage to update. */
+    public bool $translationsStuck = false;
+
     /** @var list<list<string>> every WP-CLI call, for assertions */
     public array $wpCalls = [];
 
@@ -291,8 +306,58 @@ class FakeDriver implements SiteDriver
                 : new CommandResult(1, '', "Error: Could not get '{$args[2]}' option.\n", 1),
             count($args) === 4 && $args[0] === 'option' && $args[1] === 'update' => $this->updateOption($args[2], $args[3]),
             count($args) === 2 && $args[0] === 'eval' && preg_match('/^error_log\("(.*)"\);$/', $args[1], $m) === 1 => $this->logLine($m[1]),
+            count($args) === 3 && $args[0] === 'plugin' && in_array($args[1], ['activate', 'deactivate'], true) => $this->togglePlugin($args[2], $args[1] === 'activate'),
+            count($args) >= 3 && $args[0] === 'language' && $args[2] === 'list' => $this->ok((string) json_encode(array_values(array_map(
+                static fn (array $t): array => [...($t['kind'] === 'core' ? [] : [$t['kind'] => $t['slug']]), 'language' => $t['language'], 'status' => 'installed', 'update' => 'available'],
+                array_filter($this->translationUpdates, static fn (array $t): bool => $t['kind'] === $args[1]),
+            )))),
+            count($args) >= 3 && $args[0] === 'language' && $args[2] === 'update' => $this->updateTranslations($args[1]),
             default => new CommandResult(1, '', 'Error: FakeDriver does not support: '.implode(' ', $args)."\n", 1),
         };
+    }
+
+    /**
+     * The "Version:" header inside a package zip, as the real installer would
+     * install it; null when it is not a readable zip with one.
+     */
+    private static function zipVersion(string $path): ?string
+    {
+        $zip = new \ZipArchive;
+        if ($zip->open($path, \ZipArchive::RDONLY) !== true) {
+            return null;
+        }
+        try {
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                if (preg_match('/^\s*\*?\s*Version:\s*(\S+)/m', (string) $zip->getFromIndex($i), $m) === 1) {
+                    return $m[1];
+                }
+            }
+        } finally {
+            $zip->close();
+        }
+
+        return null;
+    }
+
+    private function togglePlugin(string $slug, bool $active): CommandResult
+    {
+        $plugin = $this->components[ComponentType::Plugin->value.':'.$slug] ?? null;
+        if ($plugin === null) {
+            return new CommandResult(1, '', "Error: The '{$slug}' plugin could not be found.\n", 1);
+        }
+        $this->addComponent(new ComponentVersion($plugin->type, $plugin->slug, $plugin->version, $active, $plugin->title));
+
+        return $this->ok("Success: done.\n");
+    }
+
+    private function updateTranslations(string $kind): CommandResult
+    {
+        $this->writeCalls[] = "language {$kind} update";
+        if (! $this->translationsStuck) {
+            $this->translationUpdates = array_values(array_filter($this->translationUpdates, static fn (array $t): bool => $t['kind'] !== $kind));
+        }
+
+        return $this->ok("Success: Translations updated.\n");
     }
 
     /**
@@ -372,17 +437,40 @@ class FakeDriver implements SiteDriver
 
     public function applyUpdate(UpdatePackage $package): CommandResult
     {
-        $this->writeCalls[] = 'applyUpdate';
-        $content = $this->files[$package->file->path] ?? throw new RemoteCommandFailed('El paquet no és al lloc.');
-
-        if (hash('sha256', $content) !== $package->file->sha256) {
-            throw IntegrityCheckFailed::checksumMismatch($package->file->path);
+        if (! in_array($package->type, [ComponentType::Core, ComponentType::Woocommerce, ComponentType::Plugin, ComponentType::Theme], true)) {
+            throw new DriverException("El driver no instal·la paquets de tipus «{$package->type->value}».");
+        }
+        $key = $package->type->value.':'.$package->slug;
+        $before = $package->type === ComponentType::Core ? $this->coreVersion : ($this->components[$key]->version ?? null);
+        if ($before === $package->targetVersion) {
+            return $this->ok("{$package->slug} ja és a la versió {$package->targetVersion}.\n");
         }
 
-        if ($package->type === ComponentType::Core) {
-            $this->coreVersion = $package->targetVersion;
-        } else {
-            $this->addComponent(new ComponentVersion($package->type, $package->slug, $package->targetVersion));
+        $content = is_file($package->localPath) ? (string) file_get_contents($package->localPath) : '';
+        if (! hash_equals($package->sha256, hash('sha256', $content)) || strlen($content) !== $package->sizeBytes) {
+            throw IntegrityCheckFailed::checksumMismatch(basename($package->localPath));
+        }
+
+        $this->writeCalls[] = 'applyUpdate';
+        $name = 'package-'.bin2hex(random_bytes(8)).'.zip';
+        $this->uploadedPackages[] = $name;
+        $this->files[$name] = $content;
+        try {
+            if ($this->installFailure !== null) {
+                throw $this->installFailure;
+            }
+            $installed = $this->installsVersion ?? self::zipVersion($package->localPath) ?? $package->targetVersion;
+            if ($package->type === ComponentType::Core) {
+                $this->coreVersion = $installed;
+            } else {
+                // Activation is kept, as the real installers do.
+                $this->addComponent(new ComponentVersion($package->type, $package->slug, $installed, $this->components[$key]->active ?? false, $this->components[$key]->title ?? null));
+            }
+        } finally {
+            unset($this->files[$name]);
+        }
+        if ($installed !== $package->targetVersion) {
+            throw new RemoteCommandFailed("No s'ha pogut instal·lar {$package->slug} {$package->targetVersion} (ara: «{$installed}»).");
         }
 
         return $this->ok("Success: {$package->slug} {$package->targetVersion}\n");
