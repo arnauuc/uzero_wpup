@@ -6,6 +6,7 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\NewWritesDetector;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\SiteLocalDestination;
@@ -18,6 +19,7 @@ use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Inventory\SiteInventory;
+use App\Domain\Rollback\DatabaseRollbackStep;
 use App\Domain\Rollback\FilesRollbackStep;
 use App\Domain\Rollback\RestoredState;
 use App\Domain\Rollback\RevertedChanges;
@@ -71,11 +73,12 @@ function filesRollbackPipeline(FakeDriver $driver): void
         $driver, app(SecretRedactor::class), app(HttpFactory::class), app(SiteLocalSettings::class), 'https://fake.test',
     ));
     app()->bind(RollbackSteps::class, static fn (): RollbackSteps => new RollbackSteps(
-        app(RestoreSelection::class), app(SiteRestore::class), app(RevertedChanges::class),
+        app(RestoreSelection::class), app(SiteRestore::class), app(RevertedChanges::class), app(NewWritesDetector::class),
         static fn (Site $s, AuditActor $a): SiteDriver => $driver, app(RunAuthorization::class),
-        app(AuditLogger::class), app(SecretRedactor::class), 60,
+        app(AuditLogger::class), app(SecretRedactor::class), 60, 60,
     ));
-    app(PipelineResolver::class)->register(RunType::Rollback, static fn (): Pipeline => new Pipeline(app(RollbackSteps::class)->steps()));
+    // Only the files: the database rollback has its own tests (DatabaseRollbackTest).
+    app(PipelineResolver::class)->register(RunType::Rollback, static fn (): Pipeline => new Pipeline([app(RollbackSteps::class)->files()]));
 }
 
 /**
@@ -117,7 +120,7 @@ function filesRollbackRun(Site $site, Run $update, string $channel = 'cli'): Run
 }
 
 it('gives the rollback steps for 60 and 61 to compose, without registering a rollback pipeline itself', function (): void {
-    expect(array_map(fn ($s): string => $s->name(), app(RollbackSteps::class)->steps()))->toBe([FilesRollbackStep::NAME])
+    expect(array_map(fn ($s): string => $s->name(), app(RollbackSteps::class)->steps()))->toBe([FilesRollbackStep::NAME, DatabaseRollbackStep::NAME])
         ->and(fn () => app(PipelineResolver::class)->resolve(Run::factory()->create(['type' => RunType::Rollback])))->toThrow(RunException::class);
 });
 

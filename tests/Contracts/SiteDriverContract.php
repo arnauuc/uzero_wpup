@@ -284,6 +284,46 @@ final class SiteDriverContract
                     ->and($lines)->not->toContain('wpup-contract-before');
             });
 
+            it('finds the fatal lines of the whole new log region, and the ones before a cursor', function () use ($factory): void {
+                $driver = $factory();
+                $before = 'wpup-contract-before-'.bin2hex(random_bytes(4));
+                $driver->wp(['eval', 'error_log("PHP Fatal error:  '.$before.'");']);
+                $cursor = $driver->phpLogCursor();
+                $marker = 'wpup-contract-fatal-'.bin2hex(random_bytes(4));
+                $driver->wp(['eval', 'error_log("PHP Warning:  wpup-contract-warning");']);
+                $driver->wp(['eval', 'error_log("PHP Fatal error:  '.$marker.'");']);
+
+                $scan = $driver->phpLogFatalsSince($cursor, 50);
+                $earlier = implode("\n", $driver->phpLogFatalsBefore($cursor, 1_048_576, 50));
+
+                $found = implode("\n", $scan->lines);
+
+                expect($found)->toContain($marker);
+                expect($found)->not->toContain('wpup-contract-warning');
+                expect($found)->not->toContain($before);
+                expect($scan->capped)->toBeFalse();
+                expect($scan->rotated)->toBeFalse();
+                expect($earlier)->toContain($before);
+                expect($earlier)->not->toContain($marker);
+                expect($driver->phpLogFatalsSince($cursor, 1)->lines)->toHaveCount(1);
+            });
+
+            it('keeps the most recent fatals before the cursor when there are more than the cap', function () use ($factory): void {
+                $driver = $factory();
+                $token = bin2hex(random_bytes(4));
+                foreach (['oldest', 'older', 'newer', 'newest'] as $name) {
+                    $driver->wp(['eval', 'error_log("PHP Fatal error:  wpup-contract-'.$name.'-'.$token.'");']);
+                }
+                $cursor = $driver->phpLogCursor();
+
+                $lines = implode("\n", $driver->phpLogFatalsBefore($cursor, 1_048_576, 2));
+
+                expect($lines)->toContain("wpup-contract-newest-{$token}");
+                expect($lines)->toContain("wpup-contract-newer-{$token}");
+                expect($lines)->not->toContain("wpup-contract-older-{$token}");
+                expect($lines)->not->toContain("wpup-contract-oldest-{$token}");
+            });
+
             it('writes a temporary web file without overwriting, and removes it idempotently', function () use ($factory): void {
                 $driver = $factory();
                 $name = 'wpup-contract-'.bin2hex(random_bytes(4)).'.php';

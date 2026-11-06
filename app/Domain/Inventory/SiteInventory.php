@@ -27,7 +27,7 @@ use Carbon\CarbonImmutable;
  * - dropins:    list<array{slug: string, version: string, title: ?string}>
  * - mu_plugins: list<array{slug: string, version: string, title: ?string}>
  * - environment.php: array{binary: string, cli_version: string, cli_source: string,
- *   warnings: list<string>, sapi: ?string, extensions: list<string>, blocked_reason: ?string}
+ *   warnings: list<string>, sapi: ?string, error_log: ?string, extensions: list<string>, blocked_reason: ?string}
  * - pending_updates: list<array{type: 'core'|'plugin'|'theme'|'woocommerce', slug: string, wporg_slug: ?string,
  *   current_version: string, new_version: string, package_host: ?string, requires_php: ?string,
  *   requires_wp: ?string, requires_wc: ?string, source: 'wordpress.org'|'transient', licensed: bool,
@@ -197,6 +197,7 @@ final readonly class SiteInventory
             'cli_source' => $cli->source->value,
             'warnings' => $warnings,
             'sapi' => $probe?->sapi,
+            'error_log' => $probe?->errorLog,
             'extensions' => $probe->extensions ?? [],
             'blocked_reason' => $blocked,
         ]];

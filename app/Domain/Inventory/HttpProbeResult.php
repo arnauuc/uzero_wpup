@@ -23,6 +23,7 @@ final readonly class HttpProbeResult
         public array $extensions = [],
         public ?string $error = null,
         public bool $removed = true,
+        public ?string $errorLog = null,
     ) {}
 
     /**
