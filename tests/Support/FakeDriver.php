@@ -572,7 +572,7 @@ class FakeDriver implements SiteDriver
     {
         $lines = array_slice($this->phpLog, 0, $cursor->offset);
 
-        return array_slice(array_values(array_filter($lines, static fn (string $l): bool => preg_match('/PHP (Fatal error|Parse error):/', $l) === 1)), 0, $maxLines);
+        return array_slice(array_values(array_filter($lines, static fn (string $l): bool => preg_match('/PHP (Fatal error|Parse error):/', $l) === 1)), -$maxLines);
     }
 
     public function phpLogSince(LogCursor $cursor, int $maxBytes = 1_048_576): array

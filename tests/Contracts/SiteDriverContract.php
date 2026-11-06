@@ -308,6 +308,22 @@ final class SiteDriverContract
                 expect($driver->phpLogFatalsSince($cursor, 1)->lines)->toHaveCount(1);
             });
 
+            it('keeps the most recent fatals before the cursor when there are more than the cap', function () use ($factory): void {
+                $driver = $factory();
+                $token = bin2hex(random_bytes(4));
+                foreach (['oldest', 'older', 'newer', 'newest'] as $name) {
+                    $driver->wp(['eval', 'error_log("PHP Fatal error:  wpup-contract-'.$name.'-'.$token.'");']);
+                }
+                $cursor = $driver->phpLogCursor();
+
+                $lines = implode("\n", $driver->phpLogFatalsBefore($cursor, 1_048_576, 2));
+
+                expect($lines)->toContain("wpup-contract-newest-{$token}");
+                expect($lines)->toContain("wpup-contract-newer-{$token}");
+                expect($lines)->not->toContain("wpup-contract-older-{$token}");
+                expect($lines)->not->toContain("wpup-contract-oldest-{$token}");
+            });
+
             it('writes a temporary web file without overwriting, and removes it idempotently', function () use ($factory): void {
                 $driver = $factory();
                 $name = 'wpup-contract-'.bin2hex(random_bytes(4)).'.php';

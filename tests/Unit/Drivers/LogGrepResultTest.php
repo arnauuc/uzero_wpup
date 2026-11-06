@@ -33,3 +33,13 @@ it('builds a command that escapes its arguments and keeps both statuses', functi
         ->toContain('head -c 1000')
         ->toContain('grep -a -E -m 5');
 });
+
+it('keeps the last matches, not the first, when asked for the newest', function (): void {
+    $first = LogGrepResult::command('tail -c +1 /x', 'PHP Fatal error:', 3, 100);
+    $newest = LogGrepResult::command('tail -c +1 /x', 'PHP Fatal error:', 3, 100, null, true);
+
+    expect($first)->toContain('grep -a -E -m 3');
+    expect($first)->not->toContain('| tail -n');
+    expect($newest)->not->toContain('-m 3');
+    expect($newest)->toContain('echo "wpup-grep=$?" >&2; } | tail -n 3 | cut');
+});

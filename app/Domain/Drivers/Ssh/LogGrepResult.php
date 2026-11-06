@@ -25,14 +25,17 @@ final readonly class LogGrepResult
 
     /**
      * The shell wrapper: runs $reader (a command that prints the log bytes) and
-     * pipes it (optionally cut to $length bytes) through grep with the markers on
+     * pipes it (optionally cut to $length bytes; $newest keeps the LAST $maxLines matches instead of the first) through grep with the markers on
      * stderr. Arguments must be escaped.
      */
-    public static function command(string $reader, string $pattern, int $maxLines, int $lineBytes, ?int $length = null): string
+    public static function command(string $reader, string $pattern, int $maxLines, int $lineBytes, ?int $length = null, bool $newest = false): string
     {
         return '{ '.$reader.'; echo "wpup-tail=$?" >&2; }'
             .($length === null ? '' : ' | head -c '.max(1, $length))
-            .' | { grep -a -E -m '.max(1, $maxLines).' '.escapeshellarg($pattern).'; echo "wpup-grep=$?" >&2; }'
+            // Oldest first and capped (the new region), or all of them and then only the newest $maxLines
+            // (the region before the baseline: the most recent fatals are the ones that matter).
+            .' | { grep -a -E '.($newest ? '' : '-m '.max(1, $maxLines).' ').escapeshellarg($pattern).'; echo "wpup-grep=$?" >&2; }'
+            .($newest ? ' | tail -n '.max(1, $maxLines) : '')
             .' | cut -c1-'.$lineBytes;
     }
 

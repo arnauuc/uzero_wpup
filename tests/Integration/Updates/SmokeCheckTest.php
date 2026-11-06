@@ -51,6 +51,8 @@ it('passes on a healthy site and fails when a plugin updated after the baseline 
     $steps = app(SmokeCheckSteps::class);
     $dir = "{$site->wp_path}/wp-content/plugins/wpup-it-smoke";
     $file = escapeshellarg("{$dir}/wpup-it-smoke.php");
+    // A message no earlier run wrote: the fatal must be genuinely new, not a preexisting signature.
+    $token = bin2hex(random_bytes(6));
 
     try {
         $baseline = $steps->baseline()->run($context);
@@ -60,7 +62,7 @@ it('passes on a healthy site and fails when a plugin updated after the baseline 
         // The "update" breaks the site: every request now dies with a fatal.
         Fixtures::run(SMOKE_IT_FIXTURE, 'mkdir -p '.escapeshellarg($dir)." && printf '<?php\\n/* Plugin Name: wpup-it-smoke */\\n' > {$file}");
         $driver->wp(['plugin', 'activate', 'wpup-it-smoke']);
-        Fixtures::run(SMOKE_IT_FIXTURE, "printf '<?php\\n/* Plugin Name: wpup-it-smoke */\\nthrow new Error(\"wpup-it-smoke fatal\");\\n' > {$file}");
+        Fixtures::run(SMOKE_IT_FIXTURE, "printf '<?php\\n/* Plugin Name: wpup-it-smoke */\\nthrow new Error(\"wpup-it-smoke fatal {$token}\");\\n' > {$file}");
         $broken = $steps->check()->run($context);
 
         expect($baseline->status)->toBe(RunStepStatus::Succeeded)

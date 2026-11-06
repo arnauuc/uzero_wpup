@@ -255,7 +255,8 @@ interface SiteDriver
 
     /**
      * Candidate fatal lines in the $windowBytes before $cursor (what was
-     * already in the log before the update), at most $maxLines.
+     * already in the log before the update), at most $maxLines: the most
+     * recent ones when there are more.
      *
      * @return list<string>
      *

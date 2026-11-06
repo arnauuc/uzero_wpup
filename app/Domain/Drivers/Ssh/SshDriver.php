@@ -560,12 +560,12 @@ final class SshDriver implements SiteDriver
         }
         $start = max(0, $cursor->offset - max(1, $windowBytes));
 
-        return array_slice($this->fatalLines($cursor->path, $start, $maxLines, $cursor->offset - $start), 0, $maxLines);
+        return array_slice($this->fatalLines($cursor->path, $start, $maxLines, $cursor->offset - $start, true), 0, $maxLines);
     }
 
     /**
      * The candidate fatal lines of $path from byte $from (0-based), at most
-     * $length bytes when given and $maxLines lines, each cut to a bounded length.
+     * $length bytes when given and $maxLines lines (the first ones, or the last ones with $newest), each cut to a bounded length.
      * The exit status of tail and grep is verified (LogGrepResult), so an
      * unreadable log is an error, never an empty result.
      *
@@ -573,9 +573,9 @@ final class SshDriver implements SiteDriver
      *
      * @throws DriverException
      */
-    private function fatalLines(string $path, int $from, int $maxLines, ?int $length = null): array
+    private function fatalLines(string $path, int $from, int $maxLines, ?int $length = null, bool $newest = false): array
     {
-        $result = $this->exec(LogGrepResult::command('tail -c +'.($from + 1).' '.escapeshellarg($path), self::LOG_PREFILTER, $maxLines, self::LOG_LINE_BYTES, $length));
+        $result = $this->exec(LogGrepResult::command('tail -c +'.($from + 1).' '.escapeshellarg($path), self::LOG_PREFILTER, $maxLines, self::LOG_LINE_BYTES, $length, $newest));
 
         return LogGrepResult::parse($result->stdout, $result->stderr)->lines;
     }
