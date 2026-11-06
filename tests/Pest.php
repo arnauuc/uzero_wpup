@@ -36,3 +36,13 @@ function actingAsOperator(string $unixUser): void
     app()->instance(ProcessIdentity::class, new ProcessIdentity('wpup', $unixUser));
     app()->instance(OperatorResolver::class, new OperatorResolver('sudo', 'wpup', 'testing'));
 }
+
+/**
+ * The artifacts directory of the current test (wpup.artifacts.dir).
+ */
+function artifactsRoot(): string
+{
+    $dir = config('wpup.artifacts.dir');
+
+    return is_string($dir) ? $dir : throw new LogicException('wpup.artifacts.dir is not set.');
+}

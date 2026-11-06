@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Artifacts\ArtifactFetcher;
+use App\Domain\Artifacts\ArtifactSettings;
+use App\Domain\Artifacts\ArtifactStore;
+use App\Domain\Artifacts\DnsHostResolver;
+use App\Domain\Artifacts\HostResolver;
+use App\Domain\Artifacts\PackageUrlGuard;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\BackupStep;
@@ -79,6 +85,7 @@ use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Site;
 use App\Support\Logging\RedactSecretsTap;
 use Closure;
+use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
@@ -205,6 +212,32 @@ class AppServiceProvider extends ServiceProvider
             $app->make(SecretRedactor::class),
             $app->make(DropboxSettings::class),
             self::configInt('wpup.backups.hash_chunk_bytes'),
+        ));
+        // Package artifacts of a run (UZEROWPUP-49).
+        $this->app->bind(ArtifactSettings::class, static fn (): ArtifactSettings => new ArtifactSettings(
+            self::configString('wpup.artifacts.dir'),
+            self::configInt('wpup.artifacts.connect_timeout_seconds'),
+            self::configInt('wpup.artifacts.timeout_seconds'),
+            self::configInt('wpup.artifacts.read_timeout_seconds'),
+            self::configInt('wpup.artifacts.max_bytes'),
+            self::configInt('wpup.artifacts.max_unpacked_bytes'),
+            self::configInt('wpup.artifacts.max_redirects'),
+            self::configInt('wpup.artifacts.chunk_bytes'),
+            self::configInt('wpup.artifacts.command_timeout_seconds'),
+            self::configString('wpup.artifacts.wordpress_org.plugin_url'),
+            self::configString('wpup.artifacts.wordpress_org.theme_url'),
+            self::configInt('wpup.artifacts.min_retention_days'),
+            array_values(array_filter((array) config('wpup.artifacts.allowed_ports'), is_int(...))),
+            array_map(strtolower(...), self::configStrings('wpup.artifacts.url_secrets.query_keys')),
+            self::configInt('wpup.artifacts.url_secrets.min_value_length'),
+            self::configInt('wpup.artifacts.url_secrets.min_segment_length'),
+        ));
+        $this->app->bind(HostResolver::class, DnsHostResolver::class);
+        $this->app->bind(ArtifactFetcher::class, static fn (Application $app): ArtifactFetcher => new ArtifactFetcher(
+            new GuzzleClient,
+            $app->make(ArtifactStore::class),
+            $app->make(PackageUrlGuard::class),
+            $app->make(ArtifactSettings::class),
         ));
         // The tool's own backup (UZEROWPUP-47, ADR-0009 §3).
         $this->app->bind(ToolBackupSettings::class, static fn (): ToolBackupSettings => new ToolBackupSettings(

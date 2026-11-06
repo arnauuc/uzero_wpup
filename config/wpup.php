@@ -321,6 +321,44 @@ return [
         ],
     ],
 
+    /*
+     * Package artifacts (UZEROWPUP-49): every package is downloaded by the tool
+     * server, kept per run with its SHA-256 and installed from there, so staging
+     * and production get the same bytes. Private directory (0700, files 0600).
+     */
+    'artifacts' => [
+        'dir' => env('WPUP_ARTIFACTS_DIR', storage_path('app/artifacts')),
+        // Kept while the run's restore point exists, and at least this long (ADR-0009).
+        'min_retention_days' => 30,
+        // Download (HTTPS only; redirects are followed by hand, HTTPS only too).
+        'connect_timeout_seconds' => 15,
+        'timeout_seconds' => 600,
+        'read_timeout_seconds' => 120,
+        'max_redirects' => 5,
+        // Only public addresses are ever reached (PublicAddress); and only on these ports.
+        'allowed_ports' => [443],
+        // What of a package URL is registered with the secret redactor
+        // (PackageUrlGuard): values of query keys containing one of these words,
+        // and query values / path segments at least this long that look like
+        // a token (letters and digits). Never the slug, the version or a URL.
+        'url_secrets' => [
+            'query_keys' => ['key', 'license', 'licence', 'token', 'password', 'pass', 'secret', 'sig', 'signature', 'auth', 'hash', 'nonce', 'access_token', 'credential'],
+            'min_value_length' => 20,
+            'min_segment_length' => 16,
+        ],
+        'max_bytes' => 200 * 1024 * 1024,
+        // Sum of the uncompressed sizes of the ZIP entries (zip bombs).
+        'max_unpacked_bytes' => 1024 * 1024 * 1024,
+        'chunk_bytes' => 1_048_576,
+        // WP-CLI reads of the site's update data (transients, core check-update).
+        'command_timeout_seconds' => 60,
+        // sprintf(): WordPress.org slug, version.
+        'wordpress_org' => [
+            'plugin_url' => 'https://downloads.wordpress.org/plugin/%s.%s.zip',
+            'theme_url' => 'https://downloads.wordpress.org/theme/%s.%s.zip',
+        ],
+    ],
+
     'inventory' => [
         'step_timeout_seconds' => 600,
         // `wpup inventory --json` document version, bumped on incompatible changes.
