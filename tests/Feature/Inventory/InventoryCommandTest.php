@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Domain\Inventory\InventoryReport;
+use App\Domain\Planning\FutureMinimums;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\StepOutcome;
@@ -20,13 +21,13 @@ use Tests\Support\Runs\ScriptedReadOnlyStep;
 
 /**
  * @param  array<string, mixed>  $arguments
- * @return array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}, external_backup_warnings: list<string>, external_backup_detection_warnings: list<string>}>}
+ * @return array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}, external_backup_warnings: list<string>, external_backup_detection_warnings: list<string>, environment_warnings: list<string>, environment_evaluated: bool}>}
  */
 function inventoryJson(array $arguments): array
 {
     Artisan::call('inventory', $arguments + ['--json' => true]);
 
-    /** @var array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}, external_backup_warnings: list<string>, external_backup_detection_warnings: list<string>}>} $json */
+    /** @var array{version: int, sites: list<array{site: string, core: ?string, woocommerce: ?string, pending_updates: ?int, unlicensed: ?int, blocked: bool, status: string, failure: ?string, blocked_reason: ?string, php: array{version: ?string, source: ?string}, state: array{maintenance: bool, wc_db_update_needed: bool, outdated_templates: int}, external_backup_warnings: list<string>, external_backup_detection_warnings: list<string>, environment_warnings: list<string>, environment_evaluated: bool}>} $json */
     $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
 
     return $json;
@@ -146,7 +147,7 @@ it('writes the CSV to stdout, one row per site, with status and failure', functi
     $unevaluated = "Sense còpia externa coneguda: no n'hi ha de declarada ni cap plugin de còpies actiu (la detecció de plugins no s'ha executat).";
 
     expect($rows[0])->toBe(['site', 'url', 'core', 'woocommerce', 'php', 'php_source', 'db_server', 'pending_updates', 'unlicensed', 'blocked', 'blocked_reason', 'status', 'failure', 'external_backup_warnings', 'environment_warnings'])
-        ->and($rows[1])->toBe(['blog', 'https://blog.test', '', '', '', '', '', '', '', 'no', '', 'failed', "No s'ha pogut fer l'inventari: connexió caiguda", $unevaluated, ''])
+        ->and($rows[1])->toBe(['blog', 'https://blog.test', '', '', '', '', '', '', '', 'no', '', 'failed', "No s'ha pogut fer l'inventari: connexió caiguda", $unevaluated, 'no avaluat'])
         ->and($rows[2])->toBe(['botiga-a', 'https://a.test', '6.8.3', '9.8.1', '8.2.20', 'plesk_handler', '11.4.2-MariaDB', '2', '1', 'no', '', 'succeeded', '', $unevaluated, '']);
 });
 
@@ -296,4 +297,44 @@ it('shows the detection warnings and failed or unreadable backups of a snapshot 
     command('inventory', ['sites' => ['mixt'], '--wait' => true])
         ->expectsOutputToContain('Detecció de còpies')
         ->assertSuccessful();
+});
+
+it('reports the environment warnings of the configured table, and "not evaluated" without inventory', function (): void {
+    config(['wpup.future_minimums' => [
+        ['component' => 'woocommerce', 'label' => 'WooCommerce', 'version' => '10.0', 'min_php' => '8.3', 'min_wp' => null, 'effective' => '2027-04', 'released' => false, 'note' => 'test'],
+    ]]);
+    app()->forgetInstance(FutureMinimums::class);
+
+    $json = inventoryJson(['sites' => ['botiga-a', 'blog'], '--wait' => true]);
+    $bySite = array_column($json['sites'], null, 'site');
+
+    expect($bySite['botiga-a']['environment_warnings'])->toHaveCount(1)
+        ->and($bySite['botiga-a']['environment_warnings'][0])->toStartWith("Quedarà congelat abans de WooCommerce 10.0 (d'abril de 2027): exigeix PHP 8.3 i el lloc té PHP 8.2.20")
+        ->and($bySite['botiga-a']['environment_evaluated'])->toBeTrue()
+        ->and($bySite['blog']['environment_warnings'])->toBe([])
+        ->and($bySite['blog']['environment_evaluated'])->toBeFalse();
+
+    Artisan::call('inventory', ['sites' => ['botiga-a', 'blog'], '--wait' => true]);
+    expect(Artisan::output())->toContain('AVÍS: Quedarà congelat abans de WooCommerce 10.0');
+});
+
+it('does not judge an inactive WooCommerce', function (): void {
+    config(['wpup.future_minimums' => [
+        ['component' => 'woocommerce', 'label' => 'WooCommerce', 'version' => '10.0', 'min_php' => '8.3', 'min_wp' => null, 'effective' => null, 'released' => false, 'note' => 'test'],
+    ]]);
+    app()->forgetInstance(FutureMinimums::class);
+    app(PipelineResolver::class)->register(RunType::Inventory, static fn (Run $run): Pipeline => new Pipeline([
+        new ScriptedReadOnlyStep('inventory', static function ($context) use ($run): StepOutcome {
+            SiteSnapshot::factory()->create([
+                'site_id' => $run->site_id, 'run_id' => $run->id, 'core_version' => '6.8.3', 'php_version' => '8.2.20',
+                'plugins' => [['slug' => 'woocommerce', 'version' => '9.8.1', 'active' => false, 'title' => null, 'type' => 'woocommerce']],
+            ]);
+
+            return StepOutcome::succeeded('ok');
+        }),
+    ]));
+
+    $json = inventoryJson(['sites' => ['botiga-a'], '--wait' => true]);
+
+    expect($json['sites'][0]['environment_warnings'])->toBe([]);
 });

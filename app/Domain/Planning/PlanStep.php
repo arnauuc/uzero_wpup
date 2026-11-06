@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Domain\Planning;
 
-use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Identity\Ability;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Runs\ReadOnlyStep;
@@ -12,7 +11,6 @@ use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
 use App\Enums\ChangeResult;
-use App\Enums\PhpVersionSource;
 use App\Models\Run;
 use App\Models\SiteSnapshot;
 use Illuminate\Support\Facades\DB;
@@ -62,18 +60,8 @@ final readonly class PlanStep implements ReadOnlyStep
             return StepOutcome::failed(RunAuthorization::deniedMessage($context->run));
         }
 
-        // The plan never probes the web, so the PHP may be the CLI's. The latest probe
-        // verified PHP stands in for it only if it is recent and the CLI agrees on the minor.
-        $php = $snapshot->php_version;
-        $source = $snapshot->php_source;
-        if ($source === PhpVersionSource::Cli) {
-            $verified = SiteSnapshot::latestWebVerifiedPhp($site, $this->verifiedPhpMaxAgeSeconds);
-            if ($verified !== null && PhpRuntime::isVersion($php) && PhpRuntime::isVersion($verified->php_version)
-                && PhpRuntime::minorOf($verified->php_version) === PhpRuntime::minorOf($php)) {
-                $php = $verified->php_version;
-                $source = $verified->php_source;
-            }
-        }
+        // The plan never probes the web, so the PHP may be the CLI's (see WebPhp).
+        [$php, $source] = WebPhp::of($snapshot, $site, $this->verifiedPhpMaxAgeSeconds);
 
         $plan = $this->planner->plan($snapshot, $site->refresh(), $site->profile, $php, $source, $options);
         $this->recordSkips($context->run, $plan);

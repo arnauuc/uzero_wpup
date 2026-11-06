@@ -92,7 +92,6 @@ L'eina no fa còpies de llarga durada, però vigila que n'hi hagi. `wpup invento
   - l'última còpia correcta és més antiga de `max_age_days` (7 per defecte), encara que s'hagi declarat `plesk`, `dropbox` o `other`.
   Sense inventari, o amb una captura sense detecció, només es jutja la declaració i l'avís ho diu.
 - `--external-backup-notes=""` (buit) esborra les notes; canviar el tipus sense indicar-ne conserva les notes. Les notes es retallen i no poden ser només espais.
-- **Avisos d'entorn** (UZEROWPUP-52, ADR-0007): els llocs que una versió futura deixarà congelats a la branca actual (p. ex. WooCommerce 11.6, febrer 2027, exigeix PHP 8.1). La taula de mínims és a `config/wpup.php` → `future_minimums` (component, versió, PHP mínim, WordPress mínim opcional, data `AAAA-MM` o `null`, nota amb la font); s'edita sense tocar codi i convé verificar cada fila contra l'anunci oficial. Només avisa si el component és més antic que la versió de la fila i el lloc no en compleix el mínim; una versió il·legible no avisa. Si el PHP és el del CLI (no verificat pel web), l'avís ho diu. `wpup inventory` mostra la fila «Entorn», `--json` afegeix `environment_warnings` per lloc i `--csv` la columna `environment_warnings`. `wpup plan` imprimeix «Avís d'entorn: …» i `--json` porta `plan.environment_warnings`, que també queda desat al pla de l'execució perquè l'informe (F5) el mostri.
 - `wpup inventory` mostra l'avís i, si cal, «Detecció de còpies» amb el que no s'ha pogut llegir. `--json` afegeix `external_backup_warnings` i `external_backup_detection_warnings` a cada lloc, i `--csv` la columna `external_backup_warnings`.
 
 ## `site:test`
@@ -121,6 +120,16 @@ Només `admin`. Importa llocs en bloc des d'un CSV o YAML: tot o res, idempotent
 sudo -u wpup wpup site:import llocs.yaml --dry-run
 sudo -u wpup wpup site:import llocs.csv
 ```
+
+## Avisos d'entorn: mínims futurs (ADR-0007, UZEROWPUP-52)
+
+`wpup inventory` i `wpup plan` destaquen els llocs que una versió, ja publicada o futura, deixarà congelats a la branca actual (p. ex. WordPress 7.0 exigeix PHP 7.4; WooCommerce 11.6, febrer de 2027, exigeix PHP 8.1).
+
+- **Taula editable:** `config/wpup.php` → `future_minimums`. Cada fila porta `component` (`wordpress` o `woocommerce`), `label`, `version`, `min_php` i/o `min_wp` (almenys un), `effective` (`AAAA-MM` o `null`), `released` (`true` si ja és publicada) i `note` amb la font. Convé verificar cada fila contra l'anunci oficial. Una fila mal formada fa que s'ignori tota la taula i es registri un error al log; la resta de l'eina no s'atura.
+- **Quan avisa:** el component (WooCommerce, només si és actiu) és més antic que la versió de la fila i el lloc no en compleix el PHP o el WordPress mínim. «Quedarà congelat abans de WooCommerce 11.6 (febrer de 2027): exigeix PHP 8.1 i el lloc té PHP 7.4.33.» Si la fila ja és en vigor (`released` o `effective` passada), diu «Congelat».
+- **PHP:** el del web verificat per la sonda, igual que el pla; si només hi ha el del CLI, l'avís ho indica («no verificat pel web»).
+- **`wpup inventory`:** fila «Entorn» (`ok`, `AVÍS: …` o `no avaluat` si una versió no s'ha pogut llegir o no hi ha inventari). `--json` afegeix `environment_warnings` i `environment_evaluated` per lloc, i `--csv` la columna `environment_warnings` (`no avaluat` quan no s'ha pogut avaluar).
+- **`wpup plan`:** imprimeix «Avís d'entorn: …» i, amb `--json`, `plan.environment_warnings`; també queda desat al pla de l'execució perquè l'informe (F5) el mostri. S'avalua contra les versions objectiu del pla: un pla que ja puja el WordPress mínim no avisa per aquest motiu.
 
 ## `plan` i la política de versions (ADR-0005)
 

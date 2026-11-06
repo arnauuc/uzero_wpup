@@ -8,14 +8,17 @@ use Carbon\CarbonImmutable;
 use UnexpectedValueException;
 
 /**
- * Warns about sites that a future release will leave frozen on the branch they
- * have (UZEROWPUP-52, ADR-0007). Pure: it compares the site's versions with the
+ * Warns about sites that a release will leave frozen on the branch they have
+ * (UZEROWPUP-52, ADR-0007). Pure: it compares the site's versions with the
  * table `wpup.future_minimums`, at the time it is given. A row only warns when
  * the component is older than the row's version and the site does not meet its
  * minimum PHP (or WordPress, for WooCommerce). A version that cannot be read
- * never warns: there is nothing certain to say.
+ * never warns (see isEvaluable() to tell that apart from "all fine").
  *
- * @phpstan-type Row array{component: string, label: string, version: string, min_php: ?string, min_wp: ?string, effective: ?string, note: string}
+ * A row is already in force when it is marked `released` or its `effective`
+ * month has begun: «Congelat»; otherwise «Quedarà congelat».
+ *
+ * @phpstan-type Row array{component: string, label: string, version: string, min_php: ?string, min_wp: ?string, effective: ?CarbonImmutable, released: bool, note: string}
  */
 final readonly class FutureMinimums
 {
@@ -23,13 +26,19 @@ final readonly class FutureMinimums
 
     public const string COMPONENT_WOOCOMMERCE = 'woocommerce';
 
+    /** Month names for dates in the warnings; the 1-based index is the month. */
+    private const array MONTHS = [1 => 'gener', 'febrer', 'març', 'abril', 'maig', 'juny', 'juliol', 'agost', 'setembre', 'octubre', 'novembre', 'desembre'];
+
+    /** Months whose name starts with a vowel: «d'abril», not «de abril». */
+    private const array VOWEL_MONTHS = [4, 8, 10];
+
     /**
      * @param  list<Row>  $rows
      */
     public function __construct(private array $rows) {}
 
     /**
-     * Reads `wpup.future_minimums`; a malformed row is a configuration error, not a silent gap.
+     * Reads `wpup.future_minimums`; a malformed row is a configuration error.
      */
     public static function fromConfig(mixed $rows): self
     {
@@ -46,16 +55,34 @@ final readonly class FutureMinimums
             $minPhp = is_array($row) ? ($row['min_php'] ?? null) : null;
             $minWp = is_array($row) ? ($row['min_wp'] ?? null) : null;
             $effective = is_array($row) ? ($row['effective'] ?? null) : null;
-            if (! is_string($component) || ! is_string($label) || ! is_string($version) || ! WpVersion::isValid($version) || ! is_string($note)
+            $released = is_array($row) ? ($row['released'] ?? false) : false;
+            if (! in_array($component, [self::COMPONENT_WORDPRESS, self::COMPONENT_WOOCOMMERCE], true)
+                || ! is_string($label) || ! is_string($version) || ! WpVersion::isValid($version) || ! is_string($note)
                 || ($minPhp !== null && (! is_string($minPhp) || ! WpVersion::isValid($minPhp)))
                 || ($minWp !== null && (! is_string($minWp) || ! WpVersion::isValid($minWp)))
+                || ($minPhp === null && $minWp === null)
+                || ! is_bool($released)
                 || ($effective !== null && (! is_string($effective) || preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $effective) !== 1))) {
                 throw new UnexpectedValueException('Malformed row in wpup.future_minimums.');
             }
-            $parsed[] = ['component' => $component, 'label' => $label, 'version' => $version, 'min_php' => $minPhp, 'min_wp' => $minWp, 'effective' => $effective, 'note' => $note];
+            $parsed[] = [
+                'component' => $component, 'label' => $label, 'version' => $version, 'min_php' => $minPhp, 'min_wp' => $minWp,
+                'effective' => $effective === null ? null : CarbonImmutable::parse($effective.'-01', 'UTC'),
+                'released' => $released, 'note' => $note,
+            ];
         }
 
         return new self($parsed);
+    }
+
+    /**
+     * Whether the versions allow judging every row: a readable PHP and WordPress,
+     * and WooCommerce either absent or readable. When not, an empty list of
+     * warnings means "not evaluated", not "ok".
+     */
+    public function isEvaluable(?string $php, ?string $wordpress, ?string $woocommerce): bool
+    {
+        return WpVersion::isValid($php) && WpVersion::isValid($wordpress) && ($woocommerce === null || WpVersion::isValid($woocommerce));
     }
 
     /**
@@ -84,42 +111,20 @@ final readonly class FutureMinimums
                 continue;
             }
 
-            $warnings[] = sprintf('%s abans de %s %s%s: %s.', $this->prefix($row, $now), $row['label'], $row['version'], $this->date($row), implode('; ', $unmet));
+            $inForce = $row['released'] || ($row['effective'] !== null && $row['effective']->lessThanOrEqualTo($now));
+            $warnings[] = sprintf('%s abans de %s %s%s: %s.', $inForce ? 'Congelat' : 'Quedarà congelat', $row['label'], $row['version'], self::date($row['effective']), implode('; ', $unmet));
         }
 
         return $warnings;
     }
 
-    /**
-     * @param  Row  $row
-     */
-    private function prefix(array $row, CarbonImmutable $now): string
+    /** « (febrer de 2027)», «(d'abril de 2027)»; empty without a date. */
+    private static function date(?CarbonImmutable $date): string
     {
-        $effective = $this->effective($row);
-
-        return $effective !== null && $effective->lessThanOrEqualTo($now) ? 'Congelat' : 'Quedarà congelat';
-    }
-
-    /**
-     * @param  Row  $row
-     */
-    private function date(array $row): string
-    {
-        $effective = $this->effective($row);
-
-        return $effective === null ? '' : ' ('.$effective->settings(['locale' => 'ca'])->translatedFormat('F Y').')';
-    }
-
-    /**
-     * @param  Row  $row
-     */
-    private function effective(array $row): ?CarbonImmutable
-    {
-        if ($row['effective'] === null) {
-            return null;
+        if ($date === null) {
+            return '';
         }
 
-        // Validated as YYYY-MM by fromConfig().
-        return CarbonImmutable::parse($row['effective'].'-01', 'UTC');
+        return ' ('.(in_array($date->month, self::VOWEL_MONTHS, true) ? "d'" : '').self::MONTHS[$date->month]." de {$date->year})";
     }
 }

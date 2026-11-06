@@ -12,6 +12,9 @@ use App\Enums\RunStatus;
  */
 final readonly class InventoryRow
 {
+    /** What the terminal and the CSV show when the environment could not be judged. */
+    public const string NOT_EVALUATED = 'no avaluat';
+
     /**
      * @param  list<string>  $phpWarnings
      * @param  list<string>  $externalBackupWarnings  ExternalBackupStatus warnings (UZEROWPUP-133)
@@ -40,6 +43,8 @@ final readonly class InventoryRow
         public array $externalBackupWarnings = [],
         public array $externalBackupDetectionWarnings = [],
         public array $environmentWarnings = [],
+        /** False when a version could not be read (or there is no snapshot): an empty list then means «not evaluated». */
+        public bool $environmentEvaluated = false,
     ) {}
 
     public function hasSnapshot(): bool
@@ -74,6 +79,7 @@ final readonly class InventoryRow
             'external_backup_warnings' => $this->externalBackupWarnings,
             'external_backup_detection_warnings' => $this->externalBackupDetectionWarnings,
             'environment_warnings' => $this->environmentWarnings,
+            'environment_evaluated' => $this->environmentEvaluated,
         ];
     }
 
@@ -86,7 +92,7 @@ final readonly class InventoryRow
             $this->site, $this->url, $this->core, $this->woocommerce, $this->php, $this->phpSource, $this->dbServer,
             $this->pendingUpdates, $this->unlicensed, $this->blocked ? 'yes' : 'no', $this->blockedReason, $this->runStatus->value, $this->failure,
             implode(' ', $this->externalBackupWarnings),
-            implode(' ', $this->environmentWarnings),
+            $this->environmentEvaluated ? implode(' ', $this->environmentWarnings) : self::NOT_EVALUATED,
         ];
     }
 }

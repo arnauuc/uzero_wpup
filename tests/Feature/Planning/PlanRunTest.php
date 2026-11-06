@@ -11,6 +11,7 @@ use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteInventory;
 use App\Domain\Inventory\SiteState;
+use App\Domain\Planning\FutureMinimums;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
 use App\Domain\Runs\Pipeline;
@@ -71,11 +72,11 @@ function plannedDriver(?string $helloRequiresPhp = null, string $helloTarget = '
 }
 
 /**
- * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, changes: list<array{slug: string, action: string, reason: ?string}>}
+ * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, environment_warnings: list<string>, changes: list<array{slug: string, action: string, reason: ?string}>}
  */
 function planResult(Run $run): array
 {
-    /** @var array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, changes: list<array{slug: string, action: string, reason: ?string}>} $result */
+    /** @var array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, environment_warnings: list<string>, changes: list<array{slug: string, action: string, reason: ?string}>} $result */
     $result = $run->steps()->where('name', 'plan')->firstOrFail()->result;
 
     return $result;
@@ -334,4 +335,26 @@ it('fails the plan step when the operator who asked for an override is no longer
     expect($run->status)->toBe(RunStatus::Failed)
         ->and($run->steps()->where('name', 'plan')->sole()->summary)->toContain('ja no té permís')
         ->and(AuditLogEntry::query()->where('action', 'run.denied')->sole()->context)->toMatchArray(['ability' => 'override-version-policy']);
+});
+
+it('stores the environment warnings of the configured table in the plan', function (): void {
+    config(['wpup.future_minimums' => [
+        ['component' => 'wordpress', 'label' => 'WordPress', 'version' => '99.0', 'min_php' => '99.1', 'min_wp' => null, 'effective' => null, 'released' => true, 'note' => 'test'],
+    ]]);
+    app()->forgetInstance(FutureMinimums::class);
+
+    $warnings = planResult(planRun(plannedDriver(), Site::factory()->create()))['environment_warnings'];
+
+    expect($warnings)->toHaveCount(1)->and($warnings[0])->toStartWith('Congelat abans de WordPress 99.0: exigeix PHP 99.1 i el lloc té PHP ');
+});
+
+it('judges the WordPress minimum against the version the plan leaves, not the current one', function (): void {
+    $row = ['component' => 'wordpress', 'label' => 'WordPress', 'version' => '99.0', 'min_php' => null, 'effective' => null, 'released' => true, 'note' => 'test'];
+    // The plan updates 6.8.1 to 6.8.2: 6.8.2 meets the first minimum, not the second.
+    config(['wpup.future_minimums' => [[...$row, 'min_wp' => '6.8.2'], [...$row, 'min_wp' => '6.8.3']]]);
+    app()->forgetInstance(FutureMinimums::class);
+
+    $warnings = planResult(planRun(plannedDriver(), Site::factory()->create()))['environment_warnings'];
+
+    expect($warnings)->toBe(['Congelat abans de WordPress 99.0: exigeix WordPress 6.8.3 i el lloc té WordPress 6.8.2.']);
 });
