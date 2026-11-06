@@ -62,6 +62,10 @@ function restoreFixture(): array
         app(DriverFactory::class)->forSite($s, $a), app(SecretRedactor::class), app(HttpFactory::class), app(SiteLocalSettings::class)->withRoot($root), $s->url,
     ));
 
+    // The run leaves the maintenance mode as it found it: start without a .maintenance
+    // file that another test (or an interrupted run) may have left.
+    Fixtures::run(RESTORE_TEST_FIXTURE, 'rm -f '.escapeshellarg("{$site->wp_path}/.maintenance"));
+
     return [$site, app(DriverFactory::class)->forSite($site, AuditActor::system('tests')), $root];
 }
 

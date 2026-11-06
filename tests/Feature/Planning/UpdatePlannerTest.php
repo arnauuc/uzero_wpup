@@ -14,6 +14,9 @@ use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\SiteSnapshot;
 
+// The quarantine has its own tests (VersionPolicyTest).
+beforeEach(fn () => config(['wpup.planning.quarantine_days' => 0]));
+
 /**
  * @param  array<string, mixed>  $extra
  * @return array<string, mixed>

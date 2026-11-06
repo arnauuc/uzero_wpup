@@ -22,7 +22,29 @@ final readonly class UpdatePlan
         public bool $phpVerified,
         public ?string $blockedReason,
         public array $changes,
+        /** Overrides of the version policy this plan was made with (ADR-0005). */
+        public PlanOptions $options = new PlanOptions,
     ) {}
+
+    /**
+     * ADR-0005: one change that needs staging makes the whole run of the site staging-first.
+     * Before F7 those changes are skipped, unless --allow-major applies them in place.
+     */
+    public function requiresStaging(): bool
+    {
+        return array_filter($this->changes, static fn (PlannedChange $c): bool => $c->requiresStaging()) !== [];
+    }
+
+    /**
+     * Majors that would be applied (only with --allow-major before F7): the report's
+     * «Majors aplicades: cal revisar» and a warning notification (F5).
+     *
+     * @return list<PlannedChange>
+     */
+    public function appliedMajors(): array
+    {
+        return array_values(array_filter($this->changes, static fn (PlannedChange $c): bool => $c->major && $c->action === PlanAction::Update));
+    }
 
     public function updateCount(): int
     {
@@ -40,13 +62,15 @@ final readonly class UpdatePlan
     }
 
     /**
-     * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, changes: list<array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string}>}
+     * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, requires_staging: bool, overrides: array{allow_major: bool, skip_quarantine: bool}, changes: list<array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string, major: bool, quarantine_bypass: ?string, quarantine_days_left: ?int}>}
      */
     public function toArray(): array
     {
         return [
             'php' => ['version' => $this->phpVersion, 'source' => $this->phpSource->value, 'verified' => $this->phpVerified],
             'blocked_reason' => $this->blockedReason,
+            'requires_staging' => $this->requiresStaging(),
+            'overrides' => [PlanOptions::ALLOW_MAJOR => $this->options->allowMajor, PlanOptions::SKIP_QUARANTINE => $this->options->skipQuarantine],
             'changes' => array_map(static fn (PlannedChange $c): array => $c->toArray(), $this->changes),
         ];
     }
@@ -70,6 +94,8 @@ final readonly class UpdatePlan
 
         $source = PhpVersionSource::tryFrom($php['source']) ?? throw new UnexpectedValueException('Unknown PHP source in an update plan.');
 
-        return new self($php['version'], $source, ($php['verified'] ?? false) === true, is_string($blocked) ? $blocked : null, $parsed);
+        $overrides = $data['overrides'] ?? null;
+
+        return new self($php['version'], $source, ($php['verified'] ?? false) === true, is_string($blocked) ? $blocked : null, $parsed, PlanOptions::fromFlags(is_array($overrides) ? $overrides : []));
     }
 }

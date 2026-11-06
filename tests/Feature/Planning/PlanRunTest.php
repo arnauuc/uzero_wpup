@@ -27,12 +27,15 @@ use App\Enums\RunType;
 use App\Enums\SkipReason;
 use App\Enums\UserRole;
 use App\Models\AuditLogEntry;
+use App\Models\PackageVersion;
 use App\Models\Run;
 use App\Models\RunChange;
 use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\SiteSnapshot;
 use App\Models\User;
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
@@ -41,6 +44,8 @@ use Tests\Support\FakeDriver;
 beforeEach(function (): void {
     Redis::connection('locks')->command('flushdb');
     config(['wpup.runs.heartbeat_seconds' => 1]);
+    // The quarantine has its own tests (VersionPolicyTest and below).
+    config(['wpup.planning.quarantine_days' => 0]);
     Http::fake(['*' => Http::response('', 500)]);
 });
 
@@ -80,7 +85,7 @@ function planRun(FakeDriver $driver, Site $site): Run
 {
     app(PipelineResolver::class)->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
         new InventoryStep(app(SiteInventory::class), static fn (Site $s, AuditActor $a): SiteDriver => $driver, app(RunAuthorization::class), 60, app(SiteBlocking::class), readOnlySite: true),
-        new PlanStep(app(UpdatePlanner::class), 60, 604800),
+        new PlanStep(app(UpdatePlanner::class), app(RunAuthorization::class), 60, 604800),
     ]));
     $run = Run::factory()->create(['type' => RunType::Plan, 'site_id' => $site->id]);
 
@@ -117,7 +122,7 @@ it('records each skipped component with its precise reason in run_changes, once 
     $run = planRun($driver, $site);
     // A row written by a later step survives a retried plan step, which replaces only its own rows.
     RunChange::factory()->create(['run_id' => $run->id, 'step' => 'update', 'slug' => 'zz-later', 'result' => ChangeResult::Skipped, 'reason' => SkipReason::Other]);
-    (new PlanStep(app(UpdatePlanner::class), 60, 604800))->run(new StepContext($run->refresh(), false, ['inventory' => ['snapshot_id' => SiteSnapshot::query()->where('run_id', $run->id)->value('id')]]));
+    (new PlanStep(app(UpdatePlanner::class), app(RunAuthorization::class), 60, 604800))->run(new StepContext($run->refresh(), false, ['inventory' => ['snapshot_id' => SiteSnapshot::query()->where('run_id', $run->id)->value('id')]]));
 
     $rows = $run->changes()->orderBy('slug')->get()->map(static fn (RunChange $c): array => [
         $c->slug, $c->result->value, $c->reason?->value, $c->version_before, $c->version_after, $c->is_major, $c->reason_detail,
@@ -243,7 +248,7 @@ it('skips every update of an already blocked site', function (): void {
 
 it('fails the plan step when the inventory left no snapshot', function (): void {
     $run = Run::factory()->create(['type' => RunType::Plan]);
-    $outcome = new PlanStep(app(UpdatePlanner::class), 60, 604800)->run(new StepContext($run, false, []));
+    $outcome = new PlanStep(app(UpdatePlanner::class), app(RunAuthorization::class), 60, 604800)->run(new StepContext($run, false, []));
 
     expect($outcome->status->value)->toBe('failed');
 });
@@ -260,7 +265,7 @@ function realPlanPipeline(FakeDriver|Throwable $driver): void
 
             return $driver;
         }, app(RunAuthorization::class), 60, app(SiteBlocking::class), readOnlySite: true),
-        new PlanStep(app(UpdatePlanner::class), 60, 604800),
+        new PlanStep(app(UpdatePlanner::class), app(RunAuthorization::class), 60, 604800),
     ]));
 }
 
@@ -293,4 +298,39 @@ it('reports a failed plan run with the site block taken from the site', function
     expect($exit)->toBe(1)
         ->and($json['sites'][0])->toMatchArray(['status' => 'failed', 'blocked' => true, 'plan' => null])
         ->and($json['sites'][0]['failure'])->toContain('WP-CLI no respon');
+});
+
+it('holds new versions seen by the inventory until the quarantine is over (ADR-0005)', function (): void {
+    config(['wpup.planning.quarantine_days' => 7]);
+    Carbon::setTestNow(CarbonImmutable::parse('2026-11-06 12:00:00'));
+    $site = Site::factory()->create();
+
+    $first = planRun(plannedDriver(), $site);
+    $quarantined = RunChange::query()->where('run_id', $first->id)->where('slug', 'classic-editor')->sole();
+    expect($quarantined->reason)->toBe(SkipReason::Quarantine)
+        ->and($quarantined->reason_detail)->toContain('falten 7 dies')
+        // The core x.y.z does not wait.
+        ->and(array_column(planResult($first)['changes'], 'action', 'slug')['wordpress'])->toBe('update');
+
+    Carbon::setTestNow(now()->addDays(8));
+    $second = planRun(plannedDriver(), $site);
+
+    expect(array_column(planResult($second)['changes'], 'action', 'slug')['classic-editor'])->toBe('update')
+        ->and(PackageVersion::query()->where('slug', 'classic-editor')->sole()->first_seen_at->equalTo(CarbonImmutable::parse('2026-11-06 12:00:00')))->toBeTrue();
+});
+
+it('fails the plan step when the operator who asked for an override is no longer an admin', function (): void {
+    $user = User::factory()->create(['unix_username' => 'exadmin', 'role' => UserRole::Operator]);
+    $site = Site::factory()->create();
+    app(PipelineResolver::class)->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
+        new InventoryStep(app(SiteInventory::class), static fn (Site $s, AuditActor $a): SiteDriver => plannedDriver(), app(RunAuthorization::class), 60, app(SiteBlocking::class), readOnlySite: true),
+        new PlanStep(app(UpdatePlanner::class), app(RunAuthorization::class), 60, 604800),
+    ]));
+    $run = Run::factory()->create(['type' => RunType::Plan, 'site_id' => $site->id, 'user_id' => $user->id, 'actor' => 'exadmin', 'flags' => ['allow_major' => true]]);
+
+    $run = app(RunEngine::class)->execute($run);
+
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and($run->steps()->where('name', 'plan')->sole()->summary)->toContain('ja no té permís')
+        ->and(AuditLogEntry::query()->where('action', 'run.denied')->sole()->context)->toMatchArray(['ability' => 'override-version-policy']);
 });

@@ -95,12 +95,17 @@ return [
      * Update plan (UZEROWPUP-36). A plan never probes the web: it trusts the latest
      * probe-verified PHP of the site only if it is at most this old and the CLI
      * reports the same minor version. `report_version` is the `wpup plan --json`
-     * document version.
+     * document version. `quarantine_days` (ADR-0005, UZEROWPUP-127): how long a new
+     * version waits from when it is known to exist (0 turns the quarantine off).
+     * `package_versions_retention_days`: first sightings of versions no inventory
+     * has offered for this long are purged (PackageVersions::purge, UZEROWPUP-134).
      */
     'planning' => [
         'step_timeout_seconds' => 60,
         'report_version' => 1,
         'verified_php_max_age_seconds' => 604800,
+        'quarantine_days' => 7,
+        'package_versions_retention_days' => 365,
     ],
 
     /*
@@ -207,6 +212,25 @@ return [
         // Database dump (UZEROWPUP-38). sprintf(): run label, random suffix.
         'database' => [
             'file_name' => 'db-%s-%s.sql.gz',
+        ],
+        // Order and user watermark of a database copy (UZEROWPUP-58, AGENTS.md rule 4):
+        // read right before the dump and compared before restoring it.
+        'watermark' => [
+            'timeout_seconds' => 120,
+            // Post types of orders in the classic posts storage (HPOS keeps every type in wc_orders).
+            'order_types' => ['shop_order', 'shop_order_refund', 'shop_order_placehold', 'shop_subscription'],
+            // A row created or modified this long before the read also counts as written:
+            // a transaction that reserved a lower ID may commit after the read.
+            'margin_seconds' => 300,
+            // At most this many distinct orders (and users) are collected per table;
+            // more makes the count "at least".
+            'scan_cap' => 1000,
+            // Orders and users listed to the operator (newest first; the rest are counted),
+            // and roles per user.
+            'max_listed' => 50,
+            'max_roles' => 5,
+            // Characters of WP-CLI's error kept in the reason.
+            'error_chars' => 300,
         ],
         // Code archive (UZEROWPUP-39, ADR-0009): core, plugins, themes, mu-plugins,
         // drop-ins and wp-config.php. Paths relative to the WordPress root; tar and

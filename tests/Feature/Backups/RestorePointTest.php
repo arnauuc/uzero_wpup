@@ -406,6 +406,25 @@ it('reuses a complete restore point when the step is retried, with the warnings 
         ->and(Backup::query()->count())->toBe(2);
 });
 
+it('gives an external copy with the same bytes the watermark it lacks, keeping its verification (UZEROWPUP-58)', function (): void {
+    $site = restorePointSite();
+    $run = backupRun($site);
+    $driver = new FakeDriver;
+    $service = restorePoints($driver);
+    $record = externalDestination($site);
+    $service->create($site, $driver, $run, testActor());
+    $external = Backup::query()->where('backup_target_id', $record->id)->where('kind', BackupKind::Database)->sole();
+    $local = Backup::query()->where('backup_target_id', '!=', $record->id)->where('kind', BackupKind::Database)->sole();
+    $external->update(['order_watermark' => null]);
+
+    $again = $service->create($site, $driver, $run, testActor());
+
+    expect($again->reused)->toBeTrue()
+        ->and($local->order_watermark)->not->toBeNull()
+        ->and($external->fresh()?->order_watermark)->toBe($local->order_watermark)
+        ->and($external->fresh()?->verified_at)->not->toBeNull();
+});
+
 it('redoes a restore point that is incomplete or whose stored bytes changed', function (Closure $break): void {
     $site = restorePointSite();
     $run = backupRun($site);

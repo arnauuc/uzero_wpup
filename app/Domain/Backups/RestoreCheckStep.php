@@ -33,7 +33,9 @@ use Closure;
  *   an external copy, the configured list with uploads included;
  * - AGENTS.md rule 4 (ShopGuard): the database of a shop, or of a site whose
  *   inventory is unknown, needs --accept-data-loss and the operator's
- *   interactive confirmation. A dry run only warns.
+ *   interactive confirmation. A dry run only warns. The message, and the
+ *   step's result (new_writes), say which orders and users were written since
+ *   the copy (NewWritesDetector, UZEROWPUP-58); unknown counts as written.
  */
 final readonly class RestoreCheckStep implements ReadOnlyStep
 {
@@ -46,6 +48,7 @@ final readonly class RestoreCheckStep implements ReadOnlyStep
         private RestoreSelection $selection,
         private SiteRestore $restore,
         private FilesBackup $files,
+        private NewWritesDetector $newWrites,
         private Closure $driverFor,
         private RunAuthorization $authorization,
         private int $timeoutSeconds,
@@ -93,8 +96,15 @@ final readonly class RestoreCheckStep implements ReadOnlyStep
             }
 
             $shop = ShopGuard::isShop($this->snapshot($context, $site));
+            $writes = null;
+            if ($request->restoresDatabase() && $shop) {
+                $writes = $this->newWrites->detect($driverFor(), $chosen[BackupKind::Database->value]->order_watermark);
+                if ($request->acceptDataLoss && $request->dataLossConfirmed && $writes->mayLoseData()) {
+                    $warnings[] = 'Restauració acceptada amb pèrdua de dades. '.$writes->describe();
+                }
+            }
             if ($request->restoresDatabase() && $shop && ! ($request->acceptDataLoss && $request->dataLossConfirmed)) {
-                $why = ShopGuard::message($chosen[BackupKind::Database->value]->created_at->format(BackupListing::dateFormat()))
+                $why = ShopGuard::message($chosen[BackupKind::Database->value]->created_at->format(BackupListing::dateFormat()), $writes)
                     .' Cal --accept-data-loss i confirmar-ho de manera interactiva escrivint el nom del lloc (--force no ho salta).';
                 if (! $context->dryRun) {
                     throw new RestoreRefused($why);
@@ -117,6 +127,7 @@ final readonly class RestoreCheckStep implements ReadOnlyStep
             'pre_restore_excludes' => $excludes,
             'shop' => $shop,
             'accepted_data_loss' => $request->restoresDatabase() && $shop && $request->acceptDataLoss && $request->dataLossConfirmed,
+            'new_writes' => $writes?->toArray(),
             'warnings' => $warnings,
         ]);
     }

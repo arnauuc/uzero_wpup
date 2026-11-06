@@ -8,11 +8,13 @@ use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Data\InstalledComponents;
 use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\SiteDriver;
+use App\Domain\Planning\PackageVersions;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Models\Run;
 use App\Models\Site;
 use App\Models\SiteSnapshot;
+use Carbon\CarbonImmutable;
 
 /**
  * Takes a fresh inventory of a site and stores it as a new site_snapshots row.
@@ -29,9 +31,10 @@ use App\Models\SiteSnapshot;
  * - pending_updates: list<array{type: 'core'|'plugin'|'theme'|'woocommerce', slug: string, wporg_slug: ?string,
  *   current_version: string, new_version: string, package_host: ?string, requires_php: ?string,
  *   requires_wp: ?string, requires_wc: ?string, source: 'wordpress.org'|'transient', licensed: bool,
- *   requires_plugins: ?list<string>, requires_plugins_inferred: bool}>
+ *   requires_plugins: ?list<string>, requires_plugins_inferred: bool, released_at: ?string}>
  *   (UZEROWPUP-32, see PendingUpdates; slug is the installed name; package URLs are never stored;
- *   licensed=false is a premium package without download URL)
+ *   licensed=false is a premium package without download URL; every offered version is also recorded in
+ *   package_versions, see PackageVersions)
  * - environment.updates: array{warnings: list<string>}
  * - environment.state (UZEROWPUP-33, see SiteState; a null field could not be read, see warnings):
  *   array{woocommerce: ?array{version: string, db_version: ?string, db_update_needed: ?bool,
@@ -64,6 +67,7 @@ final readonly class SiteInventory
      * @param  SiteState|null  $state  null only in tests that do not exercise it (environment.state is left out)
      * @param  SitePrerequisites|null  $prerequisites  null only in tests that do not exercise it (environment.prerequisites is left out)
      * @param  ExternalBackups|null  $externalBackups  null only in tests that do not exercise it (environment.external_backups is left out)
+     * @param  PackageVersions|null  $versions  null only in tests that do not exercise it (no first sightings are recorded)
      */
     public function __construct(
         private ?HttpProbe $probe = null,
@@ -71,6 +75,7 @@ final readonly class SiteInventory
         private ?SiteState $state = null,
         private ?SitePrerequisites $prerequisites = null,
         private ?ExternalBackups $externalBackups = null,
+        private ?PackageVersions $versions = null,
     ) {}
 
     public const string THEME_ACTIVE = 'active';
@@ -99,6 +104,8 @@ final readonly class SiteInventory
         [$phpVersion, $phpSource, $phpEnvironment] = $this->php($php, $probe, $probeWeb, $driver);
 
         $pending = $this->pending?->read($driver, $installed, now()->getTimestamp());
+        // First sighting of every offered version, for the quarantine (ADR-0005).
+        $this->versions?->record($pending->updates ?? [], CarbonImmutable::now());
 
         $state = $this->state?->read($driver, $installed, now()->getTimestamp());
 

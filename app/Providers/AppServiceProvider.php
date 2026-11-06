@@ -20,6 +20,7 @@ use App\Domain\Backups\Dropbox\DropboxCredentialVerifier;
 use App\Domain\Backups\Dropbox\DropboxSettings;
 use App\Domain\Backups\Dropbox\DropboxTargetFactory;
 use App\Domain\Backups\FilesBackup;
+use App\Domain\Backups\NewWritesDetector;
 use App\Domain\Backups\PreRestoreBackupStep;
 use App\Domain\Backups\RestoreCheckStep;
 use App\Domain\Backups\RestoreMaintenanceStep;
@@ -27,6 +28,7 @@ use App\Domain\Backups\RestorePointGate;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\RestoreStep;
+use App\Domain\Backups\ShopWritesReader;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\SiteRestore;
@@ -53,6 +55,7 @@ use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Notifications\LogSiteBlockNotifier;
 use App\Domain\Notifications\SiteBlockNotifier;
+use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
@@ -81,6 +84,8 @@ use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
 use App\Domain\Updates\UpdateChanges;
 use App\Domain\Updates\UpdateSteps;
+use App\Domain\Vulnerabilities\NoVulnerabilitySource;
+use App\Domain\Vulnerabilities\VulnerabilitySource;
 use App\Enums\BackupTargetType;
 use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
@@ -274,6 +279,14 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.http_probe.max_response_bytes'),
             self::configInt('wpup.inventory.http_probe.max_extensions'),
         ));
+        $this->app->bind(PackageVersions::class, static fn (): PackageVersions => new PackageVersions(self::configInt('wpup.planning.package_versions_retention_days')));
+        // Until UZEROWPUP-128 picks a source, no vulnerability is known (ADR-0005).
+        $this->app->bind(VulnerabilitySource::class, NoVulnerabilitySource::class);
+        $this->app->bind(UpdatePlanner::class, static fn (Application $app): UpdatePlanner => new UpdatePlanner(
+            $app->make(PackageVersions::class),
+            $app->make(VulnerabilitySource::class),
+            self::configInt('wpup.planning.quarantine_days'),
+        ));
         $this->app->bind(PendingUpdates::class, static fn (Application $app): PendingUpdates => new PendingUpdates(
             $app->make(HttpFactory::class),
             $app->make(CacheFactory::class)->store(),
@@ -286,6 +299,16 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.wordpress_org.max_lookups'),
             self::configInt('wpup.inventory.wordpress_org.stale_after_seconds'),
             self::configInt('wpup.inventory.wordpress_org.cache_ttl_seconds'),
+        ));
+        $this->app->bind(ShopWritesReader::class, static fn (Application $app): ShopWritesReader => new ShopWritesReader(
+            $app->make(WpCliReader::class),
+            self::configInt('wpup.backups.watermark.timeout_seconds'),
+            array_values(array_filter(config()->array('wpup.backups.watermark.order_types'), is_string(...))),
+            self::configInt('wpup.backups.watermark.scan_cap'),
+            self::configInt('wpup.backups.watermark.max_listed'),
+            self::configInt('wpup.backups.watermark.max_roles'),
+            self::configInt('wpup.backups.watermark.margin_seconds'),
+            self::configInt('wpup.backups.watermark.error_chars'),
         ));
         $this->app->bind(SiteState::class, static fn (Application $app): SiteState => new SiteState(
             $app->make(WpCliReader::class),
@@ -315,7 +338,7 @@ class AppServiceProvider extends ServiceProvider
         $this->app->bind(ExternalBackupStatus::class, static fn (): ExternalBackupStatus => new ExternalBackupStatus(self::configInt('wpup.inventory.external_backups.max_age_days')));
         // Until the notification channels exist (F5), blocks only reach the log.
         $this->app->bind(SiteBlockNotifier::class, LogSiteBlockNotifier::class);
-        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class), $app->make(ExternalBackups::class)));
+        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class), $app->make(ExternalBackups::class), $app->make(PackageVersions::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
             $resolver->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([
@@ -373,7 +396,7 @@ class AppServiceProvider extends ServiceProvider
 
                 return new Pipeline([
                     new InventoryStep($app->make(SiteInventory::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.inventory.step_timeout_seconds'), readOnlySite: true, advisory: true),
-                    new RestoreCheckStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.restore.check_timeout_seconds')),
+                    new RestoreCheckStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $app->make(NewWritesDetector::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.restore.check_timeout_seconds')),
                     $maintenance,
                     new PreRestoreBackupStep($app->make(RestorePointService::class), $maintenance, $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.step_timeout_seconds')),
                     new RestoreStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(RestorePointGate::class), $maintenance, $driverFor,
@@ -394,7 +417,7 @@ class AppServiceProvider extends ServiceProvider
                     self::configInt('wpup.inventory.step_timeout_seconds'),
                     readOnlySite: true,
                 ),
-                new PlanStep($app->make(UpdatePlanner::class), self::configInt('wpup.planning.step_timeout_seconds'), self::configInt('wpup.planning.verified_php_max_age_seconds')),
+                new PlanStep($app->make(UpdatePlanner::class), $app->make(RunAuthorization::class), self::configInt('wpup.planning.step_timeout_seconds'), self::configInt('wpup.planning.verified_php_max_age_seconds')),
             ]));
         });
         // The update steps of a plan (UZEROWPUP-54); the update run that uses them is UZEROWPUP-60.
