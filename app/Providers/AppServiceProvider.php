@@ -90,6 +90,8 @@ use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
+use App\Domain\Updates\SmokeCheckSettings;
+use App\Domain\Updates\SmokeCheckSteps;
 use App\Domain\Updates\UpdateChanges;
 use App\Domain\Updates\UpdateSteps;
 use App\Domain\Vulnerabilities\NoVulnerabilitySource;
@@ -482,6 +484,24 @@ class AppServiceProvider extends ServiceProvider
             $app->make(SecretRedactor::class),
             self::configInt('wpup.updates.component_timeout_seconds'),
             $app->make(SshSettings::class)->applyUpdateBudgetSeconds(),
+        ));
+        // The minimal layer-3 check around the updates (UZEROWPUP-56).
+        $this->app->bind(SmokeCheckSettings::class, static fn (): SmokeCheckSettings => new SmokeCheckSettings(
+            stepTimeoutSeconds: self::configInt('wpup.smoke_check.step_timeout_seconds'),
+            httpTimeoutSeconds: self::configInt('wpup.smoke_check.http_timeout_seconds'),
+            maxRedirects: self::configInt('wpup.smoke_check.max_redirects'),
+            verifyTls: config('wpup.smoke_check.verify_tls') !== false,
+            logMaxBytes: self::configInt('wpup.smoke_check.log_max_bytes'),
+            reportedLines: self::configInt('wpup.smoke_check.reported_lines'),
+            lineMaxChars: self::configInt('wpup.smoke_check.line_max_chars'),
+            fatalPatterns: self::configStrings('wpup.smoke_check.fatal_patterns'),
+        ));
+        $this->app->bind(SmokeCheckSteps::class, static fn (Application $app): SmokeCheckSteps => new SmokeCheckSteps(
+            static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+            $app->make(RunAuthorization::class),
+            $app->make(HttpFactory::class),
+            $app->make(SecretRedactor::class),
+            $app->make(SmokeCheckSettings::class),
         ));
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(
             runTimeoutSeconds: self::configInt('wpup.runs.timeout_seconds'),
