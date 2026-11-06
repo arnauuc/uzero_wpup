@@ -191,6 +191,7 @@ it('shows quarantine, security exceptions, mandatory staging and the overrides',
                 new PlannedChange(ComponentType::Plugin, 'akismet', '5.3', '5.4', PlanAction::Skip, SkipReason::Quarantine, 'Falten 5 dies.', quarantineDaysLeft: 5),
                 new PlannedChange(ComponentType::Plugin, 'big', '2.9', '3.0', PlanAction::Update, null, 'Canvi major aplicat in-place.', major: true),
                 new PlannedChange(ComponentType::Plugin, 'forms', '1.2', '1.3', PlanAction::Update, null, 'Excepció.', bypass: QuarantineBypass::Vulnerability),
+                new PlannedChange(ComponentType::Plugin, 'hello', '1.6', '1.7', PlanAction::Update, bypass: QuarantineBypass::Override),
             ], new PlanOptions(allowMajor: true));
 
             return StepOutcome::succeeded($plan->summary(), '', $plan->toArray());
@@ -204,7 +205,9 @@ it('shows quarantine, security exceptions, mandatory staging and the overrides',
         ->toContain('Cal staging primer: sí, però --allow-major aplica els majors in-place')
         ->toContain('| plugin:akismet     | 5.3    | 5.4      | ometre      | en quarantena — Falten 5 dies.')
         ->toContain('| plugin:big (major) | 2.9    | 3.0      | actualitzar | Canvi major aplicat in-place.')
-        ->toContain('| plugin:forms       | 1.2    | 1.3      | actualitzar | excepció de seguretat: sense quarantena — Excepció.')
+        // The note already says it: no label as well; the label alone when there is no note.
+        ->toContain('| plugin:forms       | 1.2    | 1.3      | actualitzar | Excepció.')
+        ->toContain('| plugin:hello       | 1.6    | 1.7      | actualitzar | quarantena omesa amb --skip-quarantine')
         ->toContain('En quarantena: akismet (5 d).')
         ->toContain('Excepcions de seguretat: forms.')
         ->toContain('Majors aplicades: cal revisar: big.');

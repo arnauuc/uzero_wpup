@@ -55,13 +55,7 @@ final class PlanCommand extends WpupCommand
     protected function perform(): int
     {
         $options = new PlanOptions($this->option('allow-major') === true, $this->option('skip-quarantine') === true);
-        if ($options->any() && ! Ability::OverrideVersionPolicy->allows($this->operator)) {
-            $this->audit->record($this->actor(), 'command.denied', AuditResult::Denied, 'command', (string) $this->getName(), [
-                'ability' => Ability::OverrideVersionPolicy->value,
-                'flags' => $options->toFlags(),
-            ]);
-            $this->error('Només un admin pot fer servir --allow-major i --skip-quarantine.');
-
+        if ($options->any() && ! $this->requireAbility(Ability::OverrideVersionPolicy, ['flags' => $options->toFlags()], 'Només un admin pot fer servir --allow-major i --skip-quarantine.')) {
             return self::FAILURE;
         }
 
@@ -100,8 +94,9 @@ final class PlanCommand extends WpupCommand
      */
     private static function reason(PlannedChange $change): string
     {
+        // The bypass label only when there is no note: the note already says it.
         $label = $change->reason?->label()
-            ?? ($change->bypass === null || $change->bypass === QuarantineBypass::CoreMaintenance ? null : $change->bypass->label());
+            ?? ($change->bypass === null || $change->bypass === QuarantineBypass::CoreMaintenance || $change->detail !== null ? null : $change->bypass->label());
 
         return match (true) {
             $label === null => $change->detail ?? '',

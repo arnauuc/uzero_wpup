@@ -111,7 +111,7 @@ sudo -u wpup wpup site:import llocs.csv
 
 - **Majors:** core `x.y`, WooCommerce `X.0` i plugins o temes amb canvi al primer número. Fins a F7 s'ometen amb «major pendent: cal staging (F7)», i el pla diu «Cal staging primer: sí». La taula hi afegeix `(major)`.
 - **Quarantena:** una versió nova espera `planning.quarantine_days` (per defecte, 7) des de la data de publicació de WordPress.org o des de la primera vegada que l'inventari la va veure (`package_versions`), la que sigui anterior. La taula mostra els dies que falten. Si surt una versió correctiva, compta la seva pròpia data.
-- **Excepcions sense quarantena:** el core `x.y.z` dins de la mateixa branca, i les actualitzacions que corregeixen una vulnerabilitat coneguda de la versió instal·lada (la font arriba amb UZEROWPUP-128). En aquest cas s'aplica la primera versió que les corregeix, amb les mateixes regles de staging si és major. Surten a «Excepcions de seguretat».
+- **Excepcions sense quarantena:** el core `x.y.z` dins de la mateixa branca, i les actualitzacions que corregeixen una vulnerabilitat coneguda de la versió instal·lada (la font arriba amb UZEROWPUP-128). Només es consulta per a les versions que encara són en quarantena. S'aplica la primera versió que les corregeix, amb les mateixes regles de staging si és major; si és anterior a l'oferta, no se'n coneixen els requisits i s'omet amb el motiu. Surten a «Excepcions de seguretat».
 
 | Opció | Què fa |
 | --- | --- |

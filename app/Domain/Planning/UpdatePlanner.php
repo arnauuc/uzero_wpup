@@ -7,6 +7,8 @@ namespace App\Domain\Planning;
 use App\Domain\Inventory\PendingUpdate;
 use App\Domain\Inventory\PrerequisiteCheck;
 use App\Domain\Sites\SiteBlocking;
+use App\Domain\Vulnerabilities\InstalledComponent;
+use App\Domain\Vulnerabilities\KnownVulnerability;
 use App\Domain\Vulnerabilities\VulnerabilitySource;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
@@ -16,6 +18,7 @@ use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\SiteSnapshot;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Decides, from a fresh snapshot, the site's block and its profile, which pending
@@ -43,9 +46,10 @@ use Carbon\CarbonImmutable;
  * and its WordPress.org date; a version never recorded waits the whole period).
  * The counter is the offered version's own, so a corrective 3.0.1 restarts it.
  * Exceptions: core x.y.z within the installed branch, and an update that fixes a
- * known vulnerability of the installed version (VulnerabilitySource): it targets
- * the first version that fixes them all (WordPress.org plugins and themes; others
- * only offer their latest) and keeps the major rules. --skip-quarantine applies
+ * known vulnerability of the installed version (VulnerabilitySource, asked only
+ * for the updates that would wait): it targets the first version that fixes them
+ * all (WordPress.org plugins and themes; others only offer their latest), is
+ * skipped if that version's requirements are unknown, and keeps the major rules. --skip-quarantine applies
  * versions in quarantine; --allow-major applies majors in place (before F7). Both
  * are marked on the change so the report can show them.
  *
@@ -58,7 +62,7 @@ use Carbon\CarbonImmutable;
  * Versions are compared with WpVersion; a requirement or a site version that
  * cannot be read is never taken as met.
  *
- * @phpstan-type Candidate array{change: PlannedChange, package: PackageVersionKey, from_org: bool, vulnerabilities: list<string>, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}
+ * @phpstan-type Candidate array{change: PlannedChange, package: PackageVersionKey, from_org: bool, wporg_slug: ?string, vulnerabilities: list<string>, unverified_fix: ?string, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}
  */
 final readonly class UpdatePlanner
 {
@@ -70,6 +74,9 @@ final readonly class UpdatePlanner
 
     /** Prefix of the block a real run would apply, as opposed to one the site already has. */
     public const string WOULD_BLOCK_PREFIX = 'es bloquejaria: ';
+
+    /** Longest fix version accepted from the vulnerability source. */
+    private const int FIX_VERSION_MAX_LENGTH = 32;
 
     public function __construct(
         private PackageVersions $versions,
@@ -97,15 +104,33 @@ final readonly class UpdatePlanner
         $now = CarbonImmutable::now();
         $since = $this->versions->knownSince(array_map(static fn (array $c): PackageVersionKey => $c['package'], $candidates));
 
-        foreach ($candidates as $candidate) {
-            $candidate = $blocked === null ? $this->securityFix($candidate) : $candidate;
+        // The vulnerability source is asked once, only for the updates that would wait
+        // for the quarantine and pass the cheap checks (ADR-0005 section 3).
+        $quarantines = [];
+        $asked = [];
+        foreach ($candidates as $i => $candidate) {
             $change = $candidate['change'];
-            $quarantine = $this->quarantine($change, $since[$candidate['package']->id()] ?? null, $now);
+            $quarantines[$i] = $this->quarantine($change, $since[$candidate['package']->id()] ?? null, $now);
+            if ($quarantines[$i] !== null && $blocked === null && $candidate['licensed'] && ! self::listed($excluded, $change) && ! self::listed($frozen, $change)) {
+                $asked[$i] = new InstalledComponent($change->type, $change->slug, $candidate['from_org'] ? ($candidate['wporg_slug'] ?? $change->slug) : null, $change->currentVersion);
+            }
+        }
+        $known = $asked === [] ? [] : $this->vulnerabilities->affecting(array_values($asked));
+
+        foreach ($candidates as $i => $candidate) {
+            $quarantine = $quarantines[$i];
+            $fixed = isset($asked[$i]) ? $this->securityFix($candidate, $known[$asked[$i]->id()] ?? []) : null;
+            if ($fixed !== null) {
+                $candidate = $fixed;
+                $quarantine = null;
+            }
+            $change = $candidate['change'];
             $decision = match (true) {
                 $blocked !== null => [SkipReason::SiteBlocked, $blocked],
                 self::listed($excluded, $change) => [SkipReason::Excluded, 'El component és al perfil del lloc com a exclòs.'],
                 self::listed($frozen, $change) => [SkipReason::Frozen, 'El component és al perfil del lloc com a congelat.'],
                 $candidate['licensed'] === false => [SkipReason::NoLicense, 'No hi ha cap paquet descarregable: falta la llicència.'],
+                $candidate['unverified_fix'] !== null => [SkipReason::Other, $candidate['unverified_fix']],
                 default => $this->incompatibility($candidate, $phpVersion, $targets, $skippedTargets, $otherCoreOffers)
                     ?? $this->missingPlugin($candidate['requires_plugins'], $active)
                     ?? ($quarantine === null || $options->skipQuarantine ? null : [SkipReason::Quarantine, $quarantine[1], $quarantine[0]])
@@ -160,42 +185,62 @@ final readonly class UpdatePlanner
     /**
      * The update with the security exception, when the installed version has known
      * vulnerabilities that the offered version fixes (ADR-0005 section 3): it targets
-     * the first version that fixes them all, when it can be installed.
+     * the first version that fixes them all, when it can be installed. Null when no
+     * known vulnerability is fixed by it. A fix version from the source that is not
+     * a plain version (digits and dots) is ignored with a warning.
+     *
+     * The snapshot only has the offered version's requirements. When the target moves
+     * to an earlier fix version its requirements are unknown, so the update is not
+     * applied blind: unverified_fix says why it is skipped.
      *
      * @param  Candidate  $candidate
-     * @return Candidate
+     * @param  list<KnownVulnerability>  $vulnerabilities
+     * @return Candidate|null
      */
-    private function securityFix(array $candidate): array
+    private function securityFix(array $candidate, array $vulnerabilities): ?array
     {
         $change = $candidate['change'];
         $offered = WpVersion::parse($change->targetVersion);
         if ($offered === null) {
-            return $candidate;
+            return null;
         }
 
         $ids = [];
         $fix = null;
-        foreach ($this->vulnerabilities->affecting($change->type, $change->slug, $change->currentVersion) as $vulnerability) {
-            $fixed = WpVersion::parse($vulnerability->fixedIn);
+        foreach ($vulnerabilities as $vulnerability) {
+            $fixedIn = $vulnerability->fixedIn;
+            if ($fixedIn === null) {
+                continue;
+            }
+            if (strlen($fixedIn) > self::FIX_VERSION_MAX_LENGTH || preg_match('/^\d{1,9}(?:\.\d{1,9}){0,5}$/', $fixedIn) !== 1) {
+                Log::warning("Vulnerability source gave an invalid fixed-in version for {$change->type->value}:{$change->slug}: ignored.");
+
+                continue;
+            }
+            $fixed = WpVersion::parse($fixedIn);
             // Only a fix the offered version includes and the installed one does not.
-            if ($fixed === null || $fixed->compare($offered) > 0 || WpVersion::satisfies($change->currentVersion, $vulnerability->fixedIn) !== false) {
+            if ($fixed === null || $fixed->compare($offered) > 0 || WpVersion::satisfies($change->currentVersion, $fixedIn) !== false) {
                 continue;
             }
             $ids[] = $vulnerability->id;
-            if ($fix === null || WpVersion::compareStrings((string) $vulnerability->fixedIn, $fix) > 0) {
-                $fix = (string) $vulnerability->fixedIn;
+            if ($fix === null || WpVersion::compareStrings($fixedIn, $fix) > 0) {
+                $fix = $fixedIn;
             }
         }
         if ($fix === null) {
-            return $candidate;
+            return null;
         }
 
         // Only WordPress.org serves a given older version; the core and premium packages offer their latest.
         $target = $candidate['from_org'] && $change->type !== ComponentType::Core ? $fix : $change->targetVersion;
+        $ids = array_values(array_unique($ids));
         $candidate['change'] = new PlannedChange($change->type, $change->slug, $change->currentVersion, $target, PlanAction::Update,
             major: VersionChange::isMajor($change->type, $change->currentVersion, $target), bypass: QuarantineBypass::Vulnerability);
-        $candidate['vulnerabilities'] = array_values(array_unique($ids));
+        $candidate['vulnerabilities'] = $ids;
         $candidate['package'] = $candidate['package']->withVersion($target);
+        if (WpVersion::compareStrings($target, $change->targetVersion) !== 0) {
+            $candidate['unverified_fix'] = 'Excepció de seguretat ('.implode(', ', $ids)."): {$target} és la primera versió que corregeix les vulnerabilitats, però no se'n coneixen els requisits (PHP, WordPress, WooCommerce, plugins): no s'aplica a cegues. La {$change->targetVersion} espera la quarantena.";
+        }
 
         return $candidate;
     }
@@ -255,7 +300,9 @@ final readonly class UpdatePlanner
                     bypass: $type === ComponentType::Core && ! $major ? QuarantineBypass::CoreMaintenance : null),
                 'package' => PackageVersionKey::of($type, $slug, $target, self::version($update['source'] ?? null), self::version($update['wporg_slug'] ?? null), self::version($update['package_host'] ?? null)),
                 'from_org' => ($update['source'] ?? null) === PendingUpdate::SOURCE_WORDPRESS_ORG,
+                'wporg_slug' => self::version($update['wporg_slug'] ?? null),
                 'vulnerabilities' => [],
+                'unverified_fix' => null,
                 'licensed' => ($update['licensed'] ?? true) !== false,
                 'requires_php' => self::version($update['requires_php'] ?? null),
                 'requires_wp' => self::version($update['requires_wp'] ?? null),
