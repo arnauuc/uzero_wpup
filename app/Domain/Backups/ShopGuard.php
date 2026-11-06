@@ -15,8 +15,9 @@ use App\Models\SiteSnapshot;
  * --accept-data-loss and the operator typing the site's name (never --force).
  * The restore run compares the copy's order and user watermark with the site
  * (NewWritesDetector, UZEROWPUP-58) and tells which orders and users would be
- * lost; restoring without the confirmation when nothing was written is
- * UZEROWPUP-59.
+ * lost. A manual restore always asks for the confirmation; only the rollback
+ * of an update puts the database back by itself, and only when nothing was
+ * written (DatabaseRollbackStep, UZEROWPUP-59).
  */
 final class ShopGuard
 {

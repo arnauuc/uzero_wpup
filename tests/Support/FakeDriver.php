@@ -321,6 +321,7 @@ class FakeDriver implements SiteDriver
             count($args) === 3 && $args[0] === 'cli' && $args[1] === 'has-command' => in_array($args[2], $this->cliCommands, true) ? $this->ok('') : new CommandResult(1, '', '', 1),
             $args === ['eval', PostUpdateStep::WC_DB_SNIPPET, '--skip-themes'] => $this->ok($this->wcFails || $this->wcDbUpdateNeeded === null ? 'unknown' : ($this->wcDbUpdateNeeded ? 'pending' : 'ok')),
             isset($this->commandResults[self::commandKey($args)]) => $this->commandResults[self::commandKey($args)],
+            $args === ['maintenance-mode', 'activate', '--force', '--skip-plugins', '--skip-themes'] => $this->refreshMaintenance(),
             in_array($args, [['maintenance-mode', 'is-active'], ['maintenance-mode', 'is-active', '--skip-plugins', '--skip-themes']], true) => $this->maintenance
                 ? $this->ok('')
                 : new CommandResult(1, '', '', 1),
@@ -513,6 +514,16 @@ class FakeDriver implements SiteDriver
         }
 
         return new AppliedUpdate($this->ok("Success: {$package->slug} {$package->targetVersion}\n"), $this->installedState($package->type, $package->slug) ?? throw new RemoteCommandFailed('El component no és al lloc.'), false);
+    }
+
+    /** `wp maintenance-mode activate --force`: `.maintenance` written again with the current time. */
+    private function refreshMaintenance(): CommandResult
+    {
+        $this->writeCalls[] = 'refreshMaintenance';
+        $this->maintenance = true;
+        $this->maintenanceUpgrading = null;
+
+        return $this->ok("Success: Activated Maintenance mode.\n");
     }
 
     public function setMaintenanceMode(bool $enabled): void

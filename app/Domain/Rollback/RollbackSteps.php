@@ -6,6 +6,7 @@ namespace App\Domain\Rollback;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
+use App\Domain\Backups\NewWritesDetector;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\SiteRestore;
 use App\Domain\Drivers\SiteDriver;
@@ -19,8 +20,8 @@ use Closure;
  * The steps that undo an update run (UZEROWPUP-57), in order, for the update
  * flow's own rollback (UZEROWPUP-60) and the pipeline of a `rollback` run
  * (`wpup rollback <run>`, UZEROWPUP-61) to compose. Both act on the run that
- * RollbackSource resolves. For now, the files; the database rollback, with
- * the check of new orders, comes after them (UZEROWPUP-59).
+ * RollbackSource resolves: the files, then the database, only when nothing
+ * was written to the orders or users since the copy (UZEROWPUP-59).
  *
  * No pipeline is registered here. UZEROWPUP-61 registers RunType::Rollback
  * and must put before these steps: a fresh inventory (advisory: a broken site
@@ -36,11 +37,13 @@ final readonly class RollbackSteps
         private RestoreSelection $selection,
         private SiteRestore $restore,
         private RevertedChanges $changes,
+        private NewWritesDetector $newWrites,
         private Closure $driverFor,
         private RunAuthorization $authorization,
         private AuditLogger $audit,
         private SecretRedactor $redactor,
         private int $filesTimeoutSeconds,
+        private int $databaseTimeoutSeconds,
     ) {}
 
     /**
@@ -48,11 +51,16 @@ final readonly class RollbackSteps
      */
     public function steps(): array
     {
-        return [$this->files()];
+        return [$this->files(), $this->database()];
     }
 
     public function files(): FilesRollbackStep
     {
         return new FilesRollbackStep($this->selection, $this->restore, $this->changes, $this->driverFor, $this->authorization, $this->audit, $this->redactor, $this->filesTimeoutSeconds);
+    }
+
+    public function database(): DatabaseRollbackStep
+    {
+        return new DatabaseRollbackStep($this->selection, $this->restore, $this->newWrites, $this->driverFor, $this->authorization, $this->audit, $this->redactor, $this->databaseTimeoutSeconds);
     }
 }

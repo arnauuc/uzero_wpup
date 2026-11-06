@@ -132,7 +132,7 @@ final readonly class RestoreStep implements Step
                     $warnings[] = $this->maintenance->restoreState($driver, $context, on: true);
                 }
             }
-            $warnings = [...$warnings, ...$this->afterRestore($driver)];
+            $warnings = [...$warnings, ...self::checkAfterRestore($driver)];
         } catch (RunException $e) {
             // The run itself was stopped (timeout, claim lost): audited, never swallowed.
             $this->record($actor, $site, AuditResult::Failure, $audit + ['restored' => self::values($restored), 'reason' => 'run stopped']);
@@ -185,13 +185,14 @@ final readonly class RestoreStep implements Step
 
     /**
      * WordPress must still answer through WP-CLI; the object cache is flushed
-     * (a failure there is only a warning).
+     * (a failure there is only a warning). Also after a database rollback
+     * (UZEROWPUP-59).
      *
      * @return list<string> warnings
      *
      * @throws PostRestoreCheckFailed
      */
-    private function afterRestore(SiteDriver $driver): array
+    public static function checkAfterRestore(SiteDriver $driver): array
     {
         try {
             $version = $driver->wp(['core', 'version']);
