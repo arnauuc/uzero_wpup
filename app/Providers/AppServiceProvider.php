@@ -66,6 +66,7 @@ use App\Domain\Planning\ChangeAnalyzer;
 use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
+use App\Domain\Rollback\DatabaseRollbackStep;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
@@ -476,6 +477,17 @@ class AppServiceProvider extends ServiceProvider
             maxStepAttempts: self::configInt('wpup.runs.max_step_attempts'),
             summaryMaxChars: self::configInt('wpup.runs.summary_max_chars'),
             outputMaxBytes: self::configInt('wpup.runs.output_max_bytes'),
+        ));
+        // The database rollback of an update (UZEROWPUP-59), after the files rollback (UZEROWPUP-57).
+        $this->app->bind(DatabaseRollbackStep::class, static fn (Application $app): DatabaseRollbackStep => new DatabaseRollbackStep(
+            $app->make(RestoreSelection::class),
+            $app->make(SiteRestore::class),
+            $app->make(NewWritesDetector::class),
+            static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+            $app->make(RunAuthorization::class),
+            $app->make(AuditLogger::class),
+            $app->make(SecretRedactor::class),
+            self::configInt('wpup.backups.restore.rollback_database_timeout_seconds'),
         ));
         $this->app->bind(SshSettings::class, static fn (): SshSettings => new SshSettings(
             connectTimeoutSeconds: self::configInt('wpup.ssh.connect_timeout_seconds'),

@@ -195,6 +195,23 @@ sudo -u wpup wpup backup:restore blog --backup=41 --files --force
 - **Temporals:** els fitxers temporals d'una restauració al directori de treball del lloc (`restore-<hex>.…`) s'esborren en acabar, els que hagi deixat una restauració interrompuda s'esborren a l'inici de la següent, i la neteja del magatzem esborra els antics.
 - **Auditoria:** cada intent queda a `backup.restore` amb l'execució, el punt d'origen, les còpies, què s'ha restaurat, el punt de l'estat d'abans, si el lloc és una botiga, si s'ha acceptat i confirmat de manera interactiva perdre'n les dades i si s'ha demanat `--without-pre-backup`.
 
+### Base de dades d'una actualització revertida (regla de seguretat 4)
+
+El rollback d'una actualització (UZEROWPUP-57 i UZEROWPUP-59) restaura sempre els fitxers del punt de restauració de l'execució. La base de dades, en canvi, només es restaura automàticament si se sap que no s'ha escrit res a les comandes ni als usuaris des de la còpia:
+
+- Abans de tocar res, es compara la marca d'aigua de la còpia amb el lloc. Si no hi ha escriptures noves, s'activa el mode manteniment (si no ho estava), es torna a comprovar just abans de restaurar (perquè no hi entri cap comanda entremig), es restaura la base de dades i es comprova que WP-CLI respon. Si no es pot activar el mode manteniment, no es restaura.
+- Si n'hi ha, o no es pot saber (còpia sense marca d'aigua, marca no vàlida, lloc que no es pot llegir), la base de dades **no es toca**. El pas acaba com a «BD no restaurada» i l'avís, desat al resultat del pas per a l'informe i la notificació, porta el llistat de comandes i usuaris afectats (ID, tipus, estat, data i rols; mai dades personals) i la comanda per forçar-ho.
+- Val per a qualsevol lloc, botiga o no. Cada intent queda a l'auditoria (`rollback.database`; `denied` quan no s'ha restaurat per escriptures noves).
+
+Per restaurar-la igualment, sabent que es perdran aquestes comandes i usuaris, es fa a mà amb `backup:restore` des del punt de l'execució revertida:
+
+```bash
+sudo -u wpup wpup backup:restore botiga --point=run12 --db --accept-data-loss --dry-run
+sudo -u wpup wpup backup:restore botiga --point=run12 --db --accept-data-loss
+```
+
+És la mateixa restauració de sempre, amb totes les proteccions: cal escriure el nom del lloc en un terminal interactiu (`--force` no ho salta), abans es fa un punt verificat de l'estat actual (amb les comandes noves, per poder-les recuperar), l'execució torna a comprovar i llistar les escriptures noves, i queda a l'auditoria (`backup.restore`). Una restauració manual demana sempre aquesta confirmació en una botiga, també quan no hi ha escriptures noves. El punt d'una execució revertida no caduca mentre no s'ha revisat (`run:ack`).
+
 ## Claus i secrets (només `admin`, mai pel web)
 
 | Comanda | Què fa |

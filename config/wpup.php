@@ -231,6 +231,9 @@ return [
             'check_timeout_seconds' => 1800,
             'maintenance_timeout_seconds' => 120,
             'step_timeout_seconds' => 3600,
+            // The database of an update's own point, put back by its rollback only when
+            // nothing was written to the orders or users since the copy (UZEROWPUP-59).
+            'rollback_database_timeout_seconds' => 3600,
         ],
         // `wpup backup --json`, `backup:list --json` (UZEROWPUP-45) and `backup:prune --json` document version.
         'report_version' => 1,
