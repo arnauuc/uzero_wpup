@@ -53,6 +53,7 @@ use App\Domain\Identity\ProcessIdentity;
 use App\Domain\Inventory\ExternalBackups;
 use App\Domain\Inventory\ExternalBackupStatus;
 use App\Domain\Inventory\HttpProbe;
+use App\Domain\Inventory\InventoryReport;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteInventory;
@@ -63,6 +64,7 @@ use App\Domain\Locks\SiteLockManager;
 use App\Domain\Notifications\LogSiteBlockNotifier;
 use App\Domain\Notifications\SiteBlockNotifier;
 use App\Domain\Planning\ChangeAnalyzer;
+use App\Domain\Planning\FutureMinimums;
 use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
@@ -116,6 +118,7 @@ use Illuminate\Database\DatabaseManager;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Redis\Connections\PhpRedisConnection;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\ServiceProvider;
 use LogicException;
@@ -319,6 +322,23 @@ class AppServiceProvider extends ServiceProvider
             $app->make(PackageVersions::class),
             $app->make(VulnerabilitySource::class),
             self::configInt('wpup.planning.quarantine_days'),
+            $app->make(FutureMinimums::class),
+        ));
+        // A malformed table must not break the inventory, the plan or the updates: the
+        // whole table is ignored and the error logged once (the singleton is built once).
+        $this->app->singleton(FutureMinimums::class, static function (): FutureMinimums {
+            try {
+                return FutureMinimums::fromConfig(config('wpup.future_minimums'));
+            } catch (\UnexpectedValueException $e) {
+                Log::error('Future minimums ignored: '.$e->getMessage());
+
+                return new FutureMinimums([]);
+            }
+        });
+        $this->app->bind(InventoryReport::class, static fn (Application $app): InventoryReport => new InventoryReport(
+            $app->make(ExternalBackupStatus::class),
+            $app->make(FutureMinimums::class),
+            self::configInt('wpup.planning.verified_php_max_age_seconds'),
         ));
         $this->app->bind(PendingUpdates::class, static fn (Application $app): PendingUpdates => new PendingUpdates(
             $app->make(HttpFactory::class),
