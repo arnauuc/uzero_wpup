@@ -119,6 +119,14 @@ return [
      */
     'updates' => [
         'component_timeout_seconds' => 3900,
+        // Maintenance mode around the update (UZEROWPUP-53): the default for the profiles that
+        // do not set `maintenance_mode`, the timeout of its steps (a few WP-CLI calls) and of
+        // each of those calls.
+        'maintenance' => [
+            'default' => true,
+            'step_timeout_seconds' => 300,
+            'command_timeout_seconds' => 60,
+        ],
         // After the updates (UZEROWPUP-55): database migrations (core, WooCommerce) and cache
         // flushes. The step timeout must cover 2 × update_db + (4 + 2 × page caches) ×
         // command + overhead (connecting, listing components, driver work), checked at build time.

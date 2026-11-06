@@ -7,6 +7,7 @@ namespace App\Domain\Updates;
 use App\Domain\Artifacts\ArtifactStore;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\SiteDriver;
+use App\Domain\Maintenance\MaintenanceGuard;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Planning\UpdatePlan;
@@ -48,6 +49,7 @@ final readonly class UpdateSteps
         private PostUpdateSettings $postUpdate,
         private int $componentTimeoutSeconds,
         int $minimumTimeoutSeconds,
+        private ?MaintenanceGuard $maintenance = null,
     ) {
         if ($componentTimeoutSeconds < $minimumTimeoutSeconds) {
             throw new InvalidArgumentException("wpup.updates.component_timeout_seconds ({$componentTimeoutSeconds} s) ha de ser com a mínim el temps màxim d'una instal·lació ({$minimumTimeoutSeconds} s).");
@@ -74,6 +76,6 @@ final readonly class UpdateSteps
 
     private function step(PlannedChange $change): ComponentUpdateStep
     {
-        return new ComponentUpdateStep($change, $this->store, $this->driverFor, $this->authorization, $this->changes, $this->redactor, $this->componentTimeoutSeconds);
+        return new ComponentUpdateStep($change, $this->store, $this->driverFor, $this->authorization, $this->changes, $this->redactor, $this->componentTimeoutSeconds, $this->maintenance);
     }
 }

@@ -72,6 +72,7 @@ wpup site:edit botiga-a --clear=mask --deactivate
 | `--notify=*` | Canals d'avís: `email`, `telegram`, `slack` |
 | `--include-uploads` / `--no-include-uploads` | Inclou o exclou `uploads` de la còpia (ADR-0009) |
 | `--external-backup`, `--external-backup-notes` | Còpia externa declarada: `plesk`, `dropbox`, `plugin`, `other` o `none`, i notes (màx. 500 caràcters). Les notes necessiten un tipus ja declarat o indicat alhora. Només `admin` |
+| `--maintenance=on\|off` | Mode manteniment durant l'actualització (vegeu sota); `--clear=maintenance` torna al valor per defecte de `config/wpup.php` (`updates.maintenance.default`, activat) |
 
 Només a `site:add`: `--server` i `--account` (obligatoris; es reutilitzen si ja existeixen, o es creen), `--hostname` (obligatori per a un servidor nou), `--ssh-port`, `--panel`, `--driver`. A `site:edit`: `--activate` / `--deactivate`.
 
@@ -91,6 +92,18 @@ Només a `site:add`: `--server` i `--account` (obligatoris; es reutilitzen si ja
 - S'exclouen `vendor/`, `node_modules/` i els polyfills coneguts (`wpup.static_analysis.ignore`, patrons de `phpcs --ignore`). Els límits (temps, memòria, mida de la sortida, nombre de fitxers) són a `wpup.static_analysis`.
 - El resultat es desa a la taula `compat_scans`, per SHA-256 del paquet, versió menor de PHP i versió de les regles (PHPCompatibility, PHP_CodeSniffer i exclusions): el mateix paquet no es torna a analitzar.
 - Limitació coneguda: PHPCompatibility 9.3 no detecta la sintaxi nova de PHP 8 (`match`, tipus unió, operador nullsafe…) i només coneix algunes funcions de PHP 8.0. Aquests casos els cobreix la capa 3 (execució real).
+
+## Mode manteniment durant l'actualització (UZEROWPUP-53)
+
+Segons el perfil del lloc (`site:edit --maintenance=on|off`), l'actualització activa el mode manteniment i el deixa com estava en acabar. El flux que compon la comanda d'actualització és:
+
+`maintenance-on` → actualitzacions → post-actualització → `maintenance-off` → verificació → [rollback] → `maintenance-restore`
+
+- **Estat inicial:** `maintenance-on` desa a l'execució si el lloc ja era en manteniment abans de tocar-lo (així una represa després de la mort d'un worker no el confon amb l'estat inicial). Un lloc que ja hi era hi queda en acabar.
+- **Desactivació garantida:** `maintenance-restore` és l'últim pas, també després d'un rollback (que torna a activar el mode). Si l'execució falla abans d'arribar-hi, la compensació de `maintenance-on` deixa el mode com estava.
+- **El verificador veu el lloc real:** no hi ha cap *bypass* (ni mu-plugin ni token). `maintenance-off` desactiva el mode just abans de la verificació; si la verificació falla, el rollback torna a activar el manteniment. La fase F4 pot revisar-ho (token de *bypass*) si la finestra sense manteniment és massa llarga.
+- **Caducitat:** WordPress ignora un `.maintenance` de més de 10 minuts; cada actualització de component l'escriu de nou (`maintenance-mode activate --force`) abans de començar.
+- Si no es pot activar el mode, l'actualització no comença. Amb `--dry-run` l'execució només descriu els passos.
 
 ## Còpies externes conegudes (ADR-0009, punt 2)
 

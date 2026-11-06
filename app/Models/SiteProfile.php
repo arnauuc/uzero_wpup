@@ -21,6 +21,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property array<int, mixed> $notification_channels
  * @property bool $include_uploads
  * @property array<string, mixed>|null $external_backup
+ * @property bool|null $maintenance_mode null: the default of wpup.updates.maintenance.default
  */
 class SiteProfile extends Model
 {
@@ -45,6 +46,7 @@ class SiteProfile extends Model
             'external_backup' => 'array',
             'diff_threshold' => 'decimal:2',
             'include_uploads' => 'boolean',
+            'maintenance_mode' => 'boolean',
         ];
     }
 

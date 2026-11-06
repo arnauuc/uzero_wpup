@@ -32,6 +32,7 @@ final readonly class SiteAdministration
     public const CLEARABLE = [
         'tags', 'php_binary', 'maintenance_window', 'checkout_product', 'verify_urls', 'mask_selectors',
         'frozen_components', 'excluded_components', 'notification_channels', 'external_backup',
+        'maintenance_mode',
     ];
 
     private const SITE_NAME = '/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/';
@@ -305,6 +306,17 @@ final readonly class SiteAdministration
                 $profile['external_backup'] = ['type' => $type] + ($notes === null ? [] : ['notes' => $notes]);
             }
         }
+        if ($input->maintenance !== null) {
+            if (in_array($input->maintenance, ['on', 'off'], true)) {
+                $profile['maintenance_mode'] = $input->maintenance === 'on';
+            } else {
+                $errors[] = 'El mode manteniment ha de ser «on» o «off».';
+            }
+        }
+        if ($clears('maintenance_mode')) {
+            $this->conflict($input->maintenance, 'maintenance_mode', $errors);
+            $profile['maintenance_mode'] = null;
+        }
         if ($clears('external_backup')) {
             $this->conflict($input->externalBackup ?? $input->externalBackupNotes, 'external_backup', $errors);
             $profile['external_backup'] = null;
@@ -454,7 +466,7 @@ final readonly class SiteAdministration
         return [
             'verify_urls' => [], 'mask_selectors' => [], 'diff_threshold' => '0.50', 'checkout_product' => null,
             'frozen_components' => [], 'excluded_components' => [], 'notification_channels' => [],
-            'include_uploads' => false, 'external_backup' => null,
+            'include_uploads' => false, 'external_backup' => null, 'maintenance_mode' => null,
         ];
     }
 

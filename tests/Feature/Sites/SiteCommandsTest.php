@@ -247,3 +247,29 @@ it('trims the notes, clears them with an empty value and rejects whitespace-only
     command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'none', '--no-interaction' => true])->assertSuccessful();
     expect(Site::query()->sole()->profile?->external_backup)->toBe(['type' => 'none', 'notes' => 'nota']);
 });
+
+it('sets the maintenance mode of the profile, audits it and clears it back to the default', function (): void {
+    command('site:add', addParams())->assertSuccessful();
+    expect(Site::query()->sole()->profile?->maintenance_mode)->toBeNull();
+
+    command('site:edit', ['name' => 'botiga-a', '--maintenance' => 'off', '--dry-run' => true, '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->maintenance_mode)->toBeNull();
+
+    command('site:edit', ['name' => 'botiga-a', '--maintenance' => 'off', '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->maintenance_mode)->toBeFalse();
+    $entry = AuditLogEntry::query()->where('action', 'site.edit')->latest('id')->firstOrFail();
+    expect(((array) ($entry->context['changes'] ?? []))['maintenance_mode'] ?? null)->toEqual(['from' => null, 'to' => false]);
+
+    command('site:edit', ['name' => 'botiga-a', '--maintenance' => 'on', '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->maintenance_mode)->toBeTrue();
+
+    command('site:edit', ['name' => 'botiga-a', '--clear' => ['maintenance'], '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->profile?->maintenance_mode)->toBeNull();
+});
+
+it('rejects an invalid maintenance mode', function (): void {
+    command('site:add', addParams())->assertSuccessful();
+
+    command('site:edit', ['name' => 'botiga-a', '--maintenance' => 'potser', '--no-interaction' => true])
+        ->expectsOutputToContain('«on» o «off»')->assertFailed();
+});

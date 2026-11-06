@@ -12,6 +12,7 @@ use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
+use App\Domain\Maintenance\MaintenanceGuard;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\Step;
@@ -54,6 +55,7 @@ final readonly class ComponentUpdateStep implements Step
         private UpdateChanges $changes,
         private SecretRedactor $redactor,
         private int $timeoutSeconds,
+        private ?MaintenanceGuard $maintenance = null,
     ) {}
 
     public function name(): string
@@ -89,6 +91,8 @@ final readonly class ComponentUpdateStep implements Step
             return $this->fail($context->run, null, null, $e->getMessage());
         }
         $before = null;
+        // WordPress ignores a .maintenance file older than 10 minutes (UZEROWPUP-53).
+        $this->maintenance?->refresh($driver, $context->run);
         try {
             return $this->update($context->run, $driver, $before);
         } catch (ArtifactException|DriverException $e) {
