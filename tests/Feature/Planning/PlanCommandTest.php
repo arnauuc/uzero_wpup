@@ -162,14 +162,14 @@ it('fails when every named site is inactive', function (): void {
     expect($exit)->toBe(1)->and(Artisan::output())->toContain('antic: inactiu, no es planifica.')->and(Run::query()->count())->toBe(0);
 });
 
-it('refuses --allow-major and --skip-quarantine to an operator, audited', function (string $flag): void {
-    $exit = Artisan::call('plan', ['sites' => ['botiga-a'], $flag => true]);
+it('refuses --allow-major, --skip-quarantine and --include to an operator, audited', function (string $flag, mixed $value): void {
+    $exit = Artisan::call('plan', ['sites' => ['botiga-a'], $flag => $value]);
 
     expect($exit)->toBe(1)
-        ->and(Artisan::output())->toContain('Només un admin pot fer servir --allow-major i --skip-quarantine.')
+        ->and(Artisan::output())->toContain('Només un admin pot fer servir --allow-major, --skip-quarantine i --include.')
         ->and(Run::query()->count())->toBe(0)
         ->and(AuditLogEntry::query()->where('action', 'command.denied')->sole()->context)->toMatchArray(['ability' => 'override-version-policy']);
-})->with(['--allow-major', '--skip-quarantine']);
+})->with([['--allow-major', true], ['--skip-quarantine', true], ['--include', ['akismet']]]);
 
 it('lets an admin override the version policy: audited and stored on the run', function (): void {
     User::factory()->create(['unix_username' => 'admin1', 'role' => UserRole::Admin]);
@@ -181,6 +181,45 @@ it('lets an admin override the version policy: audited and stored on the run', f
     expect(Run::query()->sole()->flags)->toBe($flags)
         ->and(AuditLogEntry::query()->where('action', 'plan.version_policy_overridden')->sole()->context)->toBe(['flags' => $flags, 'sites' => ['botiga-a']])
         ->and(AuditLogEntry::query()->where('action', 'run.queued')->sole()->context['flags'] ?? null)->toBe($flags);
+});
+
+it('lets an admin include frozen components: audited apart and stored on the run', function (): void {
+    User::factory()->create(['unix_username' => 'admin1', 'role' => UserRole::Admin]);
+    actingAsOperator('admin1');
+
+    command('plan', ['sites' => ['botiga-a'], '--include' => ['akismet', 'plugin:hello']])->assertSuccessful();
+
+    expect(Run::query()->sole()->flags)->toBe(['include' => ['akismet', 'plugin:hello']])
+        ->and(AuditLogEntry::query()->where('action', 'plan.profile_overridden')->sole()->context)->toEqual(['include' => ['akismet', 'plugin:hello'], 'sites' => ['botiga-a']])
+        ->and(AuditLogEntry::query()->where('action', 'plan.version_policy_overridden')->count())->toBe(0);
+});
+
+it('rejects an invalid --include before queueing anything', function (): void {
+    User::factory()->create(['unix_username' => 'admin1', 'role' => UserRole::Admin]);
+    actingAsOperator('admin1');
+
+    $exit = Artisan::call('plan', ['sites' => ['botiga-a'], '--include' => ['akismet@5.3']]);
+
+    expect($exit)->toBe(1)->and(Artisan::output())->toContain('no és vàlid')->and(Run::query()->count())->toBe(0);
+});
+
+it('shows the included components and warns that an unlicensed one cannot be forced', function (): void {
+    Site::factory()->create(['name' => 'politica', 'url' => 'https://politica.test']);
+    app(PipelineResolver::class)->register(RunType::Plan, static fn (): Pipeline => new Pipeline([
+        new ScriptedReadOnlyStep('plan', static function (): StepOutcome {
+            $plan = new UpdatePlan('8.3.10', PhpVersionSource::HttpProbe, true, null, [
+                new PlannedChange(ComponentType::Plugin, 'premium', '2.0', '2.1', PlanAction::Skip, SkipReason::NoLicense, 'Falta la llicència. --include no ho pot forçar.'),
+            ], new PlanOptions(include: ['premium']));
+
+            return StepOutcome::succeeded($plan->summary(), '', $plan->toArray());
+        }),
+    ]));
+
+    Artisan::call('plan', ['sites' => ['politica'], '--wait' => true]);
+
+    expect(Artisan::output())
+        ->toContain('Sobreescriptures (auditades): --include=premium.')
+        ->toContain('--include no pot forçar components sense llicència (no hi ha paquet): premium.');
 });
 
 it('shows quarantine, security exceptions, mandatory staging and the overrides', function (): void {

@@ -7,6 +7,7 @@ namespace App\Domain\Sites;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\SiteLocalDestination;
+use App\Domain\Planning\WpVersion;
 use App\Enums\AuditResult;
 use App\Enums\HostingPanel;
 use App\Enums\SiteDriverType;
@@ -241,8 +242,13 @@ final readonly class SiteAdministration
             $components = $this->list($values, $column, $clears, $errors);
             if ($components !== null) {
                 foreach ($components as $component) {
-                    if (preg_match(self::COMPONENT, $component) !== 1) {
+                    // Frozen only: `slug@version` lets the component update up to that version.
+                    $name = explode('@', $component, 2)[0];
+                    $version = str_contains($component, '@') ? substr($component, strlen($name) + 1) : null;
+                    if (preg_match(self::COMPONENT, $column === 'frozen_components' ? $name : $component) !== 1) {
                         $errors[] = "El component «{$component}» no és vàlid.";
+                    } elseif ($version !== null && ! WpVersion::isValid($version)) {
+                        $errors[] = "La versió de «{$component}» no és vàlida (cal slug@versió, p. ex. akismet@5.3).";
                     }
                 }
                 $profile[$column] = $components;

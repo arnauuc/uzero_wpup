@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
+use App\Domain\Planning\PlanOptions;
 use App\Domain\Planning\UpdatePlan;
 use App\Domain\Planning\UpdatePlanner;
 use App\Domain\Planning\VersionChange;
@@ -440,4 +441,87 @@ it('names a higher core offer that was not planned when it would meet requires_w
 
     $plan = planFor([pending('core', 'wordpress', '6.8.1', '6.8.3'), pending('plugin', 'p', '1.0', '1.1', ['requires_wp' => '6.9'])]);
     expect(changeOf($plan, 'p')->detail)->toBe('Requereix WordPress 6.9 i el lloc tindria 6.8.3.');
+});
+
+it('lets a component frozen at a version update up to it, not beyond', function (string $entry, string $target, bool $updates): void {
+    $change = changeOf(planFor([pending('plugin', 'akismet', '5.1', $target)], [], ['frozen_components' => [$entry]]), 'akismet');
+
+    expect($change->action)->toBe($updates ? PlanAction::Update : PlanAction::Skip)
+        ->and($change->reason)->toBe($updates ? null : SkipReason::Frozen);
+    if (! $updates) {
+        expect($change->detail)->toContain('congelat a 5.3')->toContain($target);
+    }
+})->with([
+    'below' => ['akismet@5.3', '5.2', true],
+    'equal' => ['akismet@5.3', '5.3', true],
+    'beyond' => ['akismet@5.3', '5.3.1', false],
+    'typed beyond' => ['plugin:akismet@5.3', '5.4', false],
+    'typed equal' => ['plugin:akismet@5.3', '5.3.0', true],
+    'numeric, not lexical' => ['akismet@5.3', '5.10', false],
+]);
+
+it('freezes completely a component without version or with an unreadable one', function (string $entry): void {
+    $change = changeOf(planFor([pending('plugin', 'akismet', '5.1', '5.2')], [], ['frozen_components' => [$entry]]), 'akismet');
+
+    expect($change->reason)->toBe(SkipReason::Frozen)->and($change->detail)->toContain('com a congelat');
+})->with(['akismet', 'akismet@x.y']);
+
+it('keeps the lowest version when a component is frozen twice', function (): void {
+    $plan = planFor([pending('plugin', 'akismet', '5.1', '5.3')], [], ['frozen_components' => ['akismet@5.4', 'plugin:akismet@5.2']]);
+
+    expect(changeOf($plan, 'akismet')->detail)->toContain('congelat a 5.2');
+});
+
+/**
+ * @param  array<string, mixed>  $profile
+ * @param  array<mixed>  $updates
+ */
+function includePlan(array $profile, PlanOptions $options, array $updates): UpdatePlan
+{
+    $site = Site::factory()->create();
+    $profileModel = SiteProfile::factory()->create(['site_id' => $site->id] + $profile);
+    $snapshot = SiteSnapshot::factory()->create(['site_id' => $site->id, 'core_version' => '6.8.1', 'plugins' => [], 'environment' => ['prerequisites' => []], 'pending_updates' => $updates]);
+
+    return app(UpdatePlanner::class)->plan($snapshot, $site, $profileModel, '8.2.20', PhpVersionSource::HttpProbe, $options);
+}
+
+it('plans a frozen or excluded component with --include, only the ones named', function (): void {
+    $plan = includePlan(
+        ['frozen_components' => ['akismet@5.2', 'hello', 'theme:storefront'], 'excluded_components' => ['forms']],
+        new PlanOptions(include: ['akismet', 'forms', 'theme:storefront']),
+        [pending('plugin', 'akismet', '5.1', '5.9'), pending('plugin', 'forms', '1.0', '1.1'), pending('plugin', 'hello', '1.0', '1.1'), pending('theme', 'storefront', '4.6', '4.7')],
+    );
+
+    expect(changeOf($plan, 'akismet')->action)->toBe(PlanAction::Update)
+        ->and(changeOf($plan, 'forms')->action)->toBe(PlanAction::Update)
+        ->and(changeOf($plan, 'storefront')->action)->toBe(PlanAction::Update)
+        ->and(changeOf($plan, 'hello')->reason)->toBe(SkipReason::Frozen);
+});
+
+it('does not let --include force an unlicensed component, and says so', function (): void {
+    $plan = includePlan(['frozen_components' => ['premium']], new PlanOptions(include: ['premium']), [pending('plugin', 'premium', '2.0', '2.1', ['licensed' => false])]);
+
+    expect(changeOf($plan, 'premium')->reason)->toBe(SkipReason::NoLicense)
+        ->and(changeOf($plan, 'premium')->detail)->toContain('--include no ho pot forçar');
+});
+
+it('keeps the compatibility and major rules for an included component', function (): void {
+    $plan = includePlan(
+        ['frozen_components' => ['modern', 'big']],
+        new PlanOptions(include: ['modern', 'big']),
+        [pending('plugin', 'modern', '1.0', '1.1', ['requires_php' => '9.0']), pending('plugin', 'big', '1.0', '2.0')],
+    );
+
+    expect(changeOf($plan, 'modern')->reason)->toBe(SkipReason::PhpIncompatible)
+        ->and(changeOf($plan, 'big')->reason)->toBe(SkipReason::MajorRequiresStaging);
+});
+
+it('round-trips --include through the options flags', function (): void {
+    $options = new PlanOptions(skipQuarantine: true, include: ['a', 'plugin:b']);
+
+    expect($options->toFlags())->toBe(['skip_quarantine' => true, 'include' => ['a', 'plugin:b']])
+        ->and(PlanOptions::fromFlags($options->toFlags()))->toEqual($options)
+        ->and($options->versionPolicyFlags())->toBe(['skip_quarantine' => true])
+        ->and((new PlanOptions(include: ['a']))->any())->toBeTrue()
+        ->and((new PlanOptions)->toFlags())->toBe([]);
 });

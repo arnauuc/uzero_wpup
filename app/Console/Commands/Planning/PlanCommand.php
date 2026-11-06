@@ -38,6 +38,7 @@ final class PlanCommand extends WpupCommand
         '.self::TARGETS.'
         {--allow-major : Només admin: aplica in-place els canvis majors que cal provar abans a staging (ADR-0005)}
         {--skip-quarantine : Només admin: aplica les versions que encara són en quarantena}
+        {--include=* : Només admin: planifica igualment aquest component congelat o exclòs del perfil (slug o tipus:slug; repetible)}
         '.self::QUEUED.'
         '.self::JSON;
 
@@ -54,8 +55,16 @@ final class PlanCommand extends WpupCommand
 
     protected function perform(): int
     {
-        $options = new PlanOptions($this->option('allow-major') === true, $this->option('skip-quarantine') === true);
-        if ($options->any() && ! $this->requireAbility(Ability::OverrideVersionPolicy, ['flags' => $options->toFlags()], 'Només un admin pot fer servir --allow-major i --skip-quarantine.')) {
+        $include = array_values(array_unique(array_filter(array_map(trim(...), array_filter((array) $this->option('include'), is_string(...))), static fn (string $c): bool => $c !== '')));
+        foreach ($include as $component) {
+            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.:\/-]{0,127}$/', $component) !== 1) {
+                $this->error("El component «{$component}» de --include no és vàlid (slug o tipus:slug, sense versió).");
+
+                return self::FAILURE;
+            }
+        }
+        $options = new PlanOptions($this->option('allow-major') === true, $this->option('skip-quarantine') === true, $include);
+        if ($options->any() && ! $this->requireAbility(Ability::OverrideVersionPolicy, ['flags' => $options->toFlags()], 'Només un admin pot fer servir --allow-major, --skip-quarantine i --include.')) {
             return self::FAILURE;
         }
 
@@ -64,10 +73,17 @@ final class PlanCommand extends WpupCommand
             return self::FAILURE;
         }
 
-        if ($options->any()) {
+        $sites = array_map(static fn (Site $site): string => $site->name, $active);
+        if ($options->versionPolicyFlags() !== []) {
             $this->audit->record($this->actor(), 'plan.version_policy_overridden', AuditResult::Success, 'command', (string) $this->getName(), [
-                'flags' => $options->toFlags(),
-                'sites' => array_map(static fn (Site $site): string => $site->name, $active),
+                'flags' => $options->versionPolicyFlags(),
+                'sites' => $sites,
+            ]);
+        }
+        if ($options->include !== []) {
+            $this->audit->record($this->actor(), 'plan.profile_overridden', AuditResult::Success, 'command', (string) $this->getName(), [
+                'include' => $options->include,
+                'sites' => $sites,
             ]);
         }
 
@@ -117,10 +133,10 @@ final class PlanCommand extends WpupCommand
         $this->line('PHP '.$plan->phpVersion.' ('.$plan->phpSource->value.')'.($plan->phpVerified ? '' : ': no verificat pel web, és el del CLI'));
         $this->line('Bloquejat: '.($plan->blockedReason === null ? 'no' : "sí: {$plan->blockedReason}"));
         if ($plan->options->any()) {
-            $this->line('Sobreescriptures (auditades): '.implode(', ', array_keys(array_filter([
-                '--allow-major' => $plan->options->allowMajor,
-                '--skip-quarantine' => $plan->options->skipQuarantine,
-            ]))).'.');
+            $this->line('Sobreescriptures (auditades): '.implode(', ', [
+                ...array_keys(array_filter(['--allow-major' => $plan->options->allowMajor, '--skip-quarantine' => $plan->options->skipQuarantine])),
+                ...array_map(static fn (string $c): string => "--include={$c}", $plan->options->include),
+            ]).'.');
         }
         $this->line('Cal staging primer: '.match (true) {
             ! $plan->requiresStaging() => 'no',
@@ -147,6 +163,11 @@ final class PlanCommand extends WpupCommand
             }
         }
         $this->line($plan->summary().'.');
+
+        $unforced = array_filter($plan->changes, static fn (PlannedChange $c): bool => $c->reason === SkipReason::NoLicense && in_array($c->slug, $plan->options->include, true));
+        if ($unforced !== []) {
+            $this->warn('--include no pot forçar components sense llicència (no hi ha paquet): '.self::names($unforced).'.');
+        }
 
         $quarantined = array_filter($plan->changes, static fn (PlannedChange $c): bool => $c->reason === SkipReason::Quarantine);
         $security = array_filter($plan->changes, static fn (PlannedChange $c): bool => $c->bypass === QuarantineBypass::Vulnerability);

@@ -247,3 +247,11 @@ it('trims the notes, clears them with an empty value and rejects whitespace-only
     command('site:edit', ['name' => 'botiga-a', '--external-backup' => 'none', '--no-interaction' => true])->assertSuccessful();
     expect(Site::query()->sole()->profile?->external_backup)->toBe(['type' => 'none', 'notes' => 'nota']);
 });
+
+it('accepts frozen components pinned to a version and rejects a bad version', function (): void {
+    command('site:add', addParams(['--freeze' => ['akismet@5.3', 'plugin:woocommerce-subscriptions']]))->assertSuccessful();
+    expect(Site::query()->where('name', 'botiga-a')->sole()->profile?->frozen_components)->toBe(['akismet@5.3', 'plugin:woocommerce-subscriptions']);
+
+    command('site:add', addParams(['name' => 'botiga-b', '--freeze' => ['akismet@abc']]))->expectsOutputToContain('La versió de «akismet@abc» no és vàlida')->assertFailed();
+    command('site:add', addParams(['name' => 'botiga-c', '--exclude' => ['akismet@5.3']]))->expectsOutputToContain('El component «akismet@5.3» no és vàlid.')->assertFailed();
+});

@@ -146,8 +146,11 @@ sudo -u wpup wpup site:import llocs.csv
 | --- | --- |
 | `--allow-major` | Només `admin`. Aplica in-place, sense staging, els canvis majors d'aquesta execució. Surten a «Majors aplicades: cal revisar» |
 | `--skip-quarantine` | Només `admin`. Aplica les versions que encara són en quarantena, per a casos urgents que la font de vulnerabilitats no detecta |
+| `--include=<component>` (repetible) | Només `admin`. Planifica igualment un component congelat o exclòs al perfil del lloc (`slug` o `tipus:slug`, p. ex. `akismet` o `theme:storefront`), només en aquesta execució. No salta la compatibilitat, la quarantena ni les regles de majors. No pot forçar un component sense llicència (no hi ha paquet): s'ometrà igualment amb el seu motiu i el pla ho avisa |
 
-Totes dues queden a l'auditoria (`plan.version_policy_overridden`, i als `flags` de `run.queued`) i a l'execució (`runs.flags`), perquè l'actualització i l'informe en vegin el mateix valor. Un operador que les fa servir rep un error i queda a l'auditoria (`command.denied`). Si l'admin deixa de ser-ho abans que el worker planifiqui, el pas falla (`run.denied`). Amb `--json`, cada pla porta `requires_staging`, `overrides` i, per a cada canvi, `major`, `quarantine_bypass` i `quarantine_days_left`.
+Totes tres queden a l'auditoria: `--allow-major` i `--skip-quarantine` com a `plan.version_policy_overridden`, `--include` com a `plan.profile_overridden` (amb els components i els llocs), i les tres als `flags` de `run.queued` i a l'execució (`runs.flags`), perquè l'actualització i l'informe en vegin el mateix valor. Un operador que les fa servir rep un error i queda a l'auditoria (`command.denied`). Si l'admin deixa de ser-ho abans que el worker planifiqui, el pas falla (`run.denied`). Amb `--json`, cada pla porta `requires_staging`, `overrides` i, per a cada canvi, `major`, `quarantine_bypass` i `quarantine_days_left`.
+
+**Components congelats, exclosos i sense llicència.** Cada cas s'omet amb el seu motiu: «component exclòs», «component congelat» i «sense llicència». Un component congelat es pot fixar a una versió amb `--freeze=slug@versió` (o `tipus:slug@versió`, p. ex. `--freeze=akismet@5.3`): s'hi pot actualitzar fins a aquesta versió inclosa, i qualsevol versió superior s'omet amb «congelat a 5.3». Sense `@versió`, no s'actualitza mai. Si hi ha diverses entrades del mateix component, val la versió més baixa; una versió il·legible el congela del tot. `--exclude` no admet versió.
 
 ## Retenció dels punts de restauració (ADR-0009)
 

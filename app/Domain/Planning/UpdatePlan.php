@@ -62,7 +62,7 @@ final readonly class UpdatePlan
     }
 
     /**
-     * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, requires_staging: bool, overrides: array{allow_major: bool, skip_quarantine: bool}, changes: list<array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string, major: bool, quarantine_bypass: ?string, quarantine_days_left: ?int, warnings?: list<string>}>}
+     * @return array{php: array{version: string, source: string, verified: bool}, blocked_reason: ?string, requires_staging: bool, overrides: array{allow_major: bool, skip_quarantine: bool, include: list<string>}, changes: list<array{type: string, slug: string, current_version: string, target_version: string, action: string, reason: ?string, detail: ?string, major: bool, quarantine_bypass: ?string, quarantine_days_left: ?int, warnings?: list<string>}>}
      */
     public function toArray(): array
     {
@@ -70,7 +70,7 @@ final readonly class UpdatePlan
             'php' => ['version' => $this->phpVersion, 'source' => $this->phpSource->value, 'verified' => $this->phpVerified],
             'blocked_reason' => $this->blockedReason,
             'requires_staging' => $this->requiresStaging(),
-            'overrides' => [PlanOptions::ALLOW_MAJOR => $this->options->allowMajor, PlanOptions::SKIP_QUARANTINE => $this->options->skipQuarantine],
+            'overrides' => [PlanOptions::ALLOW_MAJOR => $this->options->allowMajor, PlanOptions::SKIP_QUARANTINE => $this->options->skipQuarantine, PlanOptions::INCLUDE => $this->options->include],
             'changes' => array_map(static fn (PlannedChange $c): array => $c->toArray(), $this->changes),
         ];
     }

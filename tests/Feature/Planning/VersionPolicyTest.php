@@ -212,7 +212,7 @@ it('applies majors in place with --allow-major, flagged for review', function ()
         ->and($change->detail)->toContain('--allow-major')
         ->and($plan->requiresStaging())->toBeTrue()
         ->and($plan->appliedMajors())->toBe([$change])
-        ->and($plan->toArray()['overrides'])->toBe(['allow_major' => true, 'skip_quarantine' => false]);
+        ->and($plan->toArray()['overrides'])->toBe(['allow_major' => true, 'skip_quarantine' => false, 'include' => []]);
 });
 
 it('keeps the quarantine for majors with --allow-major', function (): void {
