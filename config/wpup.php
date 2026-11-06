@@ -119,6 +119,22 @@ return [
      */
     'updates' => [
         'component_timeout_seconds' => 3900,
+        // After the updates (UZEROWPUP-55): database migrations (core, WooCommerce) and cache
+        // flushes. The step timeout must cover 2 × update_db + (2 + page caches) × flush.
+        'post_update' => [
+            'step_timeout_seconds' => 4500,
+            'update_db_timeout_seconds' => 1800,
+            'flush_timeout_seconds' => 120,
+            // Page caches of the common caching plugins: slug => WP-CLI arguments. Only run
+            // when the plugin is active; a failure is a warning, never an error.
+            'page_caches' => [
+                'wp-rocket' => ['rocket', 'clean', '--confirm'],
+                'w3-total-cache' => ['w3tc', 'flush', 'all'],
+                'litespeed-cache' => ['litespeed-purge', 'all'],
+                'wp-super-cache' => ['super-cache', 'flush'],
+                'sg-cachepress' => ['sg', 'purge'],
+            ],
+        ],
     ],
 
     /*

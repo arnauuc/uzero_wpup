@@ -90,6 +90,7 @@ use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
+use App\Domain\Updates\PostUpdateSettings;
 use App\Domain\Updates\UpdateChanges;
 use App\Domain\Updates\UpdateSteps;
 use App\Domain\Vulnerabilities\NoVulnerabilitySource;
@@ -480,6 +481,13 @@ class AppServiceProvider extends ServiceProvider
             $app->make(RunAuthorization::class),
             $app->make(UpdateChanges::class),
             $app->make(SecretRedactor::class),
+            $app->make(SiteState::class),
+            new PostUpdateSettings(
+                self::configInt('wpup.updates.post_update.step_timeout_seconds'),
+                self::configInt('wpup.updates.post_update.update_db_timeout_seconds'),
+                self::configInt('wpup.updates.post_update.flush_timeout_seconds'),
+                self::configCommands('wpup.updates.post_update.page_caches'),
+            ),
             self::configInt('wpup.updates.component_timeout_seconds'),
             $app->make(SshSettings::class)->applyUpdateBudgetSeconds(),
         ));
@@ -624,6 +632,26 @@ class AppServiceProvider extends ServiceProvider
         $value = config($key);
 
         return is_array($value) ? array_values(array_filter($value, is_string(...))) : throw new \UnexpectedValueException($key.' must be a list of strings.');
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private static function configCommands(string $key): array
+    {
+        $value = config($key);
+        if (! is_array($value)) {
+            throw new \UnexpectedValueException($key.' must be a map of command arguments.');
+        }
+        $commands = [];
+        foreach ($value as $slug => $args) {
+            if (! is_string($slug) || ! is_array($args) || $args === [] || array_filter($args, is_string(...)) !== $args) {
+                throw new \UnexpectedValueException($key.' must map plugin slugs to non-empty lists of strings.');
+            }
+            $commands[$slug] = array_values($args);
+        }
+
+        return $commands;
     }
 
     private static function configInt(string $key): int
