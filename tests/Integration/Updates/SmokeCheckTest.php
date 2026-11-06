@@ -73,9 +73,11 @@ it('passes on a healthy site and fails when a plugin updated after the baseline 
         $healthy = $steps->check()->run($context);
 
         // The "update" breaks the site: every request now dies with a fatal.
-        Fixtures::run(SMOKE_IT_FIXTURE, 'mkdir -p '.escapeshellarg($dir)." && printf '<?php\\n/* Plugin Name: wpup-it-smoke */\\n' > {$file}");
+        $write = static fn (string $php): string => 'mkdir -p '.escapeshellarg($dir).' && printf %s '.escapeshellarg(base64_encode($php))." | base64 -d > {$file}";
+        Fixtures::run(SMOKE_IT_FIXTURE, $write("<?php\n/* Plugin Name: wpup-it-smoke */\n"));
         $activation = $driver->wp(['plugin', 'activate', 'wpup-it-smoke']);
-        Fixtures::run(SMOKE_IT_FIXTURE, "printf '<?php\\n/* Plugin Name: wpup-it-smoke */\\nthrow new Error(\\\"wpup-it-smoke fatal {$token}\\\");\\n' > {$file}");
+        // A runtime exception with the token in its message: valid PHP, and a log line no earlier run wrote.
+        Fixtures::run(SMOKE_IT_FIXTURE, $write("<?php\n/* Plugin Name: wpup-it-smoke */\nthrow new RuntimeException('wpup-smoke-{$token}');\n"));
         $active = $driver->wp(['plugin', 'is-active', 'wpup-it-smoke', '--skip-plugins', '--skip-themes'])->successful();
 
         // Retries are only for diagnosis: needing one is a failure too (a broken site that
@@ -100,6 +102,7 @@ it('passes on a healthy site and fails when a plugin updated after the baseline 
         expect($active)->toBeTrue($diagnosis);
         expect(count($attempts))->toBe(1, 'el check ha necessitat reintents: '.$diagnosis);
         expect($broken->status)->toBe(RunStepStatus::Failed, $diagnosis);
+        expect($broken->output)->toContain("wpup-smoke-{$token}");
         expect($broken->data['fatals'] > 0 || $broken->data['http_status'] >= 500)->toBeTrue($diagnosis);
     } finally {
         Fixtures::run(SMOKE_IT_FIXTURE, 'rm -rf '.escapeshellarg($dir));
