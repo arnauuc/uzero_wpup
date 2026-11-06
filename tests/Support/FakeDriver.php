@@ -285,10 +285,27 @@ class FakeDriver implements SiteDriver
             count($args) === 3 && $args[0] === 'option' && $args[1] === 'get' => isset($this->options[$args[2]])
                 ? $this->ok($this->options[$args[2]]."\n")
                 : new CommandResult(1, '', "Error: Could not get '{$args[2]}' option.\n", 1),
+            count($args) === 5 && array_slice($args, 0, 2) === ['option', 'pluck'] && $args[4] === '--format=json' => $this->pluckOption($args[2], $args[3]),
+            count($args) === 4 && array_slice($args, 0, 2) === ['option', 'get'] && $args[3] === '--format=json' => isset($this->options[$args[2]])
+                ? $this->ok($this->options[$args[2]]."\n")
+                : new CommandResult(1, '', "Error: Could not get '{$args[2]}' option.\n", 1),
             count($args) === 4 && $args[0] === 'option' && $args[1] === 'update' => $this->updateOption($args[2], $args[3]),
             count($args) === 2 && $args[0] === 'eval' && preg_match('/^error_log\("(.*)"\);$/', $args[1], $m) === 1 => $this->logLine($m[1]),
             default => new CommandResult(1, '', 'Error: FakeDriver does not support: '.implode(' ', $args)."\n", 1),
         };
+    }
+
+    /**
+     * `wp option pluck <option> <key> --format=json`: the option holds JSON in the fake.
+     */
+    private function pluckOption(string $option, string $key): CommandResult
+    {
+        $data = isset($this->options[$option]) ? json_decode($this->options[$option], true) : null;
+        if (! is_array($data) || ! array_key_exists($key, $data)) {
+            return new CommandResult(1, '', "Error: Could not get '{$option}' option.\n", 1);
+        }
+
+        return $this->ok(json_encode($data[$key])."\n");
     }
 
     public function dumpDatabase(string $remotePath): RemoteFile

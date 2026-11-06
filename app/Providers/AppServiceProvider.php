@@ -41,6 +41,8 @@ use App\Domain\Drivers\Ssh\SshSettings;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
+use App\Domain\Inventory\ExternalBackups;
+use App\Domain\Inventory\ExternalBackupStatus;
 use App\Domain\Inventory\HttpProbe;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\PendingUpdates;
@@ -296,9 +298,22 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.prerequisites.command_timeout_seconds'),
             self::configInt('wpup.inventory.prerequisites.du_timeout_seconds'),
         ));
+        $this->app->bind(ExternalBackups::class, static function (Application $app): ExternalBackups {
+            /** @var array<string, array{name: string, last_backup: array{option: string, time_key: string, success_key: string}|null}> $known */
+            $known = config('wpup.inventory.external_backups.plugins');
+
+            return new ExternalBackups(
+                $app->make(WpCliReader::class),
+                $known,
+                self::configInt('wpup.inventory.external_backups.command_timeout_seconds'),
+                self::configInt('wpup.inventory.external_backups.max_future_seconds'),
+                self::configInt('wpup.inventory.external_backups.max_output_bytes'),
+            );
+        });
+        $this->app->bind(ExternalBackupStatus::class, static fn (): ExternalBackupStatus => new ExternalBackupStatus(self::configInt('wpup.inventory.external_backups.max_age_days')));
         // Until the notification channels exist (F5), blocks only reach the log.
         $this->app->bind(SiteBlockNotifier::class, LogSiteBlockNotifier::class);
-        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class)));
+        $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class), $app->make(ExternalBackups::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {
             $resolver->register(RunType::SiteTest, static fn (): Pipeline => new Pipeline([

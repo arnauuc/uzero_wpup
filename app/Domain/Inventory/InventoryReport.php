@@ -17,9 +17,12 @@ use RuntimeException;
  */
 final class InventoryReport
 {
+    public function __construct(private readonly ExternalBackupStatus $externalBackups) {}
+
     public const array CSV_COLUMNS = [
         'site', 'url', 'core', 'woocommerce', 'php', 'php_source', 'db_server',
         'pending_updates', 'unlicensed', 'blocked', 'blocked_reason', 'status', 'failure',
+        'external_backup_warnings',
     ];
 
     /** Cells starting with one of these would be run as a formula by a spreadsheet. */
@@ -33,7 +36,7 @@ final class InventoryReport
     {
         $ids = array_map(static fn (Run $run): int => $run->id, $runs);
         // Loaded at once, not per row.
-        $loaded = Run::query()->whereKey($ids)->with('site')->get()->keyBy('id');
+        $loaded = Run::query()->whereKey($ids)->with('site.profile')->get()->keyBy('id');
         $snapshots = SiteSnapshot::query()->whereIn('run_id', $ids)->get()->keyBy('run_id');
         $steps = RunStep::query()->whereIn('run_id', $ids)->where('name', InventoryStep::NAME)->get()->keyBy('run_id');
 
@@ -112,14 +115,24 @@ final class InventoryReport
         $url = $site->url ?? '';
 
         if ($snapshot === null) {
+            // No inventory: only the declaration can be judged, and the answer says detection did not run.
+            $unevaluated = $this->externalBackups->assess($site?->profile?->external_backup, null, now()->toImmutable());
+
             return new InventoryRow($name, $url, $run->id, $run->status, $failure ?? "L'execució no ha deixat cap inventari.",
-                null, null, null, null, [], null, null, null, false, false, 0, $blockedReason !== null, $blockedReason);
+                null, null, null, null, [], null, null, null, false, false, 0, $blockedReason !== null, $blockedReason, $unevaluated->warnings);
         }
 
         $state = self::array($snapshot->environment['state'] ?? null);
         $woocommerce = self::array($state['woocommerce'] ?? null);
         $templates = self::array($woocommerce['overridden_templates'] ?? null);
         $php = self::array($snapshot->environment['php'] ?? null);
+        // No external_backups key: the snapshot predates the detection or it did not run.
+        $backups = $snapshot->environment['external_backups'] ?? null;
+        $detected = is_array($backups) ? array_values(array_filter(array_map(
+            ExternalBackupPlugin::fromArray(...),
+            array_values(self::array($backups['plugins'] ?? null)),
+        ))) : null;
+        $externalBackup = $this->externalBackups->assess($site?->profile?->external_backup, $detected, now()->toImmutable());
 
         return new InventoryRow(
             $name, $url, $run->id, $run->status, $failure,
@@ -136,6 +149,8 @@ final class InventoryReport
             count(array_filter($templates, static fn (mixed $t): bool => is_array($t) && ($t['outdated'] ?? false) === true)),
             $blockedReason !== null,
             $blockedReason,
+            $externalBackup->warnings,
+            array_values(array_filter(self::array(self::array($backups)['warnings'] ?? null), is_string(...))),
         );
     }
 

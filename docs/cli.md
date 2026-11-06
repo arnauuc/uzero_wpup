@@ -70,13 +70,29 @@ wpup site:edit botiga-a --clear=mask --deactivate
 | `--verify-url=*`, `--mask=*`, `--diff-threshold` | URLs a verificar (camí relatiu o del mateix domini), selectors a emmascarar, llindar 0–100 |
 | `--checkout-product`, `--freeze=*`, `--exclude=*` | Producte de prova, components congelats i exclosos |
 | `--notify=*` | Canals d'avís: `email`, `telegram`, `slack` |
-| `--include-uploads` / `--no-include-uploads`, `--external-backup` | Còpia d'uploads i còpia externa (ADR-0009) |
+| `--include-uploads` / `--no-include-uploads` | Inclou o exclou `uploads` de la còpia (ADR-0009) |
+| `--external-backup`, `--external-backup-notes` | Còpia externa declarada: `plesk`, `dropbox`, `plugin`, `other` o `none`, i notes (màx. 500 caràcters). Les notes necessiten un tipus ja declarat o indicat alhora. Només `admin` |
 
 Només a `site:add`: `--server` i `--account` (obligatoris; es reutilitzen si ja existeixen, o es creen), `--hostname` (obligatori per a un servidor nou), `--ssh-port`, `--panel`, `--driver`. A `site:edit`: `--activate` / `--deactivate`.
 
-- **Edició:** només canvia el que s'indica. Les opcions de llista substitueixen la llista sencera. Per buidar un camp, `--clear=<camp>` (repetible): `tag`, `php-binary`, `window`, `verify-url`, `mask`, `checkout-product`, `freeze`, `exclude`, `notify`, `external-backup`. No es pot indicar un valor i esborrar-lo alhora.
+- **Edició:** només canvia el que s'indica. Les opcions de llista substitueixen la llista sencera. Per buidar un camp, `--clear=<camp>` (repetible): `tag`, `php-binary`, `window`, `verify-url`, `mask`, `checkout-product`, `freeze`, `exclude`, `notify`, `external-backup`. No es pot indicar un valor i esborrar-lo alhora. `--clear=external-backup` esborra el tipus i les notes.
 - **Interactiu:** si falten valors obligatoris i hi ha terminal, `site:add` els pregunta; `site:edit` sense opcions ofereix URL, camí i estratègia. Amb `--no-interaction` els valors que falten són un error de validació.
 - `--dry-run` mostra què es crearia o canviaria sense escriure ni auditar; `--json` dóna la sortida per a scripts.
+
+## Còpies externes conegudes (ADR-0009, punt 2)
+
+L'eina no fa còpies de llarga durada, però vigila que n'hi hagi. `wpup inventory` mostra una fila **Còpia externa** per lloc: `ok` o `AVÍS: …`.
+
+- **Declaració** (només `admin`): `wpup site:edit botiga-a --external-backup=plesk --external-backup-notes="Plesk, diària, 14 dies"`. Tipus: `plesk`, `dropbox`, `plugin`, `other`, `none`.
+- **Detecció:** l'inventari busca plugins de còpies (UpdraftPlus, BackWPup, All-in-One WP Migration, Duplicator, BlogVault) a la llista de plugins instal·lats (`config/wpup.php` → `inventory.external_backups`). Per als actius que exposen l'última còpia amb un format fiable (ara UpdraftPlus) llegeix, amb `wp option pluck`, la data i si va anar bé. Es desa a `environment.external_backups` de la captura.
+- **Avís** (la declaració cobreix «hi ha còpia», però el que es troba al lloc compta sempre):
+  - cap còpia externa coneguda (cap declarada i cap plugin actiu), o `plugin` declarat sense cap plugin actiu;
+  - la darrera còpia d'un plugin ha fallat (UpdraftPlus desa també les execucions fallides), i no compta com a recent;
+  - un plugin que exposa la data no s'ha pogut llegir (un que no l'exposa mai no avisa);
+  - l'última còpia correcta és més antiga de `max_age_days` (7 per defecte), encara que s'hagi declarat `plesk`, `dropbox` o `other`.
+  Sense inventari, o amb una captura sense detecció, només es jutja la declaració i l'avís ho diu.
+- `--external-backup-notes=""` (buit) esborra les notes; canviar el tipus sense indicar-ne conserva les notes. Les notes es retallen i no poden ser només espais.
+- `wpup inventory` mostra l'avís i, si cal, «Detecció de còpies» amb el que no s'ha pogut llegir. `--json` afegeix `external_backup_warnings` i `external_backup_detection_warnings` a cada lloc, i `--csv` la columna `external_backup_warnings`.
 
 ## `site:test`
 
