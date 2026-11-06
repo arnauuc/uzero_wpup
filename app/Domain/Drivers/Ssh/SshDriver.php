@@ -47,13 +47,6 @@ final class SshDriver implements SiteDriver
 {
     private const GZIP_FAILED = '__WPUP_GZIP_FAIL__';
 
-    /**
-     * WP-CLI without plugins and themes for the backup, restore and maintenance
-     * commands: they must work on a site that a plugin or theme breaks with a
-     * fatal error (UZEROWPUP-46). Must-use plugins still load.
-     */
-    private const SAFE_MODE = ['--skip-plugins', '--skip-themes'];
-
     private const SHELL_MARKER = 'wpup-shell-ok';
 
     private const REQUIRED_TOOLS = ['timeout', 'tar', 'gzip', 'gunzip', 'sha256sum', 'stat', 'df', 'mktemp', 'rsync', 'tail', 'head', 'base64', 'du', 'find', 'ln'];
