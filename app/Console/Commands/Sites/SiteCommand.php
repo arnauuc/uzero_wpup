@@ -35,7 +35,7 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         {--mask=* : Selector CSS a emmascarar a les captures (repetible)}
         {--diff-threshold= : Llindar de diferència visual, 0–100 (%)}
         {--checkout-product= : Producte de prova del checkout}
-        {--freeze=* : Component congelat (repetible)}
+        {--freeze=* : Component congelat: slug, tipus:slug o slug@versió, que s\'hi actualitza fins a aquella versió (repetible)}
         {--exclude=* : Component exclòs (repetible)}
         {--notify=* : Canal d\'avís: email, telegram, slack (repetible)}
         {--include-uploads : Inclou uploads a la còpia}

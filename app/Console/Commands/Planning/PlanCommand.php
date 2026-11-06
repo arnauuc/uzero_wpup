@@ -9,6 +9,7 @@ use App\Console\Concerns\PrintsRunHeader;
 use App\Console\Concerns\SelectsSites;
 use App\Console\WpupCommand;
 use App\Domain\Identity\Ability;
+use App\Domain\Planning\ComponentName;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Planning\PlanOptions;
@@ -20,6 +21,7 @@ use App\Enums\RunType;
 use App\Enums\SkipReason;
 use App\Models\Run;
 use App\Models\Site;
+use App\Models\SiteProfile;
 
 /**
  * Plan of the updates of one or more sites as queued runs (UZEROWPUP-36). It
@@ -28,7 +30,8 @@ use App\Models\Site;
  * write to the tool (run, steps, snapshot, audit rows), and the driver may install
  * the tool's WP-CLI in its working directory on the site's account.
  *
- * --allow-major and --skip-quarantine (ADR-0005, UZEROWPUP-127) are for an admin
+ * --allow-major, --skip-quarantine (ADR-0005, UZEROWPUP-127) and --include
+ * (UZEROWPUP-51: plan a frozen or excluded component anyway) are for an admin
  * only, audited, and stored in runs.flags so the plan, the update run and the
  * report all see them.
  */
@@ -38,6 +41,7 @@ final class PlanCommand extends WpupCommand
         '.self::TARGETS.'
         {--allow-major : Només admin: aplica in-place els canvis majors que cal provar abans a staging (ADR-0005)}
         {--skip-quarantine : Només admin: aplica les versions que encara són en quarantena}
+        {--include=* : Només admin: planifica igualment aquest component congelat o exclòs del perfil (slug o tipus:slug; repetible)}
         '.self::QUEUED.'
         '.self::JSON;
 
@@ -54,8 +58,16 @@ final class PlanCommand extends WpupCommand
 
     protected function perform(): int
     {
-        $options = new PlanOptions($this->option('allow-major') === true, $this->option('skip-quarantine') === true);
-        if ($options->any() && ! $this->requireAbility(Ability::OverrideVersionPolicy, ['flags' => $options->toFlags()], 'Només un admin pot fer servir --allow-major i --skip-quarantine.')) {
+        $include = array_values(array_unique(array_filter(array_map(trim(...), array_filter((array) $this->option('include'), is_string(...))), static fn (string $c): bool => $c !== '')));
+        foreach ($include as $component) {
+            if (! ComponentName::isValid($component)) {
+                $this->error("El component «{$component}» de --include no és vàlid (en minúscules: slug o tipus:slug, sense versió).");
+
+                return self::FAILURE;
+            }
+        }
+        $options = new PlanOptions($this->option('allow-major') === true, $this->option('skip-quarantine') === true, $include);
+        if ($options->any() && ! $this->requireAbility(Ability::OverrideVersionPolicy, ['flags' => $options->toFlags()], 'Només un admin pot fer servir --allow-major, --skip-quarantine i --include.')) {
             return self::FAILURE;
         }
 
@@ -64,10 +76,22 @@ final class PlanCommand extends WpupCommand
             return self::FAILURE;
         }
 
-        if ($options->any()) {
+        $sites = array_map(static fn (Site $site): string => $site->name, $active);
+        if ($options->versionPolicyFlags() !== []) {
             $this->audit->record($this->actor(), 'plan.version_policy_overridden', AuditResult::Success, 'command', (string) $this->getName(), [
-                'flags' => $options->toFlags(),
-                'sites' => array_map(static fn (Site $site): string => $site->name, $active),
+                'flags' => $options->versionPolicyFlags(),
+                'sites' => $sites,
+            ]);
+        }
+        if ($options->include !== []) {
+            $matched = self::matchedIncludes($options->include, $active);
+            foreach (array_diff($options->include, $matched) as $entry) {
+                $this->warn("--include={$entry} no coincideix amb cap component congelat o exclòs.");
+            }
+            $this->audit->record($this->actor(), 'plan.profile_overridden', AuditResult::Success, 'command', (string) $this->getName(), [
+                'include' => $options->include,
+                'matched' => $matched,
+                'sites' => $sites,
             ]);
         }
 
@@ -87,6 +111,37 @@ final class PlanCommand extends WpupCommand
         };
 
         return $this->exitCodeWithSkipped($this->launchRuns(RunType::Plan, $active, $options->toFlags(), null, $present));
+    }
+
+    /**
+     * The --include entries that name a frozen or excluded component of at least one of the sites.
+     *
+     * @param  list<string>  $include
+     * @param  list<Site>  $sites
+     * @return list<string>
+     */
+    private static function matchedIncludes(array $include, array $sites): array
+    {
+        $listed = [];
+        foreach ($sites as $site) {
+            /** @var SiteProfile|null $profile */
+            $profile = $site->profile;
+            foreach ($profile === null ? [] : [...$profile->frozen_components, ...$profile->excluded_components] as $entry) {
+                if (is_string($entry)) {
+                    $listed[] = $entry;
+                }
+            }
+        }
+
+        return array_values(array_filter($include, static function (string $entry) use ($listed): bool {
+            foreach ($listed as $candidate) {
+                if (ComponentName::overlaps($entry, $candidate)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }));
     }
 
     /**
@@ -120,10 +175,10 @@ final class PlanCommand extends WpupCommand
             $this->warn('Avís d\'entorn: '.$warning);
         }
         if ($plan->options->any()) {
-            $this->line('Sobreescriptures (auditades): '.implode(', ', array_keys(array_filter([
-                '--allow-major' => $plan->options->allowMajor,
-                '--skip-quarantine' => $plan->options->skipQuarantine,
-            ]))).'.');
+            $this->line('Sobreescriptures (auditades): '.implode(', ', [
+                ...array_keys(array_filter(['--allow-major' => $plan->options->allowMajor, '--skip-quarantine' => $plan->options->skipQuarantine])),
+                ...array_map(static fn (string $c): string => "--include={$c}", $plan->options->include),
+            ]).'.');
         }
         $this->line('Cal staging primer: '.match (true) {
             ! $plan->requiresStaging() => 'no',
@@ -150,6 +205,11 @@ final class PlanCommand extends WpupCommand
             }
         }
         $this->line($plan->summary().'.');
+
+        $unforced = array_filter($plan->changes, static fn (PlannedChange $c): bool => $c->reason === SkipReason::NoLicense && array_intersect(ComponentName::namesOf($c->type, $c->slug), $plan->options->include) !== []);
+        if ($unforced !== []) {
+            $this->warn('--include no pot forçar components sense llicència (no hi ha paquet): '.self::names($unforced).'.');
+        }
 
         $quarantined = array_filter($plan->changes, static fn (PlannedChange $c): bool => $c->reason === SkipReason::Quarantine);
         $security = array_filter($plan->changes, static fn (PlannedChange $c): bool => $c->bypass === QuarantineBypass::Vulnerability);

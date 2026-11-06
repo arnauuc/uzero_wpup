@@ -28,7 +28,7 @@ enum Ability: string
     /** Read runs, reports and site data. */
     case ViewReports = 'view-reports';
 
-    /** --allow-major and --skip-quarantine (ADR-0005): audited, per run. */
+    /** --allow-major, --skip-quarantine (ADR-0005) and --include (UZEROWPUP-51): audited, per run. */
     case OverrideVersionPolicy = 'override-version-policy';
 
     public function allows(User $user): bool
