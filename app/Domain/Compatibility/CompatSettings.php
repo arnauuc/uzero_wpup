@@ -30,9 +30,13 @@ final readonly class CompatSettings
         public int $warningsMax,
         /** Sum of the uncompressed sizes of the extracted files (wpup.artifacts.max_unpacked_bytes). */
         public int $maxUnpackedBytes,
+        /** Seconds the whole plan step may spend downloading and analysing packages. */
+        public int $stepBudgetSeconds,
+        /** Below this much budget left (a download plus a scan) the remaining packages are skipped. */
+        public int $minRemainingSeconds,
     ) {
         if ($workDir === '' || $phpcsBinary === '' || $standardPath === '' || preg_match('/^\d+[KMG]?$/D', $memoryLimit) !== 1
-            || min($timeoutSeconds, $maxOutputBytes, $maxFiles, $summaryMaxFindings, $summaryMaxPathLength, $summaryMaxMessageLength, $detailMaxFindings, $warningsMax, $maxUnpackedBytes) <= 0) {
+            || min($timeoutSeconds, $maxOutputBytes, $maxFiles, $summaryMaxFindings, $summaryMaxPathLength, $summaryMaxMessageLength, $detailMaxFindings, $warningsMax, $maxUnpackedBytes, $stepBudgetSeconds, $minRemainingSeconds) <= 0) {
             throw new InvalidArgumentException('wpup.static_analysis: paths, limits and timeouts must be set and positive.');
         }
         foreach ($ignore as $pattern) {

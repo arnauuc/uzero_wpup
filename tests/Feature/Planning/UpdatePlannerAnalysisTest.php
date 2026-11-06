@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Domain\Inventory\PendingUpdate;
 use App\Domain\Planning\ChangeAnalysis;
 use App\Domain\Planning\ChangeAnalyzer;
 use App\Domain\Planning\PlanAction;
@@ -50,7 +51,7 @@ final class RecordingAnalyzer implements ChangeAnalyzer
     /** @param array<string, ChangeAnalysis> $answers */
     public function __construct(private array $answers) {}
 
-    public function analyze(PlannedChange $change): ?ChangeAnalysis
+    public function analyze(PlannedChange $change, ?PendingUpdate $update): ?ChangeAnalysis
     {
         $this->asked[] = $change->slug;
 
@@ -99,6 +100,24 @@ it('does not analyse anything on a blocked site', function (): void {
     app(UpdatePlanner::class)->plan($snapshot, $site, null, '8.2.20', PhpVersionSource::HttpProbe, $analyzer);
 
     expect($analyzer->asked)->toBe([]);
+});
+
+it('hands the analyzer the pending update the planner parsed', function (): void {
+    $analyzer = new class implements ChangeAnalyzer
+    {
+        public ?PendingUpdate $seen = null;
+
+        public function analyze(PlannedChange $change, ?PendingUpdate $update): ?ChangeAnalysis
+        {
+            $this->seen = $update;
+
+            return null;
+        }
+    };
+
+    analysedPlan([analysedPending('a')], $analyzer);
+
+    expect($analyzer->seen?->slug)->toBe('a')->and($analyzer->seen?->newVersion)->toBe('1.1');
 });
 
 it('plans as before without an analyzer', function (): void {

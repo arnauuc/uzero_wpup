@@ -38,8 +38,8 @@ final class StaticAnalysisFailed extends RuntimeException
         return new self('la sortida de PHPCompatibility no és un informe JSON vàlid.');
     }
 
-    public static function workDir(string $reason): self
+    public static function workDir(): self
     {
-        return new self("directori de treball: {$reason}");
+        return new self("no s'ha pogut preparar el directori de treball.");
     }
 }

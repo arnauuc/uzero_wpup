@@ -13,6 +13,7 @@ use App\Domain\Inventory\PendingUpdate;
 use App\Domain\Planning\ChangeAnalysis;
 use App\Domain\Planning\ChangeAnalyzer;
 use App\Domain\Planning\PlannedChange;
+use App\Domain\Secrets\SecretRedactor;
 use App\Enums\ComponentType;
 use App\Enums\SkipReason;
 use Closure;
@@ -26,35 +27,48 @@ use Illuminate\Support\Facades\Log;
  * crashes, the site's PHP is unknown) the update is skipped: a package that was
  * not analysed is not taken as compatible. The core and the translations are not
  * analysed here (the core is covered by its declared requirements; translations
- * carry no code).
+ * carry no code). Only the web's PHP counts: without a verified one nothing is
+ * analysed. Each scan has its own timeout and the step has a budget: when what is
+ * left cannot cover another download and scan, the rest are skipped.
  */
 final class PackageCompatibilityAnalyzer implements ChangeAnalyzer
 {
+    /** Monotonic start of the step's analysis budget (seconds). */
+    private readonly float $startedAt;
+
     /**
+     * @param  string|null  $phpVersion  the PHP that serves the site's web; null when it was not verified
+     *                                   (the CLI's PHP may differ: nothing is analysed against it)
      * @param  Closure(): SiteDriver  $driverFor  lazy: the site is only reached for an update that needs its package URL
-     * @param  array<mixed>  $pending  the snapshot's pending_updates
      */
     public function __construct(
         private readonly int $runId,
-        private readonly string $phpVersion,
-        private readonly array $pending,
+        private readonly ?string $phpVersion,
         private readonly Closure $driverFor,
         private readonly PackageArtifacts $artifacts,
         private readonly StaticCompatibility $compatibility,
         private readonly CompatSettings $settings,
-    ) {}
+        private readonly SecretRedactor $redactor,
+    ) {
+        $this->startedAt = hrtime(true) / 1e9;
+    }
 
-    public function analyze(PlannedChange $change): ?ChangeAnalysis
+    public function analyze(PlannedChange $change, ?PendingUpdate $update): ?ChangeAnalysis
     {
         if (! in_array($change->type, [ComponentType::Plugin, ComponentType::Woocommerce, ComponentType::Theme], true)) {
             return null;
         }
-        $update = $this->pendingFor($change);
         if ($update === null) {
-            return $this->unable('no es troba l\'actualització a l\'inventari.');
+            return $this->unable("no es troba l'actualització a l'inventari.");
+        }
+        if ($this->phpVersion === null) {
+            return $this->unable("el PHP del web del lloc no s'ha pogut verificar.");
         }
         if (! PhpRuntime::isVersion($this->phpVersion)) {
             return $this->unable("el PHP del lloc («{$this->phpVersion}») no es pot llegir.");
+        }
+        if ($this->remainingSeconds() < $this->settings->minRemainingSeconds) {
+            return $this->unable("temps d'anàlisi esgotat.");
         }
         $minor = PhpRuntime::minorOf($this->phpVersion);
 
@@ -62,9 +76,10 @@ final class PackageCompatibilityAnalyzer implements ChangeAnalyzer
             $artifact = $this->artifacts->obtain($this->runId, $this->driverFor, $update);
             $report = $this->compatibility->analyse($artifact, $minor);
         } catch (ArtifactException|DriverException|StaticAnalysisFailed $e) {
-            Log::warning('Static compatibility analysis not completed.', ['slug' => $change->slug, 'version' => $change->targetVersion, 'reason' => $e->getMessage()]);
+            $reason = $this->redactor->redact($e->getMessage());
+            Log::warning('Static compatibility analysis not completed.', ['slug' => $change->slug, 'version' => $change->targetVersion, 'reason' => $reason]);
 
-            return $this->unable($e->getMessage());
+            return $this->unable($reason);
         }
 
         $warnings = array_map(
@@ -87,19 +102,14 @@ final class PackageCompatibilityAnalyzer implements ChangeAnalyzer
         );
     }
 
+    /** What is left of the step's analysis budget (config static_analysis.step_budget_seconds). */
+    private function remainingSeconds(): float
+    {
+        return $this->settings->stepBudgetSeconds - (hrtime(true) / 1e9 - $this->startedAt);
+    }
+
     private function unable(string $reason): ChangeAnalysis
     {
         return new ChangeAnalysis(SkipReason::StaticAnalysis, "No s'ha pogut analitzar el paquet, s'omet per precaució: {$reason}");
-    }
-
-    private function pendingFor(PlannedChange $change): ?PendingUpdate
-    {
-        foreach ($this->pending as $row) {
-            if (is_array($row) && ($row['type'] ?? null) === $change->type->value && ($row['slug'] ?? null) === $change->slug && ($row['new_version'] ?? null) === $change->targetVersion) {
-                return PendingUpdate::fromArray($row);
-            }
-        }
-
-        return null;
     }
 }

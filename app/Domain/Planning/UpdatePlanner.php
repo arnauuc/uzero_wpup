@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Planning;
 
+use App\Domain\Inventory\PendingUpdate;
 use App\Domain\Inventory\PrerequisiteCheck;
 use App\Domain\Sites\SiteBlocking;
 use App\Enums\ComponentType;
@@ -88,7 +89,7 @@ final readonly class UpdatePlanner
             };
 
             // Last, and only for what is still going to be applied: it downloads the package.
-            $analysis = $decision === null ? $analyzer?->analyze($change) : null;
+            $analysis = $decision === null ? $analyzer?->analyze($change, $candidate['pending']) : null;
             if ($analysis?->skip !== null) {
                 $decision = [$analysis->skip, $analysis->detail ?? ''];
             }
@@ -118,7 +119,7 @@ final readonly class UpdatePlanner
     /**
      * The candidates in update order, and the core offers that were not chosen.
      *
-     * @return array{0: list<array{change: PlannedChange, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}>, 1: list<string>}
+     * @return array{0: list<array{change: PlannedChange, pending: ?PendingUpdate, licensed: bool, requires_php: ?string, requires_wp: ?string, requires_wc: ?string, requires_plugins: ?list<string>, requires_plugins_inferred: bool}>, 1: list<string>}
      */
     private function candidates(SiteSnapshot $snapshot): array
     {
@@ -138,6 +139,7 @@ final readonly class UpdatePlanner
             }
             $row = [
                 'change' => new PlannedChange($type, $slug, $current, $target, PlanAction::Update),
+                'pending' => PendingUpdate::fromArray($update),
                 'licensed' => ($update['licensed'] ?? true) !== false,
                 'requires_php' => self::version($update['requires_php'] ?? null),
                 'requires_wp' => self::version($update['requires_wp'] ?? null),

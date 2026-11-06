@@ -12,14 +12,15 @@ use App\Models\CompatScan;
 use App\Support\PrivateDirectory;
 use Composer\InstalledVersions;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 
 /**
  * Compatibility, layer 2 (UZEROWPUP-50, AGENTS.md): analyses a package with
- * PHP_CodeSniffer + PHPCompatibility, testVersion = the site's PHP minor and
- * up. The artifact is verified (SHA-256) right before it is extracted; the
+ * PHP_CodeSniffer + PHPCompatibility, testVersion = exactly the site's PHP
+ * minor ("X.Y-X.Y"). The artifact is verified (SHA-256) right before it is extracted; the
  * extraction goes into a private directory (0700) that is always removed.
  * phpcs runs as an argument array (never a shell string) with a clean
  * environment, a timeout, a memory limit and a cap on its output. The result
@@ -103,12 +104,17 @@ final readonly class StaticCompatibility
 
         $root = $this->workDirectory();
         try {
+            // phpcs reports real paths: compare against the real root.
+            $real = realpath($root);
+            if ($real === false) {
+                throw StaticAnalysisFailed::workDir();
+            }
             $files = $this->extractor->extract($artifact->path, $root, $this->settings->maxFiles, $this->settings->maxUnpackedBytes);
             if ($files === 0) {
                 return new CompatReport(0, 0, []);
             }
 
-            return $this->parse($this->runPhpcs($root, $phpMinor), $root);
+            return $this->parse($this->runPhpcs($root, $phpMinor), $real);
         } finally {
             File::deleteDirectory($root);
         }
@@ -124,7 +130,10 @@ final readonly class StaticCompatibility
 
             return PrivateDirectory::ensure($base.'/scan-'.bin2hex(random_bytes(8)));
         } catch (RuntimeException $e) {
-            throw StaticAnalysisFailed::workDir($e->getMessage());
+            // The operator gets a generic message: the detail names tool-server paths.
+            Log::error('Static analysis work directory unavailable.', ['reason' => $e->getMessage()]);
+
+            throw StaticAnalysisFailed::workDir();
         }
     }
 
@@ -140,7 +149,7 @@ final readonly class StaticCompatibility
             '-q', '--no-colors', '--no-cache', '--parallel=1',
             '--standard=PHPCompatibility',
             '--runtime-set', 'installed_paths', $this->settings->standardPath,
-            '--runtime-set', 'testVersion', "{$phpMinor}-",
+            '--runtime-set', 'testVersion', "{$phpMinor}-{$phpMinor}",
             '--extensions=php',
             '--report=json',
             ...($this->settings->ignore === [] ? [] : ['--ignore='.implode(',', $this->settings->ignore)]),

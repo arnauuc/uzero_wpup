@@ -98,8 +98,9 @@ return [
      * document version.
      */
     'planning' => [
-        // Includes downloading and analysing the new packages (static_analysis).
-        'step_timeout_seconds' => 1800,
+        // Includes downloading and analysing the new packages (static_analysis):
+        // keep it above static_analysis.step_budget_seconds.
+        'step_timeout_seconds' => 3600,
         'report_version' => 1,
         'verified_php_max_age_seconds' => 604800,
     ],
@@ -115,7 +116,13 @@ return [
         'work_dir' => env('WPUP_STATIC_ANALYSIS_DIR', storage_path('app/static-analysis')),
         'phpcs_binary' => base_path('vendor/bin/phpcs'),
         'standard_path' => base_path('vendor/phpcompatibility/php-compatibility'),
+        // One scan. Each package also has its own download timeout (artifacts.timeout_seconds).
         'timeout_seconds' => 300,
+        // The step's budget for all the packages, and the least that must be left to
+        // start another one (a download plus a scan). When it is not enough the
+        // remaining packages are skipped, so the plan step ends instead of timing out.
+        'step_budget_seconds' => 3000,
+        'min_remaining_seconds' => 900,
         'memory_limit' => '512M',
         // phpcs JSON report; more than this is a failure of the analysis.
         'max_output_bytes' => 20 * 1024 * 1024,

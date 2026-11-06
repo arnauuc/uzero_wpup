@@ -30,9 +30,9 @@ final readonly class PlanStep implements ReadOnlyStep
     private const int COLUMN_LENGTH = 255;
 
     /**
-     * @param  Closure(Run, SiteSnapshot, string): ChangeAnalyzer|null  $analyzerFor  static analysis of the new
-     *                                                                                packages (UZEROWPUP-50); given
-     *                                                                                the run, the snapshot and the site's PHP
+     * @param  Closure(Run, ?string): ChangeAnalyzer|null  $analyzerFor  static analysis of the new
+     *                                                                   packages (UZEROWPUP-50); given
+     *                                                                   the run and the PHP of the web, null if not verified
      */
     public function __construct(private UpdatePlanner $planner, private int $timeoutSeconds, private int $verifiedPhpMaxAgeSeconds, private ?Closure $analyzerFor = null) {}
 
@@ -74,7 +74,7 @@ final readonly class PlanStep implements ReadOnlyStep
             }
         }
 
-        $analyzer = $this->analyzerFor === null ? null : ($this->analyzerFor)($context->run, $snapshot, $php);
+        $analyzer = $this->analyzerFor === null ? null : ($this->analyzerFor)($context->run, $source === PhpVersionSource::Cli ? null : $php);
         $plan = $this->planner->plan($snapshot, $site->refresh(), $site->profile, $php, $source, $analyzer);
         $this->recordSkips($context->run, $plan);
 

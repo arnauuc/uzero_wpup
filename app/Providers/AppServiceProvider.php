@@ -33,6 +33,7 @@ use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\SiteRestore;
 use App\Domain\Compatibility\CompatSettings;
+use App\Domain\Compatibility\MemoizedDriver;
 use App\Domain\Compatibility\PackageCompatibilityAnalyzer;
 use App\Domain\Compatibility\StaticCompatibility;
 use App\Domain\Credentials\KeyRotationStep;
@@ -91,7 +92,6 @@ use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Run;
 use App\Models\Site;
-use App\Models\SiteSnapshot;
 use App\Support\Logging\RedactSecretsTap;
 use Closure;
 use GuzzleHttp\Client as GuzzleClient;
@@ -258,6 +258,8 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.static_analysis.detail_max_findings'),
             self::configInt('wpup.static_analysis.warnings_max'),
             self::configInt('wpup.artifacts.max_unpacked_bytes'),
+            self::configInt('wpup.static_analysis.step_budget_seconds'),
+            self::configInt('wpup.static_analysis.min_remaining_seconds'),
         ));
         $this->app->bind(HostResolver::class, DnsHostResolver::class);
         $this->app->bind(ArtifactFetcher::class, static fn (Application $app): ArtifactFetcher => new ArtifactFetcher(
@@ -423,24 +425,22 @@ class AppServiceProvider extends ServiceProvider
                     self::configInt('wpup.planning.verified_php_max_age_seconds'),
                     // Static analysis of the new packages (UZEROWPUP-50). The site is only reached,
                     // as whoever launched the run, to read the package URL of premium updates.
-                    static function (Run $run, SiteSnapshot $snapshot, string $php) use ($app): ChangeAnalyzer {
-                        $driver = null;
-
+                    static function (Run $run, ?string $webPhp) use ($app): ChangeAnalyzer {
                         return new PackageCompatibilityAnalyzer(
                             $run->id,
-                            $php,
-                            $snapshot->pending_updates,
-                            // One driver (one credential reveal) for the whole plan.
-                            static function () use ($app, $run, &$driver): SiteDriver {
+                            $webPhp,
+                            // One driver for the whole plan (see MemoizedDriver).
+                            (new MemoizedDriver(static function () use ($app, $run): SiteDriver {
                                 $actor = $app->make(RunAuthorization::class)->actorFor($run, Ability::RunOperations)
                                     ?? throw new ArtifactException(RunAuthorization::deniedMessage($run));
                                 $site = $run->site ?? throw new ArtifactException("L'execució no té cap lloc.");
 
-                                return $driver ??= $app->make(DriverFactory::class)->forSite($site, $actor);
-                            },
+                                return $app->make(DriverFactory::class)->forSite($site, $actor);
+                            }))(...),
                             $app->make(PackageArtifacts::class),
                             $app->make(StaticCompatibility::class),
                             $app->make(CompatSettings::class),
+                            $app->make(SecretRedactor::class),
                         );
                     },
                 ),

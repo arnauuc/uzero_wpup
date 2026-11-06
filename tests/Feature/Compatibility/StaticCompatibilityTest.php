@@ -12,9 +12,12 @@ use App\Domain\Compatibility\CompatSettings;
 use App\Domain\Compatibility\PackageCompatibilityAnalyzer;
 use App\Domain\Compatibility\StaticAnalysisFailed;
 use App\Domain\Compatibility\StaticCompatibility;
+use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
+use App\Domain\Inventory\PendingUpdate;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
+use App\Domain\Secrets\SecretRedactor;
 use App\Enums\ComponentType;
 use App\Enums\SkipReason;
 use App\Models\CompatScan;
@@ -200,22 +203,26 @@ it('rejects a configuration with a comma in an ignore pattern', function (): voi
  * @param  array<string, string>  $files
  * @return array{PackageCompatibilityAnalyzer, Run}
  */
-function compatAnalyzer(array $files, string $php = '8.2.20'): array
+function compatAnalyzer(array $files, ?string $php = '8.2.20', ?Closure $driverFor = null): array
 {
     $run = Run::factory()->create();
     compatArtifact($files, $run);
-    $pending = [['type' => 'plugin', 'slug' => 'bad-plugin', 'wporg_slug' => 'bad-plugin', 'current_version' => '1.0.0', 'new_version' => '2.0.0', 'source' => 'wordpress.org', 'licensed' => true]];
     $analyzer = new PackageCompatibilityAnalyzer(
         $run->id,
         $php,
-        $pending,
-        fn (): SiteDriver => throw new LogicException('The site must not be reached: the artifact is already stored.'),
+        $driverFor ?? fn (): SiteDriver => throw new LogicException('The site must not be reached: the artifact is already stored.'),
         app(PackageArtifacts::class),
         app(StaticCompatibility::class),
         app(CompatSettings::class),
+        app(SecretRedactor::class),
     );
 
     return [$analyzer, $run];
+}
+
+function compatPending(string $slug = 'bad-plugin'): PendingUpdate
+{
+    return PendingUpdate::fromArray(['type' => 'plugin', 'slug' => $slug, 'wporg_slug' => $slug, 'current_version' => '1.0.0', 'new_version' => '2.0.0', 'source' => 'wordpress.org', 'licensed' => true]) ?? throw new LogicException('bad fixture');
 }
 
 function compatChange(ComponentType $type = ComponentType::Plugin): PlannedChange
@@ -226,27 +233,27 @@ function compatChange(ComponentType $type = ComponentType::Plugin): PlannedChang
 it('turns errors into a skip that names the places, and warnings into report lines', function (): void {
     [$analyzer] = compatAnalyzer(['bad-plugin/bad.php' => COMPAT_BAD_CODE]);
 
-    $analysis = $analyzer->analyze(compatChange());
+    $analysis = $analyzer->analyze(compatChange(), compatPending());
     expect($analysis?->skip)->toBe(SkipReason::StaticAnalysis)
         ->and($analysis?->detail)->toBe('PHPCompatibility: 1 errors per a PHP 8.2 (bad-plugin/bad.php:2).');
 
     [$old] = compatAnalyzer(['bad-plugin/bad.php' => COMPAT_WARN_CODE], '7.4.33');
-    $warned = $old->analyze(compatChange());
+    $warned = $old->analyze(compatChange(), compatPending());
     expect($warned?->skip)->toBeNull()->and($warned?->warnings)->toHaveCount(1)->and($warned?->warnings[0])->toContain('bad-plugin/bad.php:2');
 });
 
 it('does not analyse the core nor translations', function (): void {
     [$analyzer] = compatAnalyzer(['bad-plugin/bad.php' => COMPAT_BAD_CODE]);
 
-    expect($analyzer->analyze(compatChange(ComponentType::Core)))->toBeNull()
-        ->and($analyzer->analyze(compatChange(ComponentType::Translation)))->toBeNull();
+    expect($analyzer->analyze(compatChange(ComponentType::Core), compatPending()))->toBeNull()
+        ->and($analyzer->analyze(compatChange(ComponentType::Translation), compatPending()))->toBeNull();
 });
 
 it('skips conservatively when the analysis cannot run', function (string $php, string $code, string $reason): void {
     compatFakePhpcs($code);
     [$analyzer] = compatAnalyzer(['bad-plugin/bad.php' => COMPAT_BAD_CODE], $php);
 
-    $analysis = $analyzer->analyze(compatChange());
+    $analysis = $analyzer->analyze(compatChange(), compatPending());
     expect($analysis?->skip)->toBe(SkipReason::StaticAnalysis)->and($analysis?->detail)->toContain("s'omet per precaució")->toContain($reason);
 })->with([
     'phpcs crashes' => ['8.2.20', 'exit(3);', 'codi de sortida 3'],
@@ -256,7 +263,71 @@ it('skips conservatively when the analysis cannot run', function (string $php, s
 it('skips conservatively when the update is not in the inventory', function (): void {
     [$analyzer] = compatAnalyzer(['bad-plugin/bad.php' => COMPAT_BAD_CODE]);
 
-    $analysis = $analyzer->analyze(new PlannedChange(ComponentType::Plugin, 'other', '1.0.0', '2.0.0', PlanAction::Update));
+    $analysis = $analyzer->analyze(new PlannedChange(ComponentType::Plugin, 'other', '1.0.0', '2.0.0', PlanAction::Update), null);
 
     expect($analysis?->skip)->toBe(SkipReason::StaticAnalysis)->and($analysis?->detail)->toContain('inventari');
+});
+
+it('analyses against exactly the site minor, not an open range', function (): void {
+    compatFakePhpcs('$i = array_search("--runtime-set", $argv, true); $a = array_keys($argv, "testVersion", true); echo json_encode(["totals" => ["errors" => 0, "warnings" => 1], "files" => ["x" => ["messages" => [["message" => $argv[$a[0] + 1], "type" => "WARNING", "line" => 1]]]]]);');
+
+    $report = app(StaticCompatibility::class)->analyse(compatArtifact(['p/p.php' => "<?php\n"]), '7.4');
+
+    expect($report->findings[0]->message)->toBe('7.4-7.4');
+});
+
+it('reports a paths-free message when the work directory cannot be made', function (): void {
+    $blocker = compatBase().'/blocker';
+    @mkdir(dirname($blocker), 0700, true);
+    file_put_contents($blocker, 'x');
+    config(['wpup.static_analysis.work_dir' => $blocker.'/work']);
+
+    $message = null;
+    try {
+        app(StaticCompatibility::class)->analyse(compatArtifact(['p/p.php' => "<?php\n"]), '8.2');
+    } catch (StaticAnalysisFailed $e) {
+        $message = $e->getMessage();
+    }
+
+    expect($message)->toContain('directori de treball');
+    expect(str_contains((string) $message, compatBase()))->toBeFalse();
+});
+
+it('does not analyse against a PHP that was not verified on the web', function (): void {
+    [$analyzer] = compatAnalyzer(['bad-plugin/bad.php' => COMPAT_BAD_CODE], null);
+
+    $analysis = $analyzer->analyze(compatChange(), compatPending());
+
+    expect($analysis?->skip)->toBe(SkipReason::StaticAnalysis)->and($analysis?->detail)->toContain('no')->and($analysis?->detail)->toContain('verificar');
+    expect(CompatScan::query()->count())->toBe(0);
+});
+
+it('skips the packages left once the step budget cannot cover another one', function (): void {
+    config(['wpup.static_analysis.step_budget_seconds' => 100, 'wpup.static_analysis.min_remaining_seconds' => 200]);
+    [$analyzer] = compatAnalyzer(['bad-plugin/bad.php' => COMPAT_BAD_CODE]);
+
+    $analysis = $analyzer->analyze(compatChange(), compatPending());
+
+    expect($analysis?->skip)->toBe(SkipReason::StaticAnalysis)->and($analysis?->detail)->toContain("temps d'anàlisi esgotat")->toContain("s'omet per precaució");
+    expect(CompatScan::query()->count())->toBe(0);
+});
+
+it('redacts secrets from the reason of a skip', function (): void {
+    $secret = 'sup3r-s3cret-licence-token';
+    app(SecretRedactor::class)->register($secret);
+    $run = Run::factory()->create();
+    $analyzer = new PackageCompatibilityAnalyzer(
+        $run->id,
+        '8.2.20',
+        fn (): SiteDriver => throw new DriverException("connexió fallida amb {$secret}"),
+        app(PackageArtifacts::class),
+        app(StaticCompatibility::class),
+        app(CompatSettings::class),
+        app(SecretRedactor::class),
+    );
+    $update = PendingUpdate::fromArray(['type' => 'plugin', 'slug' => 'premium', 'wporg_slug' => null, 'current_version' => '1.0.0', 'new_version' => '2.0.0', 'source' => 'transient', 'licensed' => true]);
+
+    $analysis = $analyzer->analyze(new PlannedChange(ComponentType::Plugin, 'premium', '1.0.0', '2.0.0', PlanAction::Update), $update);
+
+    expect($analysis?->skip)->toBe(SkipReason::StaticAnalysis)->and($analysis?->detail)->not->toContain($secret)->and($analysis?->detail)->toContain('connexió fallida');
 });
