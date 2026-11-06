@@ -8,6 +8,7 @@ use App\Domain\Drivers\Data\PhpRuntime;
 use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Inventory\InventoryStep;
+use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteInventory;
 use App\Domain\Inventory\SiteState;
 use App\Domain\Planning\PlanStep;
@@ -18,13 +19,16 @@ use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\RunEngine;
 use App\Domain\Runs\StepContext;
 use App\Domain\Sites\SiteBlocking;
+use App\Enums\ChangeResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Enums\RunStatus;
 use App\Enums\RunType;
+use App\Enums\SkipReason;
 use App\Enums\UserRole;
 use App\Models\AuditLogEntry;
 use App\Models\Run;
+use App\Models\RunChange;
 use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\SiteSnapshot;
@@ -40,7 +44,10 @@ beforeEach(function (): void {
     Http::fake(['*' => Http::response('', 500)]);
 });
 
-function plannedDriver(?string $helloRequiresPhp = null): FakeDriver
+/**
+ * @param  list<string>|null  $classicRequiresPlugins
+ */
+function plannedDriver(?string $helloRequiresPhp = null, string $helloTarget = '1.7.2', ?array $classicRequiresPlugins = null): FakeDriver
 {
     $driver = new FakeDriver('6.8.1');
     $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'hello', '1.6'));
@@ -48,9 +55,9 @@ function plannedDriver(?string $helloRequiresPhp = null): FakeDriver
     $driver->transients['update_plugins'] = [
         'last_checked' => time(),
         'response' => [
-            'hello.php' => ['id' => 'w.org/plugins/hello-dolly', 'slug' => 'hello-dolly', 'new_version' => '1.7.2', 'package' => 'https://downloads.wordpress.org/plugin/hello-dolly.1.7.2.zip', 'requires_php' => $helloRequiresPhp],
+            'hello.php' => ['id' => 'w.org/plugins/hello-dolly', 'slug' => 'hello-dolly', 'new_version' => $helloTarget, 'package' => 'https://downloads.wordpress.org/plugin/hello-dolly.1.7.2.zip', 'requires_php' => $helloRequiresPhp],
             'premium/premium.php' => ['slug' => 'premium', 'new_version' => '2.1.0', 'package' => ''],
-            'classic-editor/classic-editor.php' => ['id' => 'w.org/plugins/classic-editor', 'slug' => 'classic-editor', 'new_version' => '1.6.4', 'package' => 'https://downloads.wordpress.org/plugin/classic-editor.1.6.4.zip'],
+            'classic-editor/classic-editor.php' => ['id' => 'w.org/plugins/classic-editor', 'slug' => 'classic-editor', 'new_version' => '1.6.4', 'package' => 'https://downloads.wordpress.org/plugin/classic-editor.1.6.4.zip', 'requires_plugins' => $classicRequiresPlugins],
         ],
     ];
     $driver->coreUpdates = [['version' => '6.8.2', 'update_type' => 'minor', 'package_url' => 'https://downloads.wordpress.org/release/wordpress-6.8.2.zip']];
@@ -101,6 +108,39 @@ it('plans from a fresh inventory and stores the plan in the step', function (): 
     expect(array_map(static fn (array $c): string => "{$c['slug']}:{$c['action']}:{$c['reason']}", $result['changes']))->toBe([
         'wordpress:update:', 'classic-editor:update:', 'hello:skip:frozen', 'premium:skip:no_license',
     ]);
+});
+
+it('records each skipped component with its precise reason in run_changes, once per run', function (): void {
+    $site = Site::factory()->create();
+    $driver = plannedDriver(helloTarget: '2.0.0', classicRequiresPlugins: ['woocommerce-subscriptions']);
+
+    $run = planRun($driver, $site);
+    // A row written by a later step survives a retried plan step, which replaces only its own rows.
+    RunChange::factory()->create(['run_id' => $run->id, 'step' => 'update', 'slug' => 'zz-later', 'result' => ChangeResult::Skipped, 'reason' => SkipReason::Other]);
+    (new PlanStep(app(UpdatePlanner::class), 60, 604800))->run(new StepContext($run->refresh(), false, ['inventory' => ['snapshot_id' => SiteSnapshot::query()->where('run_id', $run->id)->value('id')]]));
+
+    $rows = $run->changes()->orderBy('slug')->get()->map(static fn (RunChange $c): array => [
+        $c->slug, $c->result->value, $c->reason?->value, $c->version_before, $c->version_after, $c->is_major, $c->reason_detail,
+    ])->all();
+
+    expect($rows)->toBe([
+        ['classic-editor', 'skipped', 'dependency', '1.6.3', '1.6.4', false, 'Requereix el plugin «woocommerce-subscriptions», que no està instal·lat.'],
+        ['hello', 'skipped', 'major_requires_staging', '1.6', '2.0.0', true, 'Canvi major (1.6 → 2.0.0): cal staging primer.'],
+        ['premium', 'skipped', 'no_license', '2.0.0', '2.1.0', false, 'No hi ha cap paquet descarregable: falta la llicència.'],
+        ['zz-later', 'skipped', 'other', '1.0.0', '1.0.1', false, null],
+    ]);
+    expect($run->changes()->where('step', 'plan')->count())->toBe(3);
+});
+
+it('cuts a site-provided version that does not fit run_changes instead of failing', function (): void {
+    $target = '2.'.str_repeat('0', 300);
+
+    $run = planRun(plannedDriver(helloTarget: $target), Site::factory()->create());
+    $hello = $run->changes()->where('slug', 'hello')->firstOrFail();
+
+    expect($run->status)->toBe(RunStatus::Succeeded)
+        ->and($hello->version_after)->toBe(substr($target, 0, 255))
+        ->and($hello->reason)->toBe(SkipReason::MajorRequiresStaging);
 });
 
 it('uses a recent web-verified PHP of the same minor in place of the CLI guess', function (): void {
@@ -172,7 +212,7 @@ it('writes nothing to the site and leaves its block alone', function (): void {
         foreach ($driver->wpCalls as $call) {
             $known = match ($call[0]) {
                 // Only the inventory's constant snippets, never an arbitrary eval.
-                'eval' => count($call) === 2 && in_array($call[1], [SiteState::SNIPPET, 'echo $GLOBALS["wpdb"]->db_server_info();'], true),
+                'eval' => count($call) === 2 && in_array($call[1], [SiteState::SNIPPET, PendingUpdates::REQUIRES_PLUGINS_SNIPPET, 'echo $GLOBALS["wpdb"]->db_server_info();'], true),
                 'core' => in_array($call[1] ?? '', ['version', 'check-update'], true),
                 'transient' => ($call[1] ?? '') === 'get',
                 'option' => ($call[1] ?? '') === 'get',

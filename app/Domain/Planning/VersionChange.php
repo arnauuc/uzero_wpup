@@ -13,15 +13,18 @@ final class VersionChange
 {
     /**
      * Core: a change of `x.y`. Everything else (WooCommerce `X.0`, plugins, themes):
-     * a change of the first number. A version that cannot be read counts as major.
+     * a change of the first number. Missing components are zero (7 → 7.0.1 is not
+     * major). A version that cannot be read counts as major.
      */
     public static function isMajor(ComponentType $type, string $from, string $to): bool
     {
-        $pattern = $type === ComponentType::Core ? '/^(\d+\.\d+)/' : '/^(\d+)/';
-        if (preg_match($pattern, $from, $a) !== 1 || preg_match($pattern, $to, $b) !== 1) {
+        $a = WpVersion::parse($from);
+        $b = WpVersion::parse($to);
+        if ($a === null || $b === null) {
             return true;
         }
+        $count = $type === ComponentType::Core ? 2 : 1;
 
-        return $a[1] !== $b[1];
+        return $a->head($count) !== $b->head($count);
     }
 }
