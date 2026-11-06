@@ -112,6 +112,7 @@ return [
         'default_window' => ['days' => [1, 2, 3, 4, 5, 6, 7], 'start' => '01:00', 'end' => '06:00'],
         'notification_channels' => ['email', 'telegram', 'slack'],
         'external_backup_types' => ['plesk', 'dropbox', 'plugin', 'other', 'none'],
+        'external_backup_notes_max' => 500,
         // site:import refuses larger files (UZEROWPUP-26).
         'import_max_bytes' => 1048576,
     ],
@@ -401,6 +402,28 @@ return [
             'command_timeout_seconds' => 120,
             // du over a big uploads folder takes long.
             'du_timeout_seconds' => 180,
+        ],
+        // External backups (UZEROWPUP-133, ADR-0009): backup plugins recognised by
+        // their slug. `last_backup` says where the plugin keeps its last backup (a WP option
+        // holding an array: read with `wp option pluck` its unix time and whether it succeeded), or
+        // null when it is not exposed in a format we can trust. A site is warned when
+        // nothing is known or the latest detected backup is older than `max_age_days`.
+        'external_backups' => [
+            'command_timeout_seconds' => 30,
+            'max_age_days' => 7,
+            // A last-backup time further in the future than this is ignored (bad clock or garbage).
+            'max_future_seconds' => 86400,
+            // Longer answers from the site are not even parsed.
+            'max_output_bytes' => 4096,
+            'plugins' => [
+                'updraftplus' => ['name' => 'UpdraftPlus', 'last_backup' => ['option' => 'updraft_last_backup', 'time_key' => 'backup_time', 'success_key' => 'success']],
+                'backwpup' => ['name' => 'BackWPup', 'last_backup' => null],
+                'backwpup-pro' => ['name' => 'BackWPup Pro', 'last_backup' => null],
+                'all-in-one-wp-migration' => ['name' => 'All-in-One WP Migration', 'last_backup' => null],
+                'duplicator' => ['name' => 'Duplicator', 'last_backup' => null],
+                'duplicator-pro' => ['name' => 'Duplicator Pro', 'last_backup' => null],
+                'blogvault-real-time-backup' => ['name' => 'BlogVault', 'last_backup' => null],
+            ],
         ],
     ],
 

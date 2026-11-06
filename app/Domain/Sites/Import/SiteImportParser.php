@@ -30,7 +30,7 @@ final class SiteImportParser
     public const COLUMNS = [
         'name', 'url', 'wp_path', 'php_binary', 'tags', 'strategy', 'window_days', 'window_start', 'window_end',
         'auto_update', 'verify_urls', 'mask', 'diff_threshold', 'checkout_product', 'freeze', 'exclude', 'notify',
-        'include_uploads', 'external_backup', 'server', 'hostname', 'ssh_port', 'panel', 'account', 'driver',
+        'include_uploads', 'external_backup', 'external_backup_notes', 'server', 'hostname', 'ssh_port', 'panel', 'account', 'driver',
     ];
 
     /** Nested YAML keys mapped to flat columns. */
@@ -257,6 +257,7 @@ final class SiteImportParser
             notify: $this->items($record, 'notify', $local),
             includeUploads: $this->bool($record, 'include_uploads', $local),
             externalBackup: $this->text($record, 'external_backup', $local),
+            externalBackupNotes: $this->text($record, 'external_backup_notes', $local),
         );
 
         foreach ($local as $message) {
