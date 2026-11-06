@@ -282,6 +282,7 @@ class FakeDriver implements SiteDriver
             count($args) === 2 && $args[0] === 'eval' && preg_match("/^echo realpath\\(dirname\\('(.*)'\\)\\);\$/", $args[1], $m) === 1 => $this->ok(dirname($m[1])),
             $args === ['core', 'version'] => $this->ok($this->coreVersion."\n"),
             $args === ['cache', 'flush'] => $this->ok("Success: The cache was flushed.\n"),
+            $args === ['maintenance-mode', 'activate', '--force', '--skip-plugins', '--skip-themes'] => $this->refreshMaintenance(),
             in_array($args, [['maintenance-mode', 'is-active'], ['maintenance-mode', 'is-active', '--skip-plugins', '--skip-themes']], true) => $this->maintenance
                 ? $this->ok('')
                 : new CommandResult(1, '', '', 1),
@@ -400,6 +401,16 @@ class FakeDriver implements SiteDriver
         }
 
         return $this->ok("Success: {$package->slug} {$package->targetVersion}\n");
+    }
+
+    /** `wp maintenance-mode activate --force`: `.maintenance` written again with the current time. */
+    private function refreshMaintenance(): CommandResult
+    {
+        $this->writeCalls[] = 'refreshMaintenance';
+        $this->maintenance = true;
+        $this->maintenanceUpgrading = null;
+
+        return $this->ok("Success: Activated Maintenance mode.\n");
     }
 
     public function setMaintenanceMode(bool $enabled): void

@@ -6,6 +6,7 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\FlysystemTarget;
 use App\Domain\Backups\NewWritesDetector;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\RestoreSelection;
@@ -13,14 +14,17 @@ use App\Domain\Backups\SiteLocalDestination;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\SiteRestore;
+use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Rollback\DatabaseRollbackStep;
+use App\Domain\Runs\Exceptions\ClaimLost;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\RunEngine;
+use App\Domain\Runs\RunRecovery;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
@@ -31,14 +35,18 @@ use App\Enums\RunType;
 use App\Enums\UserRole;
 use App\Models\AuditLogEntry;
 use App\Models\Backup;
+use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Run;
 use App\Models\RunStep;
 use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\User;
 use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
+use League\Flysystem\Filesystem;
+use League\Flysystem\Local\LocalFilesystemAdapter;
 use Tests\Support\FakeDriver;
 
 /*
@@ -49,7 +57,7 @@ use Tests\Support\FakeDriver;
  */
 
 /** A FakeDriver that records the maintenance mode at the restore and can change the site when it is switched on. */
-final class DatabaseRollbackDriver extends FakeDriver
+class DatabaseRollbackDriver extends FakeDriver
 {
     /** @var list<bool> */
     public array $maintenanceAtRestore = [];
@@ -59,6 +67,20 @@ final class DatabaseRollbackDriver extends FakeDriver
     public bool $failRestore = false;
 
     public bool $maintenanceFails = false;
+
+    /** The next import stops half way (half the rows in) and the worker loses its claim. */
+    public bool $interruptImport = false;
+
+    public bool $failUpload = false;
+
+    public function upload(string $localPath, string $remotePath): RemoteFile
+    {
+        if ($this->failUpload) {
+            throw new RemoteCommandFailed('sense espai al lloc');
+        }
+
+        return parent::upload($localPath, $remotePath);
+    }
 
     public function setMaintenanceMode(bool $enabled): void
     {
@@ -74,6 +96,14 @@ final class DatabaseRollbackDriver extends FakeDriver
     public function restoreDatabase(RemoteFile $dump): void
     {
         $this->maintenanceAtRestore[] = $this->maintenance;
+        if ($this->interruptImport) {
+            $this->interruptImport = false;
+            $this->writeCalls[] = 'restoreDatabase';
+            // Half imported: what the detector sees now is no longer the site before.
+            $this->orders[] = ['id' => 40, 'type' => 'shop_order', 'status' => 'wc-pending', 'created' => '2026-11-06 11:00:00', 'modified' => '2026-11-06 11:00:00'];
+
+            throw new ClaimLost('claim lost during the import');
+        }
         if ($this->failRestore) {
             $this->writeCalls[] = 'restoreDatabase';
 
@@ -149,6 +179,8 @@ it('restores the database automatically when nothing was written since the copy,
     expect($run->status)->toBe(RunStatus::Succeeded, (string) $step->error)
         ->and($driver->options)->not->toHaveKey('woocommerce_db_version')
         ->and($driver->maintenanceAtRestore)->toBe([true])
+        // `.maintenance` written again right before the import (WordPress ignores one older than 10 minutes).
+        ->and(array_values(array_intersect($driver->writeCalls, ['refreshMaintenance', 'restoreDatabase'])))->toBe(['refreshMaintenance', 'restoreDatabase'])
         // Switched on by this step, so switched off again.
         ->and($driver->maintenance)->toBeFalse()
         ->and($driver->files)->not->toHaveKey('restore-0123456789abcdef.sql')
@@ -289,4 +321,137 @@ it('refuses a run that is not the rollback of an update of the same site', funct
     expect($run->status)->toBe(RunStatus::Failed)
         ->and(databaseRollbackStep($run)->error)->toContain('no indica quina actualització')
         ->and($driver->writeCalls)->not->toContain('restoreDatabase');
+});
+
+/**
+ * An external destination of the site that holds the copies of the next restore points.
+ */
+function databaseRollbackExternal(Site $site): string
+{
+    $dir = sys_get_temp_dir().'/wpup-db-rollback-'.bin2hex(random_bytes(6));
+    mkdir($dir, 0700, true);
+    $record = BackupTargetRecord::factory()->create(['type' => BackupTargetType::Sftp, 'name' => 'extern']);
+    $site->backupTargets()->attach($record->id);
+    app(BackupTargetRegistry::class)->register(BackupTargetType::Sftp, static fn (): BackupTarget => new FlysystemTarget(new Filesystem(new LocalFilesystemAdapter($dir)), app(SecretRedactor::class), 1_048_576));
+
+    return $dir;
+}
+
+/**
+ * The update of databaseRollbackUpdate(), with its point also at an external destination.
+ *
+ * @return array{Site, Run, string}
+ */
+function databaseRollbackUpdateWithExternal(FakeDriver $driver): array
+{
+    $site = Site::factory()->create(['name' => 'botiga']);
+    SiteProfile::factory()->create(['site_id' => $site->id]);
+    app(SiteLocalDestination::class)->attach($site);
+    $dir = databaseRollbackExternal($site);
+    $user = User::factory()->create(['role' => UserRole::Operator]);
+    $update = Run::factory()->create(['type' => RunType::Update, 'site_id' => $site->id, 'user_id' => $user->id, 'actor' => $user->name,
+        'channel' => AuditChannel::Cli, 'status' => RunStatus::Failed]);
+    app(RestorePointService::class)->create($site, $driver, $update, AuditActor::system('tests'));
+    $driver->options['woocommerce_db_version'] = '10.0.0';
+
+    return [$site, $update, $dir];
+}
+
+it('falls back to the external copy when the site-local one no longer holds its bytes, and says why', function (): void {
+    $driver = new DatabaseRollbackDriver;
+    databaseRollbackPipeline($driver);
+    [$site, $update, $dir] = databaseRollbackUpdateWithExternal($driver);
+
+    try {
+        $local = Backup::query()->where('run_id', $update->id)->where('kind', BackupKind::Database)->whereHas('backupTarget', static fn ($q) => $q->where('type', BackupTargetType::SiteLocal))->sole();
+        $driver->files["restore-points/{$local->path}"] = 'malmès';
+
+        $run = databaseRollbackRun($site, $update);
+
+        $step = databaseRollbackStep($run);
+        expect($run->status)->toBe(RunStatus::Succeeded, (string) $step->error)
+            ->and($driver->options)->not->toHaveKey('woocommerce_db_version')
+            ->and($step->summary)->toContain('1 avisos')
+            ->and($step->output)->toContain("Còpia #{$local->id}")->toContain('al lloc no té el SHA-256 registrat')->toContain('de «extern»')
+            ->and($step->result['backup_id'] ?? null)->not->toBe($local->id);
+    } finally {
+        File::deleteDirectory($dir);
+    }
+});
+
+it('restores nothing when no copy can be used, with the cause of each one', function (): void {
+    $driver = new DatabaseRollbackDriver;
+    databaseRollbackPipeline($driver);
+    [$site, $update, $dir] = databaseRollbackUpdateWithExternal($driver);
+
+    try {
+        $local = Backup::query()->where('run_id', $update->id)->where('kind', BackupKind::Database)->whereHas('backupTarget', static fn ($q) => $q->where('type', BackupTargetType::SiteLocal))->sole();
+        $driver->files["restore-points/{$local->path}"] = 'malmès';
+        $driver->failUpload = true;
+
+        $run = databaseRollbackRun($site, $update);
+
+        expect($run->status)->toBe(RunStatus::Failed)
+            ->and(databaseRollbackStep($run)->error)->toContain('al lloc no té el SHA-256 registrat')->toContain("no s'ha pogut preparar al lloc: sense espai al lloc")
+            ->toContain("No s'ha pogut fer servir cap còpia")->toContain("La base de dades no s'ha restaurat.")
+            ->and($driver->options['woocommerce_db_version'])->toBe('10.0.0')
+            // Nothing imported: the maintenance mode this step switched on is off again.
+            ->and($driver->maintenance)->toBeFalse();
+    } finally {
+        File::deleteDirectory($dir);
+    }
+});
+
+it('resumes an interrupted import from the same copy without checking again against the half-imported database', function (): void {
+    $driver = new DatabaseRollbackDriver;
+    databaseRollbackPipeline($driver);
+    [$site, $update] = databaseRollbackUpdate($driver);
+    $driver->interruptImport = true;
+    $run = Run::factory()->create(['type' => RunType::Rollback, 'site_id' => $site->id, 'parent_run_id' => $update->id,
+        'user_id' => $update->user_id, 'actor' => $update->actor, 'channel' => AuditChannel::Cli]);
+
+    expect(fn () => app(RunEngine::class)->execute($run))->toThrow(ClaimLost::class);
+    $journal = databaseRollbackStep($run)->result['journal'] ?? null;
+    $imported = data_get($journal, 'import_backup_id');
+    expect(data_get($journal, 'maintenance_enabled'))->toBeTrue()
+        ->and($imported)->toBeInt()
+        // Half imported: kept closed.
+        ->and($driver->maintenance)->toBeTrue();
+
+    Redis::connection('locks')->command('flushdb');
+    expect(app(RunRecovery::class)->sweep())->toBe([$run->id]);
+    $run = app(RunEngine::class)->execute($run);
+
+    $step = databaseRollbackStep($run);
+    expect($run->status)->toBe(RunStatus::Succeeded, (string) $step->error)
+        ->and($step->result['restored'] ?? null)->toBeTrue()
+        ->and($step->result['backup_id'] ?? null)->toBe($imported)
+        ->and($step->output)->toContain('Es reprèn la restauració de la base de dades des de la còpia')
+        ->and($driver->options)->not->toHaveKey('woocommerce_db_version')
+        ->and(array_column($driver->orders, 'id'))->toBe([])
+        // Switched on by the first attempt: switched off at the end.
+        ->and($driver->maintenance)->toBeFalse()
+        ->and(AuditLogEntry::query()->where('action', 'rollback.database')->orderBy('id')->pluck('result')->all())->toBe([AuditResult::Failure, AuditResult::Success]);
+});
+
+it('takes a maintenance mode that only warns on stderr as off, and switches it off again', function (): void {
+    $driver = new class extends DatabaseRollbackDriver
+    {
+        public function wp(array $args, ?int $timeoutSeconds = null): CommandResult
+        {
+            $result = parent::wp($args, $timeoutSeconds);
+
+            return $args[0] === 'maintenance-mode' && $args[1] === 'is-active' && ! $result->successful()
+                ? new CommandResult(1, '', "PHP Warning: Undefined array key\n", 1)
+                : $result;
+        }
+    };
+    databaseRollbackPipeline($driver);
+    [$site, $update] = databaseRollbackUpdate($driver);
+
+    $run = databaseRollbackRun($site, $update);
+
+    expect($run->status)->toBe(RunStatus::Succeeded)
+        ->and($driver->maintenanceAtRestore)->toBe([true])
+        ->and($driver->maintenance)->toBeFalse();
 });

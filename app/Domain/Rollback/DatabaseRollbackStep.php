@@ -13,8 +13,10 @@ use App\Domain\Backups\RestoreRefused;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\RestoreStep;
 use App\Domain\Backups\SiteRestore;
+use App\Domain\Drivers\Data\RemoteFile;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
+use App\Domain\Drivers\Exceptions\WorkFileNotFound;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
 use App\Domain\Runs\Exceptions\RunException;
@@ -28,7 +30,9 @@ use App\Enums\BackupKind;
 use App\Enums\RunType;
 use App\Models\Backup;
 use App\Models\Run;
+use App\Models\RunStep;
 use App\Models\Site;
+use Carbon\CarbonImmutable;
 use Closure;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -46,26 +50,40 @@ use Throwable;
  *   the notification) carries the affected orders and users (ID, type,
  *   status, dates and roles; never personal data) and the command to force it
  *   by hand (`backup:restore --db --accept-data-loss`, typed confirmation).
- * - Nothing written: maintenance mode on (if it was not), and the check runs
- *   again right before the restore, so no order can enter in between. If the
- *   mode cannot be switched on, the database is not restored.
+ * - Nothing written: maintenance mode on (if it was not). Each copy is made
+ *   available on the site first (in place, or uploaded); then, immediately
+ *   before the import, `.maintenance` is written again (WordPress ignores one
+ *   older than 10 minutes) and the check runs again. If the mode cannot be
+ *   switched on, the database is not restored. Residual risk: maintenance
+ *   mode stops requests to WordPress, not the system cron nor WP-CLI on the
+ *   server; a write by those in the seconds between the last check and the
+ *   import cannot be ruled out.
  * - The dump of the run's point, the site-local copy first, then the external
- *   ones; one that fails its checksum changed nothing, so the next is tried.
+ *   ones. A copy that cannot be read, prepared or that fails its checksum
+ *   wrote nothing, so the next is tried (with the cause of each one); only a
+ *   failure once the import started may leave the database half restored.
  *   WP-CLI must answer afterwards and the object cache is flushed.
+ * - Resumable: the decision ("no new writes, import of copy X started") and
+ *   whether this step switched the maintenance mode on are kept in the
+ *   step's row before acting. An interrupted attempt is resumed with the same
+ *   copy, without checking again against a half-imported database.
  * - Maintenance: switched off again only if this step switched it on and the
  *   database was not left half restored. One already on (the files rollback
  *   leaves it on) is left on for whoever owns it.
- * - Idempotent: restored, the site matches the copy's watermark again.
  *
  * Every attempt is audited (`rollback.database`; denied when not restored
  * because of new writes).
  *
  * Result keys: restored (bool), source_run_id, backup_id, new_writes
- * (NewWrites::toArray()), warning (string|null), force_command (string|null).
+ * (NewWrites::toArray(), null when resumed), warning (string|null),
+ * force_command (string|null).
  */
 final readonly class DatabaseRollbackStep implements Step
 {
     public const string NAME = 'rollback-database';
+
+    /** TODO(UZEROWPUP-59): SiteDriver::SAFE_MODE once UZEROWPUP-57 is on main. */
+    private const array SAFE_MODE = ['--skip-plugins', '--skip-themes'];
 
     /**
      * @param  Closure(Site, AuditActor): SiteDriver  $driverFor
@@ -118,44 +136,93 @@ final readonly class DatabaseRollbackStep implements Step
         } catch (RollbackRefused $e) {
             return StepOutcome::failed($e->getMessage().' La base de dades no s\'ha restaurat.');
         }
-        $audit = ['run_id' => $context->run->id, 'source_run_id' => $source->id, 'backup_id' => null, 'restored' => 'no'];
+
+        // What an earlier attempt of this step decided and did (interrupted run).
+        $journal = $this->journal($context->run);
+        $resumed = is_int($journal['import_backup_id'] ?? null) ? $journal['import_backup_id'] : null;
+        $enabled = ($journal['maintenance_enabled'] ?? false) === true;
+        $audit = ['run_id' => $context->run->id, 'source_run_id' => $source->id, 'backup_id' => $resumed,
+            'restored' => $resumed === null ? 'no' : 'unknown', 'resumed' => $resumed !== null];
 
         try {
             $driver = ($this->driverFor)($site, $actor);
         } catch (DriverException $e) {
-            return StepOutcome::failed("No s'ha pogut connectar amb el lloc: la base de dades no s'ha restaurat. {$this->redactor->redact($e->getMessage())}");
+            return StepOutcome::failed("No s'ha pogut connectar amb el lloc. {$this->redactor->redact($e->getMessage())}".$this->done($audit, $site, $source));
         }
 
         $warnings = [];
-        $enabled = false;
+        $writes = null;
+        // Whether the import may have touched the database, in this attempt or an earlier one.
+        $imported = $resumed !== null;
 
         try {
-            // First, before touching anything.
-            $writes = $this->newWrites->detect($driver, $candidates[0]->order_watermark);
-            if ($writes->mayLoseData()) {
-                return $this->notRestored($actor, $site, $source, $writes, $audit, []);
-            }
-
-            $enabled = $this->maintenanceOn($driver, $warnings);
-            $this->restore->purgeTemporaries($driver);
-            $row = null;
-            $failures = [];
-            foreach ($candidates as $candidate) {
-                // Again right before the restore, with the shop closed.
-                $writes = $this->newWrites->detect($driver, $candidate->order_watermark);
+            if ($resumed === null) {
+                // First, before touching anything.
+                $writes = $this->newWrites->detect($driver, $candidates[0]->order_watermark);
                 if ($writes->mayLoseData()) {
                     $this->maintenanceOff($driver, $enabled, $context->run->id, $warnings);
 
                     return $this->notRestored($actor, $site, $source, $writes, $audit, $warnings);
                 }
-                $audit['backup_id'] = $candidate->id;
-                $audit['restored'] = 'unknown';
+            } else {
+                // Decided before the import started: never checked again against a half-imported database.
+                $candidates = array_values(array_filter($candidates, static fn (Backup $b): bool => $b->id === $resumed));
+                if ($candidates === []) {
+                    throw new RollbackRefused("La còpia #{$resumed}, amb què havia començat la restauració, ja no es pot fer servir.");
+                }
+                $warnings[] = "Es reprèn la restauració de la base de dades des de la còpia #{$resumed}, començada a "
+                    .(is_string($journal['import_started_at'] ?? null) ? $journal['import_started_at'] : '?').' sense escriptures noves.';
+            }
+
+            if ($this->maintenanceOn($driver, $warnings)) {
+                $enabled = true;
+                $journal['maintenance_enabled'] = true;
+                $this->remember($context->run, $journal);
+            }
+            $this->restore->purgeTemporaries($driver);
+            $row = null;
+            $failures = [];
+            foreach ($candidates as $candidate) {
+                $label = "Còpia #{$candidate->id} («".($candidate->backupTarget->name ?? '?').'»)';
 
                 try {
-                    $this->restore->restore($site, $driver, $candidate, $actor);
-                } catch (RestoreRefused|IntegrityCheckFailed $e) {
-                    $audit['restored'] = 'no';
-                    $failures[] = "Còpia #{$candidate->id}: {$this->redactor->redact($e->getMessage())}";
+                    $this->restore->prepared($site, $driver, $candidate, $actor, function (RemoteFile $dump) use ($driver, $candidate, $context, $resumed, &$journal, &$imported, &$writes, &$audit): void {
+                        // WordPress ignores a `.maintenance` older than 10 minutes: written again now.
+                        $this->refreshMaintenance($driver);
+                        if ($resumed === null) {
+                            // Again, immediately before the import, with the shop closed.
+                            $writes = $this->newWrites->detect($driver, $candidate->order_watermark);
+                            if ($writes->mayLoseData()) {
+                                throw new NewWritesSinceCopy($writes);
+                            }
+                            $journal['import_backup_id'] = $candidate->id;
+                            $journal['import_started_at'] = CarbonImmutable::now()->toIso8601String();
+                            $this->remember($context->run, $journal);
+                        }
+                        $imported = true;
+                        $audit['backup_id'] = $candidate->id;
+                        $audit['restored'] = 'unknown';
+                        $this->import($driver, $dump);
+                    });
+                } catch (NewWritesSinceCopy $e) {
+                    $this->maintenanceOff($driver, $enabled, $context->run->id, $warnings);
+
+                    return $this->notRestored($actor, $site, $source, $e->writes, $audit, $warnings);
+                } catch (RestoreRefused|CopyNotUsable $e) {
+                    // Nothing imported from this copy.
+                    if ($resumed === null) {
+                        [$imported, $audit['restored'], $audit['backup_id']] = [false, 'no', null];
+                        unset($journal['import_backup_id'], $journal['import_started_at']);
+                        $this->remember($context->run, $journal);
+                    }
+                    $failures[] = "{$label}: {$this->redactor->redact($e->getMessage())}";
+
+                    continue;
+                } catch (DriverException $e) {
+                    if ($imported) {
+                        throw $e;
+                    }
+                    $failures[] = "{$label}: no s'ha pogut preparar al lloc: {$this->redactor->redact($e->getMessage())}";
 
                     continue;
                 }
@@ -165,28 +232,26 @@ final readonly class DatabaseRollbackStep implements Step
                 break;
             }
             if ($row === null) {
-                $audit['backup_id'] = null;
-
-                throw new RollbackRefused(implode(' ', $failures).' Cap còpia de la base de dades no té el SHA-256 registrat.');
+                throw new RollbackRefused(implode(' ', $failures).' No s\'ha pogut fer servir cap còpia de la base de dades.');
             }
             if ($failures !== []) {
                 $warnings[] = implode(' ', $failures)." Es fa servir la còpia #{$row->id} de «".($row->backupTarget->name ?? '?').'».';
             }
             $warnings = [...$warnings, ...RestoreStep::checkAfterRestore($driver)];
         } catch (RunException $e) {
-            // The run itself was stopped (timeout, claim lost): audited, never swallowed.
-            $this->maintenanceOff($driver, $enabled && $audit['restored'] === 'no', $context->run->id, $warnings);
+            // The run itself was stopped (timeout, claim lost): audited, never swallowed; the journal says where it was.
+            $this->maintenanceOff($driver, $enabled && ! $imported, $context->run->id, $warnings);
             $this->record($actor, $site, AuditResult::Failure, $audit + ['reason' => 'run stopped']);
 
             throw $e;
         } catch (RollbackRefused|DriverException|PostRestoreCheckFailed $e) {
-            $this->maintenanceOff($driver, $enabled && $audit['restored'] === 'no', $context->run->id, $warnings);
+            $this->maintenanceOff($driver, $enabled && ! $imported, $context->run->id, $warnings);
             $reason = $this->redactor->redact($e->getMessage());
             $this->record($actor, $site, AuditResult::Failure, $audit + ['reason' => $reason]);
 
             return StepOutcome::failed($reason.$this->done($audit, $site, $source), implode("\n", $warnings));
         } catch (Throwable $e) {
-            $this->maintenanceOff($driver, $enabled && $audit['restored'] === 'no', $context->run->id, $warnings);
+            $this->maintenanceOff($driver, $enabled && ! $imported, $context->run->id, $warnings);
             $this->record($actor, $site, AuditResult::Failure, $audit + ['exception' => $e::class]);
 
             throw $e;
@@ -198,7 +263,7 @@ final readonly class DatabaseRollbackStep implements Step
             "Base de dades restaurada des de la còpia #{$row->id} de l'execució #{$source->id}: no hi havia escriptures noves a les comandes ni als usuaris."
                 .($warnings === [] ? '' : sprintf(' %d avisos.', count($warnings))),
             implode("\n", $warnings),
-            ['restored' => true, 'source_run_id' => $source->id, 'backup_id' => $row->id, 'new_writes' => $writes->toArray(), 'warning' => null, 'force_command' => null],
+            ['restored' => true, 'source_run_id' => $source->id, 'backup_id' => $row->id, 'new_writes' => $writes?->toArray(), 'warning' => null, 'force_command' => null],
         );
     }
 
@@ -240,6 +305,55 @@ final readonly class DatabaseRollbackStep implements Step
     }
 
     /**
+     * The import itself. The driver checks the dump's size and SHA-256 on the
+     * site first: a copy refused there, or no longer there, wrote nothing.
+     *
+     * @throws CopyNotUsable when nothing was imported
+     * @throws DriverException when the import failed (the database may be half restored)
+     */
+    private function import(SiteDriver $driver, RemoteFile $dump): void
+    {
+        try {
+            $driver->restoreDatabase($dump);
+        } catch (IntegrityCheckFailed $e) {
+            throw new CopyNotUsable("al lloc no té el SHA-256 registrat: {$e->getMessage()}", previous: $e);
+        } catch (WorkFileNotFound $e) {
+            throw new CopyNotUsable("ja no és al lloc: {$e->getMessage()}", previous: $e);
+        }
+    }
+
+    /**
+     * This step's own state, kept in its run_steps row while it runs so that a
+     * resumed attempt knows what an interrupted one decided and did. The
+     * engine replaces it with the outcome when the step ends.
+     *
+     * @return array<string, mixed>
+     */
+    private function journal(Run $run): array
+    {
+        $result = RunStep::query()->where('run_id', $run->id)->where('name', self::NAME)->first()?->result;
+        $journal = [];
+        foreach (is_array($result['journal'] ?? null) ? $result['journal'] : [] as $key => $value) {
+            if (is_string($key)) {
+                $journal[$key] = $value;
+            }
+        }
+
+        return $journal;
+    }
+
+    /**
+     * @param  array<string, mixed>  $journal
+     */
+    private function remember(Run $run, array $journal): void
+    {
+        $row = RunStep::query()->where('run_id', $run->id)->where('name', self::NAME)->first();
+        if ($row !== null) {
+            $row->update(['result' => ['journal' => $journal]]);
+        }
+    }
+
+    /**
      * New writes, or no way to know: the database is not touched.
      *
      * @param  array<string, mixed>  $audit
@@ -260,8 +374,11 @@ final readonly class DatabaseRollbackStep implements Step
     }
 
     /**
-     * `is-active` exits 1 without an error when the mode is off; any other
-     * failure leaves its state unknown: it is switched on and left on.
+     * `is-active` exits 1 without an error when the mode is off (a warning on
+     * stderr does not count); any other failure leaves its state unknown: it
+     * is switched on and left on.
+     *
+     * TODO(UZEROWPUP-59): RestoreMaintenanceStep::state() once UZEROWPUP-57 is on main.
      *
      * @param  list<string>  $warnings
      * @return bool whether this step switched it on from off
@@ -271,12 +388,12 @@ final readonly class DatabaseRollbackStep implements Step
     private function maintenanceOn(SiteDriver $driver, array &$warnings): bool
     {
         try {
-            $state = $driver->wp(['maintenance-mode', 'is-active', '--skip-plugins', '--skip-themes']);
+            $state = $driver->wp(['maintenance-mode', 'is-active', ...self::SAFE_MODE]);
             if ($state->successful()) {
                 return false;
             }
             $driver->setMaintenanceMode(true);
-            if ($state->exitCode === 1 && trim($state->stderr) === '') {
+            if ($state->exitCode === 1 && ! str_contains($state->stderr, 'Error:')) {
                 return true;
             }
             $warnings[] = "No s'ha pogut saber si el mode manteniment era actiu: es deixa activat. Revisa'l a mà.";
@@ -284,6 +401,20 @@ final readonly class DatabaseRollbackStep implements Step
             return false;
         } catch (DriverException $e) {
             throw new RollbackRefused("No s'ha pogut activar el mode manteniment, i sense no es pot garantir que no entri cap comanda abans de restaurar: {$this->redactor->redact($e->getMessage())}");
+        }
+    }
+
+    /**
+     * Writes `.maintenance` again with the current time (`activate --force`).
+     *
+     * @throws RollbackRefused
+     * @throws DriverException
+     */
+    private function refreshMaintenance(SiteDriver $driver): void
+    {
+        $result = $driver->wp(['maintenance-mode', 'activate', '--force', ...self::SAFE_MODE]);
+        if (! $result->successful()) {
+            throw new RollbackRefused("No s'ha pogut tornar a escriure el mode manteniment just abans d'importar: ".trim($this->redactor->redact($result->stderr)));
         }
     }
 
@@ -312,7 +443,7 @@ final readonly class DatabaseRollbackStep implements Step
     {
         return match ($audit['restored']) {
             'yes' => ' La base de dades ja s\'ha restaurat: revisa el lloc (el mode manteniment es manté si aquest pas l\'havia activat).',
-            'unknown' => ' La restauració de la base de dades s\'ha interromput: pot haver quedat a mitges i el mode manteniment es manté. '
+            'unknown' => ' La restauració de la base de dades ha començat i no ha acabat: pot haver quedat a mitges i el mode manteniment es manté. '
                 ."Torna a executar el rollback o restaura-la a mà: wpup backup:restore {$site->name} --point=run{$source->id} --db (més --accept-data-loss en una botiga).",
             default => ' La base de dades no s\'ha restaurat.',
         };
