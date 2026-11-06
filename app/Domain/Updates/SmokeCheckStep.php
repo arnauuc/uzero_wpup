@@ -29,8 +29,9 @@ use Throwable;
  * or a 5xx (or no answer at all) from the site's home, fails the step, and
  * the failure makes the engine roll back (wired by UZEROWPUP-60).
  *
- * The home is requested FIRST and the log read afterwards, so a fatal that
- * the request itself causes is in the region that is read.
+ * The home is requested FIRST (http_attempts times, a pause apart, each with its
+ * own cache buster; any failure fails) and the log read once afterwards, so a
+ * fatal that the requests themselves cause is in the region that is read.
  *
  * Conservative on purpose:
  * - Log unreadable (any error reading it), or no log known at the baseline:
@@ -99,8 +100,8 @@ final readonly class SmokeCheckStep implements Step
             return StepOutcome::failed("L'execució no té cap lloc.");
         }
 
-        // First the request, then the log: what the request breaks must be in what is read.
-        $http = $this->requestHome($site);
+        // First the requests, then the log: what they break must be in what is read.
+        $http = $this->requestHomeRepeatedly($site);
         [$fatals, $warnings] = $this->readLog($context, $site, $actor);
 
         $problems = [];
@@ -166,6 +167,30 @@ final readonly class SmokeCheckStep implements Step
         }
 
         return [$fatals, $warnings];
+    }
+
+    /**
+     * Requests the home http_attempts times, a pause apart and each with its own
+     * cache buster, and stops at the first problem: ANY 5xx or connection failure
+     * makes the step fail. A worker still serving old code right after an update
+     * can answer differently from the next one, so one good answer proves little.
+     *
+     * @return array{status: ?int, failure: ?string}
+     */
+    private function requestHomeRepeatedly(Site $site): array
+    {
+        $result = ['status' => null, 'failure' => null];
+        for ($attempt = 1; $attempt <= $this->settings->httpAttempts; $attempt++) {
+            if ($attempt > 1 && $this->settings->httpAttemptPauseSeconds > 0) {
+                sleep($this->settings->httpAttemptPauseSeconds);
+            }
+            $result = $this->requestHome($site);
+            if ($result['failure'] !== null) {
+                return ['status' => $result['status'], 'failure' => "{$result['failure']} (petició {$attempt} de {$this->settings->httpAttempts})"];
+            }
+        }
+
+        return $result;
     }
 
     /**

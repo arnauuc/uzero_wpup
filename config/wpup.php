@@ -154,9 +154,13 @@ return [
      * of the site and the new lines of the PHP error log (from the position
      * saved before). A new fatal, a 5xx or no answer at all fails the step and
      * so triggers the rollback.
-     * - step_timeout_seconds must cover connect + 8 SSH commands + the home with
-     *   all its redirects (ssh.* and the values below); checked when the steps
+     * - step_timeout_seconds must cover connect + 8 SSH commands + every home
+     *   request with all its redirects and the pauses (ssh.* and the values below); checked when the steps
      *   are built.
+     * - http_attempts: how many requests of the home (each with its own cache
+     *   buster, http_attempt_pause_seconds apart); ANY 5xx or connection failure
+     *   fails. A worker still serving old code right after an update may answer
+     *   differently from the next one. The log is read once, after all of them.
      * - fatal_patterns are PCRE, anchored to the PHP log format (after the
      *   [date] prefix): application messages that merely mention "Fatal error"
      *   do not count. Uncaught exceptions are PHP Fatal error lines.
@@ -167,9 +171,11 @@ return [
      * Reported lines are redacted and cut to line_max_chars.
      */
     'smoke_check' => [
-        'step_timeout_seconds' => 2700,
+        'step_timeout_seconds' => 3000,
         'http_timeout_seconds' => 30,
         'max_redirects' => 5,
+        'http_attempts' => 3,
+        'http_attempt_pause_seconds' => 2,
         'verify_tls' => (bool) env('WPUP_SMOKE_CHECK_VERIFY_TLS', true),
         'max_candidate_lines' => 200,
         'signature_window_bytes' => 1048576,

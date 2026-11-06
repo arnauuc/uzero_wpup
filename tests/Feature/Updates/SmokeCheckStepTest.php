@@ -32,6 +32,8 @@ const SMOKE_FATAL = '[06-Nov-2026 10:00:00 UTC] PHP Fatal error:  Uncaught Error
 beforeEach(function (): void {
     app(SecretRedactor::class)->reset();
     Http::preventStrayRequests();
+    // No real pauses between the requests of the home.
+    config(['wpup.smoke_check.http_attempt_pause_seconds' => 0]);
 });
 
 function smokeSteps(FakeDriver $driver, ?SmokeCheckSettings $settings = null, int $connect = 15, int $command = 300): SmokeCheckSteps
@@ -136,6 +138,44 @@ it('does not fail on a 4xx', function (int $status): void {
     expect(smokeSteps($driver)->check()->run(smokeContext($driver))->status)->toBe(RunStepStatus::Succeeded);
 })->with([301, 403, 404]);
 
+it('requests the home several times, each with its own cache buster, and passes when all are fine', function (): void {
+    $driver = new FakeDriver;
+    Http::fake(['shop.test/*' => Http::response('ok', 200)]);
+
+    $outcome = smokeSteps($driver)->check()->run(smokeContext($driver));
+
+    $urls = Http::recorded()->map(static fn (array $pair): string => $pair[0]->url())->all();
+    expect($outcome->status)->toBe(RunStepStatus::Succeeded);
+    expect($urls)->toHaveCount(3);
+    expect(array_unique($urls))->toHaveCount(3);
+});
+
+it('fails when any one of the requests is a 5xx, even if the others are fine', function (int $badRequest): void {
+    $driver = new FakeDriver;
+    $answers = Http::sequence();
+    foreach ([1, 2, 3] as $n) {
+        $answers->push('x', $n === $badRequest ? 503 : 200);
+    }
+    Http::fake(['shop.test/*' => $answers]);
+
+    $outcome = smokeSteps($driver)->check()->run(smokeContext($driver));
+
+    expect($outcome->status)->toBe(RunStepStatus::Failed);
+    expect($outcome->summary)->toContain('HTTP 503')->toContain("petició {$badRequest} de 3");
+    // It stops at the first problem.
+    Http::assertSentCount($badRequest);
+})->with([1, 2, 3]);
+
+it('fails when a later request cannot connect', function (): void {
+    $driver = new FakeDriver;
+    Http::fake(['shop.test/*' => Http::sequence()->push('ok', 200)->push('ok', 200)->pushFailedConnection('refused')]);
+
+    $outcome = smokeSteps($driver)->check()->run(smokeContext($driver));
+
+    expect($outcome->status)->toBe(RunStepStatus::Failed);
+    expect($outcome->summary)->toContain('la portada no respon')->toContain('petició 3 de 3');
+});
+
 it('treats a connection error or timeout as a failure', function (): void {
     $driver = new FakeDriver;
     Http::fake(['shop.test/*' => static fn () => throw new ConnectionException('cURL error 28: timed out')]);
@@ -157,7 +197,7 @@ it('asks for the home with a cache buster and no-cache headers, without credenti
         && $request->header('Cache-Control') === ['no-cache'] && $request->header('Pragma') === ['no-cache']
         && ! $request->hasHeader('Authorization') && ! $request->hasHeader('Cookie'));
     $urls = Http::recorded()->map(static fn (array $pair): string => $pair[0]->url())->all();
-    expect(array_unique($urls))->toHaveCount(2);
+    expect(array_unique($urls))->toHaveCount(6);
 });
 
 it('keeps the query string of the site url when adding the cache buster', function (): void {
@@ -175,13 +215,13 @@ it('requests the home before it reads the log, so what the request breaks counts
         public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan
         {
             // The request already happened, and it wrote this fatal.
-            Http::assertSentCount(1);
+            Http::assertSentCount(3);
             $this->phpLog[] = SMOKE_FATAL;
 
             return parent::phpLogFatalsSince($cursor, $maxLines);
         }
     };
-    Http::fake(['shop.test/*' => Http::response('', 500)]);
+    Http::fake(['shop.test/*' => Http::response('ok', 200)]);
 
     $outcome = smokeSteps($driver)->check()->run(smokeContext($driver));
 
@@ -297,10 +337,10 @@ it('declares the baseline read only and the check not', function (): void {
 });
 
 it('refuses a step timeout below the worst case', function (): void {
-    $settings = new SmokeCheckSettings(600, 30, 5, true, 200, 1024, 5, 300, app(SmokeCheckSettings::class)->fatalPatterns);
+    $settings = new SmokeCheckSettings(600, 30, 5, 3, 0, true, 200, 1024, 5, 300, app(SmokeCheckSettings::class)->fatalPatterns);
 
     expect(fn () => smokeSteps(new FakeDriver, $settings))->toThrow(InvalidArgumentException::class, 'pitjor cas');
-    expect(smokeSteps(new FakeDriver, $settings, 15, 20))->toBeInstanceOf(SmokeCheckSteps::class);
+    expect(smokeSteps(new FakeDriver, $settings, 15, 5))->toBeInstanceOf(SmokeCheckSteps::class);
 });
 
 /*

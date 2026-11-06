@@ -501,6 +501,8 @@ class AppServiceProvider extends ServiceProvider
             stepTimeoutSeconds: self::configInt('wpup.smoke_check.step_timeout_seconds'),
             httpTimeoutSeconds: self::configInt('wpup.smoke_check.http_timeout_seconds'),
             maxRedirects: self::configInt('wpup.smoke_check.max_redirects'),
+            httpAttempts: self::configInt('wpup.smoke_check.http_attempts'),
+            httpAttemptPauseSeconds: self::configInt('wpup.smoke_check.http_attempt_pause_seconds'),
             verifyTls: config('wpup.smoke_check.verify_tls') !== false,
             maxCandidateLines: self::configInt('wpup.smoke_check.max_candidate_lines'),
             signatureWindowBytes: self::configInt('wpup.smoke_check.signature_window_bytes'),

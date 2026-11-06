@@ -11,7 +11,7 @@ use App\Domain\Updates\SmokeCheckSettings;
  */
 function smokeSettings(?array $patterns = null, int $reportedLines = 5, int $lineMaxChars = 300): SmokeCheckSettings
 {
-    return new SmokeCheckSettings(2700, 30, 5, true, 200, 1024, $reportedLines, $lineMaxChars, $patterns ?? app(SmokeCheckSettings::class)->fatalPatterns);
+    return new SmokeCheckSettings(3000, 30, 5, 3, 0, true, 200, 1024, $reportedLines, $lineMaxChars, $patterns ?? app(SmokeCheckSettings::class)->fatalPatterns);
 }
 
 function scanner(): PhpLogScanner
@@ -108,7 +108,7 @@ it('boots with the configured patterns', function (): void {
 it('covers the worst case of the step with the configured timeout', function (): void {
     $settings = app(SmokeCheckSettings::class);
 
-    expect($settings->worstCaseSeconds(15, 300))->toBe(15 + 8 * 300 + 6 * 30)
+    expect($settings->worstCaseSeconds(15, 300))->toBe(15 + 8 * 300 + 3 * 6 * 30 + 2 * 2)
         ->and($settings->stepTimeoutSeconds)->toBeGreaterThanOrEqual($settings->worstCaseSeconds(
             config()->integer('wpup.ssh.connect_timeout_seconds'),
             config()->integer('wpup.ssh.command_timeout_seconds'),

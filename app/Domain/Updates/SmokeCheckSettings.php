@@ -28,6 +28,8 @@ final readonly class SmokeCheckSettings
         public int $stepTimeoutSeconds,
         public int $httpTimeoutSeconds,
         public int $maxRedirects,
+        public int $httpAttempts,
+        public int $httpAttemptPauseSeconds,
         public bool $verifyTls,
         public int $maxCandidateLines,
         public int $signatureWindowBytes,
@@ -35,6 +37,9 @@ final readonly class SmokeCheckSettings
         public int $lineMaxChars,
         public array $fatalPatterns,
     ) {
+        if ($httpAttempts < 1 || $httpAttemptPauseSeconds < 0) {
+            throw new InvalidArgumentException('wpup.smoke_check.http_attempts ha de ser com a mínim 1 i http_attempt_pause_seconds no pot ser negatiu.');
+        }
         if ($fatalPatterns === []) {
             throw new InvalidArgumentException('wpup.smoke_check.fatal_patterns no pot ser buit: cap fatal es detectaria.');
         }
@@ -48,11 +53,13 @@ final readonly class SmokeCheckSettings
 
     /**
      * The longest the step can legitimately take: the SSH connection, every
-     * remote command at its own timeout, and the home with all its redirects
-     * (each hop with its own HTTP timeout).
+     * remote command at its own timeout, and every request of the home with all
+     * its redirects (each hop with its own HTTP timeout) plus the pauses between them.
      */
     public function worstCaseSeconds(int $sshConnectSeconds, int $sshCommandSeconds): int
     {
-        return $sshConnectSeconds + self::REMOTE_COMMANDS * $sshCommandSeconds + ($this->maxRedirects + 1) * $this->httpTimeoutSeconds;
+        return $sshConnectSeconds + self::REMOTE_COMMANDS * $sshCommandSeconds
+            + $this->httpAttempts * ($this->maxRedirects + 1) * $this->httpTimeoutSeconds
+            + ($this->httpAttempts - 1) * $this->httpAttemptPauseSeconds;
     }
 }
