@@ -9,7 +9,6 @@ use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\NewWrites;
 use App\Domain\Backups\NewWritesDetector;
 use App\Domain\Backups\PostRestoreCheckFailed;
-use App\Domain\Backups\RestoreMaintenanceStep;
 use App\Domain\Backups\RestoreRefused;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\RestoreStep;
@@ -20,6 +19,7 @@ use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\Exceptions\WorkFileNotFound;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
+use App\Domain\Maintenance\MaintenanceMode;
 use App\Domain\Runs\Exceptions\RunException;
 use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\Step;
@@ -349,7 +349,7 @@ final readonly class DatabaseRollbackStep implements Step
 
     /**
      * The mode switched on when it was not, or when its state cannot be told
-     * (RestoreMaintenanceStep::state(): `is-active` exiting 1 without an
+     * (MaintenanceMode::state(): `is-active` exiting 1 without an
      * error is off, a warning on stderr does not count); in that last case it
      * is left on.
      *
@@ -360,11 +360,11 @@ final readonly class DatabaseRollbackStep implements Step
      */
     private function maintenanceOn(SiteDriver $driver, int $runId, array &$warnings): bool
     {
-        $state = RestoreMaintenanceStep::state($driver);
+        $state = MaintenanceMode::state($driver);
         if ($state === true) {
             return false;
         }
-        $failed = RestoreMaintenanceStep::switchTo($driver, true, $this->redactor, $runId);
+        $failed = MaintenanceMode::switchTo($driver, true, $this->redactor, $runId);
         if ($failed !== null) {
             throw new RollbackRefused("{$failed} Sense el mode manteniment no es pot garantir que no entri cap comanda abans de restaurar.");
         }
@@ -394,7 +394,7 @@ final readonly class DatabaseRollbackStep implements Step
      */
     private function maintenanceOff(SiteDriver $driver, bool $switch, int $runId, array &$warnings): void
     {
-        $failed = $switch ? RestoreMaintenanceStep::switchTo($driver, false, $this->redactor, $runId) : null;
+        $failed = $switch ? MaintenanceMode::switchTo($driver, false, $this->redactor, $runId) : null;
         if ($failed !== null) {
             $warnings[] = $failed;
         }
