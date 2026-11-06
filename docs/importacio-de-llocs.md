@@ -34,6 +34,7 @@ Els camps són els de `site:add` (vegeu [cli.md](cli.md)). `name` és obligatori
 | `checkout_product`, `freeze`, `exclude` | Producte de prova, components congelats i exclosos |
 | `notify` | `email`, `telegram`, `slack` |
 | `external_backup` | `plesk`, `dropbox`, `plugin`, `other`, `none` |
+| `external_backup_notes` | Notes de la còpia externa (màx. 500 caràcters); cal que el lloc en tingui el tipus declarat |
 | `server` | `name`, `hostname`, `ssh_port`, `panel` (`plesk` o `other`) |
 | `account` | `system_user`, `driver` (`ssh` o `agent`) |
 
@@ -57,7 +58,7 @@ Una llista de llocs (o una clau `sites:` amb la llista). `window`, `server` i `a
 
 Una fila per lloc, amb capçalera. Les columnes són planes i el nom és el del camp; els camps imbricats del YAML s'hi aplanen:
 
-`name, url, wp_path, php_binary, tags, strategy, window_days, window_start, window_end, auto_update, verify_urls, mask, diff_threshold, checkout_product, freeze, exclude, notify, include_uploads, external_backup, server, hostname, ssh_port, panel, account, driver`
+`name, url, wp_path, php_binary, tags, strategy, window_days, window_start, window_end, auto_update, verify_urls, mask, diff_threshold, checkout_product, freeze, exclude, notify, include_uploads, external_backup, external_backup_notes, server, hostname, ssh_port, panel, account, driver`
 
 - **Separador de columnes:** coma; si la capçalera fa servir `;` (Excel en català) es detecta sola. UTF-8, amb o sense BOM.
 - **Separador de llistes dins d'una cel·la:** la barra vertical `|` (p. ex. `/|/cart|/shop`), perquè una URL o un selector CSS pot portar comes i punts i coma.

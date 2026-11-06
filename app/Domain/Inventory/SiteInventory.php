@@ -46,6 +46,11 @@ use App\Models\SiteSnapshot;
  *   only records them; SiteBlocking (called by InventoryStep, so a dry run can leave the site alone) blocks the
  *   site with their reasons. The block lives on the sites row (blocked_reason, blocked_at, blocked_by).
  * - environment.prerequisites_warnings: list<string>, why a check could not be evaluated (redacted; also logged).
+ * - environment.external_backups (UZEROWPUP-133, see ExternalBackups): array{plugins: list<array{slug: string,
+ *   name: string, active: bool, exposes_date: bool (the plugin is known to keep its last backup, see config),
+ *   last_backup_at: ?string (ISO 8601 UTC; null = not exposed or unreadable), last_backup_ok: ?bool (false = the last
+ *   run failed)}>, warnings: list<string>}. Only backup plugins from config are listed. The judgement (warning when there is no
+ *   known external backup or the last one is too old) is ExternalBackupStatus, applied when reporting.
  *
  * PHP: the version WP-CLI runs with (UZEROWPUP-29) is cross-checked with the
  * HTTP probe (UZEROWPUP-30). The web wins; if the minor versions differ, the
@@ -58,12 +63,14 @@ final readonly class SiteInventory
      * @param  PendingUpdates|null  $pending  null only in tests that do not exercise it (pending_updates stays empty)
      * @param  SiteState|null  $state  null only in tests that do not exercise it (environment.state is left out)
      * @param  SitePrerequisites|null  $prerequisites  null only in tests that do not exercise it (environment.prerequisites is left out)
+     * @param  ExternalBackups|null  $externalBackups  null only in tests that do not exercise it (environment.external_backups is left out)
      */
     public function __construct(
         private ?HttpProbe $probe = null,
         private ?PendingUpdates $pending = null,
         private ?SiteState $state = null,
         private ?SitePrerequisites $prerequisites = null,
+        private ?ExternalBackups $externalBackups = null,
     ) {}
 
     public const string THEME_ACTIVE = 'active';
@@ -99,6 +106,8 @@ final readonly class SiteInventory
 
         $prerequisites = $prerequisitesResult?->checks;
 
+        $externalBackups = $this->externalBackups?->read($driver, $installed, now()->toImmutable());
+
         $values = [
             'site_id' => $site->id,
             'core_version' => $installed->coreVersion,
@@ -116,6 +125,7 @@ final readonly class SiteInventory
                 'php' => $phpEnvironment,
                 'updates' => ['warnings' => $pending->warnings ?? []],
                 ...($state === null ? [] : ['state' => $state->toArray()]),
+                ...($externalBackups === null ? [] : ['external_backups' => $externalBackups->toArray()]),
                 ...($prerequisites === null ? [] : ['prerequisites' => array_map(static fn (PrerequisiteCheck $c): array => $c->toArray(), $prerequisites), 'prerequisites_warnings' => $prerequisitesResult->warnings]),
             ],
             'taken_at' => now(),
