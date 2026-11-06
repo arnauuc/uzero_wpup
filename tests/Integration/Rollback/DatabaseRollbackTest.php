@@ -73,7 +73,7 @@ function databaseRollbackFixture(): array
         'channel' => AuditChannel::Cli, 'status' => RunStatus::Failed]);
     sleep(1); // dates have a resolution of one second
     app(RestorePointService::class)->create($site, $driver, $update, AuditActor::system('tests'));
-    $driver->wp(['option', 'update', 'blogname', 'canviat per l\'actualització', '--skip-plugins', '--skip-themes']);
+    $driver->wp(['option', 'update', 'blogname', 'canviat pel test de rollback', '--skip-plugins', '--skip-themes']);
 
     return [$site, $driver, $update, $storeRoot, $blogname];
 }
@@ -132,7 +132,7 @@ it('never restores the database of a shop with an order made after the copy, and
             ->and($step->output)->toContain("#{$order} (nova, comanda, processing")
             ->and(data_get($step->result, 'new_writes.orders.*.id'))->toContain($order)
             // The database was not touched: the update's change and the order are still there.
-            ->and(databaseRollbackOption($driver))->toBe('canviat per l\'actualització')
+            ->and(databaseRollbackOption($driver))->toBe('canviat pel test de rollback')
             ->and(trim($driver->wp(['eval', "echo wc_get_order({$order}) ? 'yes' : 'no';"])->stdout))->toBe('yes')
             ->and($driver->wp(['maintenance-mode', 'is-active'])->successful())->toBeFalse();
     } finally {
