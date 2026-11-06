@@ -72,7 +72,7 @@ wpup site:edit botiga-a --clear=mask --deactivate
 | `--notify=*` | Canals d'avís: `email`, `telegram`, `slack` |
 | `--include-uploads` / `--no-include-uploads` | Inclou o exclou `uploads` de la còpia (ADR-0009) |
 | `--external-backup`, `--external-backup-notes` | Còpia externa declarada: `plesk`, `dropbox`, `plugin`, `other` o `none`, i notes (màx. 500 caràcters). Les notes necessiten un tipus ja declarat o indicat alhora. Només `admin` |
-| `--maintenance=on\|off` | Mode manteniment durant l'actualització (vegeu sota); `--clear=maintenance` torna al valor per defecte de `config/wpup.php` (`updates.maintenance.default`, activat) |
+| `--maintenance` / `--no-maintenance` | Mode manteniment durant l'actualització (vegeu sota); `--clear=maintenance` torna al valor per defecte de `config/wpup.php` (`updates.maintenance.default`, activat) |
 
 Només a `site:add`: `--server` i `--account` (obligatoris; es reutilitzen si ja existeixen, o es creen), `--hostname` (obligatori per a un servidor nou), `--ssh-port`, `--panel`, `--driver`. A `site:edit`: `--activate` / `--deactivate`.
 
@@ -99,10 +99,11 @@ Segons el perfil del lloc (`site:edit --maintenance=on|off`), l'actualització a
 
 `maintenance-on` → actualitzacions → post-actualització → `maintenance-off` → verificació → [rollback] → `maintenance-restore`
 
-- **Estat inicial:** `maintenance-on` desa a l'execució si el lloc ja era en manteniment abans de tocar-lo (així una represa després de la mort d'un worker no el confon amb l'estat inicial). Un lloc que ja hi era hi queda en acabar.
+- **Lloc ja en manteniment:** si el lloc ja és en mode manteniment (el de l'operador o d'un altre procés), `maintenance-on` falla amb «el lloc ja és en mode manteniment: no s'actualitza fins que s'acabi» i no toca res: mai se sobreescriu el `.maintenance` existent ni s'apaga o s'encén després.
+- **Estat inicial:** `maintenance-on` desa a l'execució que el lloc no hi era abans de tocar-lo (així una represa després de la mort d'un worker no el confon amb l'estat inicial).
 - **Desactivació garantida:** `maintenance-restore` és l'últim pas, també després d'un rollback (que torna a activar el mode). Si l'execució falla abans d'arribar-hi, la compensació de `maintenance-on` deixa el mode com estava.
 - **El verificador veu el lloc real:** no hi ha cap *bypass* (ni mu-plugin ni token). `maintenance-off` desactiva el mode just abans de la verificació; si la verificació falla, el rollback torna a activar el manteniment. La fase F4 pot revisar-ho (token de *bypass*) si la finestra sense manteniment és massa llarga.
-- **Caducitat:** WordPress ignora un `.maintenance` de més de 10 minuts; cada actualització de component l'escriu de nou (`maintenance-mode activate --force`) abans de començar.
+- **Caducitat i `wp core update`:** WordPress ignora un `.maintenance` de més de 10 minuts (i WP-CLI el dona per inactiu), i l'actualització del core l'esborra. Per això, si l'execució és la propietària del mode, escriu el fitxer de nou sempre (`maintenance-mode activate --force`) abans de cada actualització de component i abans de les ordres llargues de la post-actualització (`core update-db`, `wc update`). Aquestes crides i la lectura de l'estat fan servir `updates.maintenance.command_timeout_seconds` i compten al pressupost dels passos.
 - Si no es pot activar el mode, l'actualització no comença. Amb `--dry-run` l'execució només descriu els passos.
 
 ## Còpies externes conegudes (ADR-0009, punt 2)

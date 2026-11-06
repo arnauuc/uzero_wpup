@@ -60,6 +60,6 @@ final readonly class MaintenanceRestoreStep implements Step
             return StepOutcome::failed($failure);
         }
 
-        return StepOutcome::succeeded($initial ? 'El lloc ja era en mode manteniment: es deixa així.' : 'Mode manteniment desactivat.', '', ['active' => $initial]);
+        return StepOutcome::succeeded($initial ? 'Mode manteniment activat.' : 'Mode manteniment desactivat.', '', ['active' => $initial]);
     }
 }

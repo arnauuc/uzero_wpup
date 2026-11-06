@@ -103,6 +103,9 @@ class FakeDriver implements SiteDriver
     /** `$upgrading` of the .maintenance file written by setMaintenanceMode(); null: the site's time. */
     public ?int $maintenanceUpgrading = null;
 
+    /** The .maintenance file is older than 10 minutes: WordPress ignores it and WP-CLI reports it inactive. */
+    public bool $maintenanceExpired = false;
+
     /** The .maintenance file exists but has no `$upgrading` timestamp. */
     public bool $maintenanceWithoutTimestamp = false;
 
@@ -321,7 +324,7 @@ class FakeDriver implements SiteDriver
             $args === ['eval', PostUpdateStep::WC_DB_SNIPPET, '--skip-themes'] => $this->ok($this->wcFails || $this->wcDbUpdateNeeded === null ? 'unknown' : ($this->wcDbUpdateNeeded ? 'pending' : 'ok')),
             isset($this->commandResults[self::commandKey($args)]) => $this->commandResults[self::commandKey($args)],
             in_array($args, [['maintenance-mode', 'activate', '--force'], ['maintenance-mode', 'activate', '--force', '--skip-plugins', '--skip-themes']], true) => $this->forceMaintenance(),
-            in_array($args, [['maintenance-mode', 'is-active'], ['maintenance-mode', 'is-active', '--skip-plugins', '--skip-themes']], true) => $this->maintenance
+            in_array($args, [['maintenance-mode', 'is-active'], ['maintenance-mode', 'is-active', '--skip-plugins', '--skip-themes']], true) => $this->maintenance && ! $this->maintenanceExpired
                 ? $this->ok('')
                 : new CommandResult(1, '', '', 1),
             $args === ['core', 'check-update', '--format=json'] => $this->coreCheckFails
@@ -501,6 +504,8 @@ class FakeDriver implements SiteDriver
             $installed = $this->installsVersion ?? self::zipVersion($package->localPath) ?? $package->targetVersion;
             if ($package->type === ComponentType::Core) {
                 $this->coreVersion = $installed;
+                // A core update deletes .maintenance, as WordPress does.
+                $this->maintenance = false;
             } else {
                 // Activation is kept, as the real installers do.
                 $this->addComponent(new ComponentVersion($package->type, $package->slug, $installed, $this->components[$key]->active ?? false, $this->components[$key]->title ?? null));
@@ -518,6 +523,7 @@ class FakeDriver implements SiteDriver
     private function forceMaintenance(): CommandResult
     {
         $this->maintenance = true;
+        $this->maintenanceExpired = false;
 
         return $this->ok("Success: Enabled Maintenance mode.\n");
     }
@@ -526,6 +532,7 @@ class FakeDriver implements SiteDriver
     {
         $this->writeCalls[] = 'setMaintenanceMode';
         $this->maintenance = $enabled;
+        $this->maintenanceExpired = false;
     }
 
     public function restoreDatabase(RemoteFile $dump): void

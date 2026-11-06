@@ -307,11 +307,7 @@ final readonly class SiteAdministration
             }
         }
         if ($input->maintenance !== null) {
-            if (in_array($input->maintenance, ['on', 'off'], true)) {
-                $profile['maintenance_mode'] = $input->maintenance === 'on';
-            } else {
-                $errors[] = 'El mode manteniment ha de ser «on» o «off».';
-            }
+            $profile['maintenance_mode'] = $input->maintenance;
         }
         if ($clears('maintenance_mode')) {
             $this->conflict($input->maintenance, 'maintenance_mode', $errors);

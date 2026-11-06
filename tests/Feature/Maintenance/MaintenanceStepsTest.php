@@ -93,7 +93,7 @@ it('switches maintenance on for the update and off for the verification', functi
         ->and($run->steps()->where('status', '!=', RunStepStatus::Succeeded->value)->count())->toBe(0);
 });
 
-it('leaves a site that was already in maintenance in maintenance', function (): void {
+it('does not update a site that is in maintenance already, and never touches its maintenance file', function (): void {
     $driver = new FakeDriver;
     $driver->maintenance = true;
     $seen = [];
@@ -102,10 +102,14 @@ it('leaves a site that was already in maintenance in maintenance', function (): 
 
     app(RunEngine::class)->execute($run);
 
-    expect($run->status)->toBe(RunStatus::Succeeded)
-        ->and($seen)->toBe([true, true])
+    $on = $run->steps()->where('name', 'maintenance-on')->firstOrFail();
+    expect($run->status)->not->toBe(RunStatus::Succeeded)
+        ->and($on->status)->toBe(RunStepStatus::Failed)
+        ->and($on->error)->toContain("El lloc ja és en mode manteniment: no s'actualitza fins que s'acabi")
+        ->and($seen)->toBe([])
         ->and($driver->maintenance)->toBeTrue()
-        ->and($run->steps()->where('name', 'maintenance-on')->value('summary'))->toContain('ja era en mode manteniment');
+        ->and($driver->writeCalls)->not->toContain('setMaintenanceMode')
+        ->and($run->fresh()?->flags)->not->toHaveKey(MaintenanceGuard::FLAG);
 });
 
 it('restores the initial state when an update fails, through the compensation', function (): void {
@@ -119,17 +123,6 @@ it('restores the initial state when an update fails, through the compensation', 
     expect($run->status)->toBe(RunStatus::RolledBack)
         ->and($seen)->toBe([true])
         ->and($driver->maintenance)->toBeFalse();
-});
-
-it('keeps a site that was in maintenance in maintenance when an update fails', function (): void {
-    $driver = new FakeDriver;
-    $driver->maintenance = true;
-    $seen = [];
-    maintenancePipeline($driver, $seen, StepOutcome::failed('el plugin ha fallat'));
-
-    app(RunEngine::class)->execute(maintenanceRun());
-
-    expect($driver->maintenance)->toBeTrue();
 });
 
 it('ends with maintenance off after a rollback switched it on', function (): void {

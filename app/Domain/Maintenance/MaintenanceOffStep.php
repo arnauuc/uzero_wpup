@@ -14,8 +14,7 @@ use App\Domain\Runs\StepOutcome;
  * maintenance page. No bypass is built for it (no mu-plugin, no token): the
  * window of the real site without maintenance is the verification, and if it
  * fails the rollback steps switch the mode on again. F4 may revisit this
- * (bypass token) if the window proves too long. A site that was already in
- * maintenance before the run stays so.
+ * (bypass token) if the window proves too long.
  *
  * It only touches what this run switched on; when the profile asks for no
  * maintenance (the On step was skipped) it is a no-op. Idempotent.

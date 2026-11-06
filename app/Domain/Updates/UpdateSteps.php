@@ -51,8 +51,10 @@ final readonly class UpdateSteps
         int $minimumTimeoutSeconds,
         private ?MaintenanceGuard $maintenance = null,
     ) {
+        // The refresh of the maintenance file before the install is one more WP-CLI call.
+        $minimumTimeoutSeconds += $maintenance?->refreshBudgetSeconds() ?? 0;
         if ($componentTimeoutSeconds < $minimumTimeoutSeconds) {
-            throw new InvalidArgumentException("wpup.updates.component_timeout_seconds ({$componentTimeoutSeconds} s) ha de ser com a mínim el temps màxim d'una instal·lació ({$minimumTimeoutSeconds} s).");
+            throw new InvalidArgumentException("wpup.updates.component_timeout_seconds ({$componentTimeoutSeconds} s) ha de ser com a mínim el temps màxim d'una instal·lació amb el refresc del mode manteniment ({$minimumTimeoutSeconds} s).");
         }
     }
 
@@ -68,7 +70,7 @@ final readonly class UpdateSteps
             }
         }
         if ($steps !== []) {
-            $steps[] = new PostUpdateStep($plan->changes, $this->driverFor, $this->authorization, $this->redactor, $this->postUpdate);
+            $steps[] = new PostUpdateStep($plan->changes, $this->driverFor, $this->authorization, $this->redactor, $this->postUpdate, $this->maintenance);
         }
 
         return $steps;

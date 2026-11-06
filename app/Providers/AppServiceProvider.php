@@ -492,6 +492,7 @@ class AppServiceProvider extends ServiceProvider
                 self::configInt('wpup.updates.post_update.command_timeout_seconds'),
                 self::configInt('wpup.updates.post_update.overhead_seconds'),
                 self::configCommands('wpup.updates.post_update.page_caches'),
+                self::configInt('wpup.updates.maintenance.command_timeout_seconds'),
             ),
             self::configInt('wpup.updates.component_timeout_seconds'),
             $app->make(SshSettings::class)->applyUpdateBudgetSeconds(),

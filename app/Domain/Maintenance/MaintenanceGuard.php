@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Domain\Maintenance;
 
 use App\Domain\Audit\AuditActor;
-use App\Domain\Backups\RestoreMaintenanceStep;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
@@ -84,22 +83,39 @@ final readonly class MaintenanceGuard
     }
 
     /**
-     * Switches the mode; returns the reason when it fails.
+     * The maintenance state, read with the configured command timeout.
      */
-    public function switchTo(SiteDriver $driver, bool $on, int $runId): ?string
+    public function state(SiteDriver $driver): ?bool
     {
-        return RestoreMaintenanceStep::switchTo($driver, $on, $this->redactor, $runId);
+        return MaintenanceMode::state($driver, $this->commandTimeoutSeconds);
     }
 
     /**
-     * Writes the `.maintenance` file again: WordPress ignores one older than
-     * 10 minutes (wpup.state.maintenance_ttl_seconds), so long operations call
-     * this before they start. Only when this run manages the mode and it is on;
-     * best effort (a warning in the log, never a failure).
+     * Switches the mode (within the driver's own budget); returns the reason when it fails.
+     */
+    public function switchTo(SiteDriver $driver, bool $on, int $runId): ?string
+    {
+        return MaintenanceMode::switchTo($driver, $on, $this->redactor, $runId);
+    }
+
+    /**
+     * The time one refresh() can take, for the steps that call it to budget.
+     */
+    public function refreshBudgetSeconds(): int
+    {
+        return $this->commandTimeoutSeconds;
+    }
+
+    /**
+     * Writes the `.maintenance` file again, whatever the site says: WordPress
+     * ignores one older than 10 minutes (and WP-CLI then reports it inactive),
+     * and a core update deletes it. Called before every long operation, and only
+     * when this run switched the mode on (it never touches a mode it does not
+     * own). Best effort: a failure is logged, never fatal.
      */
     public function refresh(SiteDriver $driver, Run $run): void
     {
-        if ($this->initial($run) === null || RestoreMaintenanceStep::state($driver) !== true) {
+        if ($this->initial($run) !== false) {
             return;
         }
 

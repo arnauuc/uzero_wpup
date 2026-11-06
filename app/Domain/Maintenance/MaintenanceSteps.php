@@ -17,10 +17,11 @@ namespace App\Domain\Maintenance;
  * - restore: always the last step. If the run fails earlier, the compensation
  *   of `on` does the same.
  *
- * The three do nothing when the site's profile asks for no maintenance, and a
- * site that was already in maintenance stays so. Component updates call
- * MaintenanceGuard::refresh() so WordPress does not ignore the `.maintenance`
- * file after 10 minutes.
+ * The three do nothing when the site's profile asks for no maintenance. A site
+ * that is in maintenance already is not updated (`on` fails and touches
+ * nothing). Component updates and the post-update step call
+ * MaintenanceGuard::refresh() before their long commands, so the `.maintenance`
+ * file is there even after a core update deleted it or 10 minutes expired it.
  */
 final readonly class MaintenanceSteps
 {
