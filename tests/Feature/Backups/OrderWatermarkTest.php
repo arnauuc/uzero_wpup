@@ -6,6 +6,7 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetRegistry;
 use App\Domain\Backups\DatabaseBackup;
+use App\Domain\Backups\NewWritesDetector;
 use App\Domain\Backups\OrderWatermark;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\ShopWritesReader;
@@ -13,9 +14,11 @@ use App\Domain\Backups\SiteLocalDestination;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Drivers\Data\RemoteFile;
+use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\BackupKind;
 use App\Enums\BackupTargetType;
+use App\Enums\NewWritesStatus;
 use App\Models\Site;
 use App\Models\SiteProfile;
 use Illuminate\Http\Client\Factory as HttpFactory;
@@ -114,3 +117,35 @@ it('passes the stored watermark as data only: the snippet stays constant', funct
         ->and(substr($args[1], strpos($args[1], "\n") + 1))->toBe(ShopWritesReader::SNIPPET)
         ->and(array_slice($args, 2))->toBe(['--skip-plugins', '--skip-themes']);
 });
+
+it('detects the orders and users written above the watermark of a copy', function (): void {
+    $driver = new FakeDriver;
+    $driver->orders = [['id' => 4, 'type' => 'shop_order', 'status' => 'wc-completed', 'created' => '2026-11-01 10:00:00', 'modified' => '2026-11-01 12:00:00']];
+    $stored = app(ShopWritesReader::class)->watermark($driver)->toArray();
+    $detector = app(NewWritesDetector::class);
+
+    expect($detector->detect($driver, $stored)->status)->toBe(NewWritesStatus::None);
+
+    $driver->orders[] = ['id' => 5, 'type' => 'shop_order', 'status' => 'wc-processing', 'created' => '2026-11-02 08:00:00', 'modified' => '2026-11-02 08:00:00'];
+    $writes = $detector->detect($driver, $stored);
+
+    expect($writes->status)->toBe(NewWritesStatus::Found)
+        ->and(array_map(static fn ($r): array => $r->toArray(), $writes->orders))->toBe([['id' => 5, 'new' => true, 'date' => '2026-11-02 08:00:00', 'label' => 'comanda, processing']])
+        ->and($writes->users)->toBe([]);
+});
+
+it('answers unknown (treated as new writes) without a watermark or when the site cannot be read', function (mixed $stored, ?Throwable $failure, string $reason): void {
+    $driver = new FakeDriver;
+    $driver->wpFailure = $failure;
+    $stored = $stored === 'valid' ? app(ShopWritesReader::class)->watermark(new FakeDriver)->toArray() : $stored;
+
+    $writes = app(NewWritesDetector::class)->detect($driver, $stored);
+
+    expect($writes->status)->toBe(NewWritesStatus::Unknown)
+        ->and($writes->mayLoseData())->toBeTrue()
+        ->and($writes->reason)->toContain($reason);
+})->with([
+    'no watermark' => [null, null, "la còpia no té marca d'aigua"],
+    'not a watermark' => [['version' => 1, 'tables' => []], null, 'no és vàlida'],
+    'site unreadable' => ['valid', new RemoteCommandFailed('connexió tallada'), "no s'ha pogut llegir el lloc: connexió tallada"],
+]);

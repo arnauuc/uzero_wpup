@@ -14,6 +14,7 @@ use App\Domain\Backups\Dropbox\DropboxCredentialVerifier;
 use App\Domain\Backups\Dropbox\DropboxSettings;
 use App\Domain\Backups\Dropbox\DropboxTargetFactory;
 use App\Domain\Backups\FilesBackup;
+use App\Domain\Backups\NewWritesDetector;
 use App\Domain\Backups\PreRestoreBackupStep;
 use App\Domain\Backups\RestoreCheckStep;
 use App\Domain\Backups\RestoreMaintenanceStep;
@@ -255,6 +256,10 @@ class AppServiceProvider extends ServiceProvider
             $app->make(WpCliReader::class),
             self::configInt('wpup.backups.watermark.timeout_seconds'),
         ));
+        $this->app->bind(NewWritesDetector::class, static fn (Application $app): NewWritesDetector => new NewWritesDetector(
+            $app->make(ShopWritesReader::class),
+            self::configInt('wpup.backups.watermark.max_listed'),
+        ));
         $this->app->bind(SiteState::class, static fn (Application $app): SiteState => new SiteState(
             $app->make(WpCliReader::class),
             self::configInt('wpup.inventory.state.command_timeout_seconds'),
@@ -341,7 +346,7 @@ class AppServiceProvider extends ServiceProvider
 
                 return new Pipeline([
                     new InventoryStep($app->make(SiteInventory::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.inventory.step_timeout_seconds'), readOnlySite: true, advisory: true),
-                    new RestoreCheckStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.restore.check_timeout_seconds')),
+                    new RestoreCheckStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $app->make(NewWritesDetector::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.restore.check_timeout_seconds')),
                     $maintenance,
                     new PreRestoreBackupStep($app->make(RestorePointService::class), $maintenance, $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.step_timeout_seconds')),
                     new RestoreStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(RestorePointGate::class), $maintenance, $driverFor,
