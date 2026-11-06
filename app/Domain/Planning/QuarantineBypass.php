@@ -12,6 +12,12 @@ enum QuarantineBypass: string
     /** Core x.y.z within the installed x.y branch. */
     case CoreMaintenance = 'core_maintenance';
 
+    /** The installed version has a known vulnerability that this update fixes. */
+    case Vulnerability = 'vulnerability';
+
+    /** An admin passed --skip-quarantine and the version was still in quarantine. */
+    case Override = 'skip_quarantine';
+
     /**
      * Catalan text for the operator.
      */
@@ -19,6 +25,8 @@ enum QuarantineBypass: string
     {
         return match ($this) {
             self::CoreMaintenance => 'manteniment del core: sense quarantena',
+            self::Vulnerability => 'excepció de seguretat: sense quarantena',
+            self::Override => 'quarantena omesa amb --skip-quarantine',
         };
     }
 }

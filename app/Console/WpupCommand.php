@@ -54,16 +54,32 @@ abstract class WpupCommand extends Command
             return self::FAILURE;
         }
 
-        if (! $this->ability()->allows($this->operator)) {
-            $audit->record($this->actor(), 'command.denied', AuditResult::Denied, 'command', (string) $this->getName(), [
-                'ability' => $this->ability()->value,
-            ]);
-            $this->error("No tens permís per a aquesta acció (rol actual: {$this->operator->role->value}).");
-
+        if (! $this->requireAbility($this->ability())) {
             return self::FAILURE;
         }
 
         return $this->perform();
+    }
+
+    /**
+     * Whether the operator has the ability; if not, audits the denial
+     * (command.denied) and prints why. For abilities that only some options need.
+     *
+     * @param  array<string, mixed>  $context  added to the audit row
+     */
+    protected function requireAbility(Ability $ability, array $context = [], ?string $message = null): bool
+    {
+        if ($ability->allows($this->operator)) {
+            return true;
+        }
+
+        $this->audit->record($this->actor(), 'command.denied', AuditResult::Denied, 'command', (string) $this->getName(), [
+            'ability' => $ability->value,
+            ...$context,
+        ]);
+        $this->error($message ?? "No tens permís per a aquesta acció (rol actual: {$this->operator->role->value}).");
+
+        return false;
     }
 
     protected function actor(): AuditActor

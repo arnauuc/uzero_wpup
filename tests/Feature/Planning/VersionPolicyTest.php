@@ -7,19 +7,25 @@ use App\Domain\Planning\PackageVersionKey;
 use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
+use App\Domain\Planning\PlanOptions;
 use App\Domain\Planning\QuarantineBypass;
 use App\Domain\Planning\UpdatePlan;
 use App\Domain\Planning\UpdatePlanner;
+use App\Domain\Vulnerabilities\InstalledComponent;
+use App\Domain\Vulnerabilities\KnownVulnerability;
+use App\Domain\Vulnerabilities\VulnerabilitySource;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Enums\SkipReason;
 use App\Models\PackageVersion;
 use App\Models\Site;
+use App\Models\SiteProfile;
 use App\Models\SiteSnapshot;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 
-// ADR-0005 in the planner (UZEROWPUP-127): quarantine, its core exception and majors.
+// ADR-0005 in the planner (UZEROWPUP-127): quarantine, its exceptions, majors and the overrides.
 
 beforeEach(function (): void {
     config(['wpup.planning.quarantine_days' => 7]);
@@ -49,7 +55,7 @@ function seen(string $type, string $slug, string $version, int $daysAgo, ?int $r
 /**
  * @param  list<array<string, mixed>>  $offers
  */
-function policyPlan(array $offers): UpdatePlan
+function policyPlan(array $offers, PlanOptions $options = new PlanOptions): UpdatePlan
 {
     $site = Site::factory()->create();
     $snapshot = SiteSnapshot::factory()->create([
@@ -60,7 +66,7 @@ function policyPlan(array $offers): UpdatePlan
         'pending_updates' => $offers,
     ]);
 
-    return app(UpdatePlanner::class)->plan($snapshot, $site, null, '8.3.10', PhpVersionSource::HttpProbe);
+    return app(UpdatePlanner::class)->plan($snapshot, $site, null, '8.3.10', PhpVersionSource::HttpProbe, $options);
 }
 
 function policyChange(UpdatePlan $plan, string $slug): PlannedChange
@@ -71,6 +77,41 @@ function policyChange(UpdatePlan $plan, string $slug): PlannedChange
         }
     }
     throw new LogicException("No change for {$slug}");
+}
+
+/**
+ * A vulnerability source that knows these, by slug, and remembers what it was asked.
+ *
+ * @param  array<string, list<KnownVulnerability>>  $bySlug
+ * @return ArrayObject<int, list<InstalledComponent>> one entry per call
+ */
+function knownVulnerabilities(array $bySlug): ArrayObject
+{
+    /** @var ArrayObject<int, list<InstalledComponent>> $calls */
+    $calls = new ArrayObject;
+    app()->instance(VulnerabilitySource::class, new readonly class($bySlug, $calls) implements VulnerabilitySource
+    {
+        /**
+         * @param  array<string, list<KnownVulnerability>>  $bySlug
+         * @param  ArrayObject<int, list<InstalledComponent>>  $calls
+         */
+        public function __construct(private array $bySlug, private ArrayObject $calls) {}
+
+        public function affecting(array $components): array
+        {
+            $this->calls->append($components);
+            $found = [];
+            foreach ($components as $component) {
+                if (isset($this->bySlug[$component->slug])) {
+                    $found[$component->id()] = $this->bySlug[$component->slug];
+                }
+            }
+
+            return $found;
+        }
+    });
+
+    return $calls;
 }
 
 it('skips a version in quarantine with the days left', function (): void {
@@ -154,14 +195,126 @@ it('skips majors pending staging and marks the plan as needing staging', functio
         ->and(policyChange($plan, 'big')->major)->toBeTrue()
         ->and(policyChange($plan, 'akismet')->major)->toBeFalse()
         ->and($plan->requiresStaging())->toBeTrue()
+        ->and($plan->appliedMajors())->toBe([])
         ->and($plan->toArray()['requires_staging'])->toBeTrue();
 
     expect(policyPlan([offer('plugin', 'akismet', '5.3', '5.4')])->requiresStaging())->toBeFalse();
 });
 
+it('applies majors in place with --allow-major, flagged for review', function (): void {
+    seen('plugin', 'big', '3.0.0', 30);
+
+    $plan = policyPlan([offer('plugin', 'big', '2.9', '3.0.0')], new PlanOptions(allowMajor: true));
+    $change = policyChange($plan, 'big');
+
+    expect($change->action)->toBe(PlanAction::Update)
+        ->and($change->major)->toBeTrue()
+        ->and($change->detail)->toContain('--allow-major')
+        ->and($plan->requiresStaging())->toBeTrue()
+        ->and($plan->appliedMajors())->toBe([$change])
+        ->and($plan->toArray()['overrides'])->toBe(['allow_major' => true, 'skip_quarantine' => false]);
+});
+
+it('keeps the quarantine for majors with --allow-major', function (): void {
+    seen('plugin', 'big', '3.0.0', 1);
+
+    expect(policyChange(policyPlan([offer('plugin', 'big', '2.9', '3.0.0')], new PlanOptions(allowMajor: true)), 'big')->reason)->toBe(SkipReason::Quarantine);
+});
+
+it('applies versions in quarantine with --skip-quarantine, marked', function (): void {
+    seen('plugin', 'akismet', '5.4', 2);
+    seen('plugin', 'hello', '1.7', 30);
+
+    $plan = policyPlan([offer('plugin', 'akismet', '5.3', '5.4'), offer('plugin', 'hello', '1.6', '1.7')], new PlanOptions(skipQuarantine: true));
+
+    expect(policyChange($plan, 'akismet')->action)->toBe(PlanAction::Update)
+        ->and(policyChange($plan, 'akismet')->bypass)->toBe(QuarantineBypass::Override)
+        ->and(policyChange($plan, 'akismet')->detail)->toBe("En quarantena (5 dies més), però s'aplica amb --skip-quarantine.")
+        // Only the ones it actually let through are marked.
+        ->and(policyChange($plan, 'hello')->bypass)->toBeNull();
+});
+
+it('applies a security fix without quarantine, asking the source once and only for what would wait', function (): void {
+    $calls = knownVulnerabilities([
+        'forms' => [new KnownVulnerability('CVE-2026-0001', '1.2.1'), new KnownVulnerability('CVE-2026-0002', '1.5'), new KnownVulnerability('CVE-2026-0003', null)],
+        'premium' => [new KnownVulnerability('WF-1', '4.1')],
+        'later' => [new KnownVulnerability('WF-2', '2.5')],
+        'old' => [new KnownVulnerability('WF-3', '0.9')],
+        'aged' => [new KnownVulnerability('WF-4', '1.1')],
+        'frozen' => [new KnownVulnerability('WF-5', '1.1')],
+    ]);
+    seen('plugin', 'aged', '1.2', 30);
+
+    $site = Site::factory()->create();
+    $snapshot = SiteSnapshot::factory()->create([
+        'site_id' => $site->id, 'core_version' => '6.8.1', 'plugins' => [], 'environment' => ['prerequisites' => []],
+        'pending_updates' => [
+            offer('plugin', 'forms', '1.2', '1.5', ['wporg_slug' => 'forms-org']),
+            offer('plugin', 'premium', '4.0', '4.3', ['source' => 'transient']),
+            offer('plugin', 'later', '2.0', '2.4'),
+            offer('plugin', 'old', '1.0', '1.1'),
+            offer('plugin', 'aged', '1.0', '1.2'),
+            offer('plugin', 'frozen', '1.0', '1.2'),
+        ],
+    ]);
+    $profile = SiteProfile::factory()->create(['site_id' => $site->id, 'frozen_components' => ['frozen']]);
+    $plan = app(UpdatePlanner::class)->plan($snapshot, $site, $profile, '8.3.10', PhpVersionSource::HttpProbe);
+
+    $forms = policyChange($plan, 'forms');
+    expect($forms->action)->toBe(PlanAction::Update)
+        ->and($forms->targetVersion)->toBe('1.5')
+        ->and($forms->bypass)->toBe(QuarantineBypass::Vulnerability)
+        ->and($forms->detail)->toBe("Excepció de seguretat: la versió instal·lada té vulnerabilitats conegudes (CVE-2026-0001, CVE-2026-0002); s'aplica 1.5, la primera que les corregeix, sense quarantena.")
+        // A premium package only offers its latest version.
+        ->and(policyChange($plan, 'premium')->targetVersion)->toBe('4.3')
+        ->and(policyChange($plan, 'premium')->action)->toBe(PlanAction::Update)
+        // Not fixed by the offered version, or already fixed in the installed one: the normal quarantine.
+        ->and(policyChange($plan, 'later')->reason)->toBe(SkipReason::Quarantine)
+        ->and(policyChange($plan, 'old')->reason)->toBe(SkipReason::Quarantine)
+        // Out of quarantine: the offered version, as usual.
+        ->and(policyChange($plan, 'aged')->targetVersion)->toBe('1.2')
+        ->and(policyChange($plan, 'aged')->bypass)->toBeNull()
+        ->and(policyChange($plan, 'frozen')->reason)->toBe(SkipReason::Frozen);
+
+    // One call, without the version out of quarantine or the frozen component.
+    expect($calls)->toHaveCount(1)
+        ->and(array_map(static fn (InstalledComponent $c): string => "{$c->slug}:{$c->version}:".($c->wporgSlug ?? '-'), $calls[0] ?? []))
+        ->toBe(['forms:1.2:forms-org', 'premium:4.0:-', 'later:2.0:later', 'old:1.0:old']);
+});
+
+it('does not apply blind an earlier fix version whose requirements are unknown', function (): void {
+    knownVulnerabilities(['forms' => [new KnownVulnerability('CVE-2026-0001', '1.3')]]);
+
+    $change = policyChange(policyPlan([offer('plugin', 'forms', '1.2', '1.5')]), 'forms');
+
+    expect($change->action)->toBe(PlanAction::Skip)
+        ->and($change->reason)->toBe(SkipReason::Other)
+        ->and($change->targetVersion)->toBe('1.3')
+        ->and($change->bypass)->toBe(QuarantineBypass::Vulnerability)
+        ->and($change->detail)->toContain("1.3 és la primera versió que corregeix les vulnerabilitats, però no se'n coneixen els requisits");
+});
+
+it('ignores a fix version from the source that is not a plain version', function (string $fixedIn): void {
+    $log = Log::spy();
+    knownVulnerabilities(['forms' => [new KnownVulnerability('CVE-2026-0001', $fixedIn)]]);
+
+    expect(policyChange(policyPlan([offer('plugin', 'forms', '1.2', '1.5')]), 'forms')->reason)->toBe(SkipReason::Quarantine);
+    $log->shouldHaveReceived('warning')->withArgs(static fn (string $m): bool => str_contains($m, 'invalid fixed-in version for plugin:forms'))->once();
+})->with(['1.3; rm -rf /', '1.3-beta', 'v1.3', ' 1.3', '1.'.str_repeat('1', 40)]);
+
+it('keeps the staging rules for a security fix that is a major', function (): void {
+    knownVulnerabilities(['big' => [new KnownVulnerability('CVE-2026-0009', '3.0.1')]]);
+
+    $change = policyChange(policyPlan([offer('plugin', 'big', '2.9', '3.0.1')]), 'big');
+
+    expect($change->reason)->toBe(SkipReason::MajorRequiresStaging)
+        ->and($change->targetVersion)->toBe('3.0.1')
+        ->and($change->bypass)->toBe(QuarantineBypass::Vulnerability);
+});
+
 it('round-trips the policy fields and reads plans stored before them', function (): void {
     seen('plugin', 'akismet', '5.4', 2);
-    $plan = policyPlan([offer('plugin', 'akismet', '5.3', '5.4'), offer('plugin', 'big', '2.9', '3.0')]);
+    $plan = policyPlan([offer('plugin', 'akismet', '5.3', '5.4'), offer('plugin', 'big', '2.9', '3.0')], new PlanOptions(true, true));
 
     expect(UpdatePlan::fromArray($plan->toArray())->toArray())->toBe($plan->toArray());
 
@@ -169,7 +322,7 @@ it('round-trips the policy fields and reads plans stored before them', function 
         ['type' => 'plugin', 'slug' => 'a', 'current_version' => '1', 'target_version' => '2', 'action' => 'skip', 'reason' => 'major_requires_staging', 'detail' => null],
     ]]);
     // No stored major flag: recomputed from the versions (1 → 2 is major).
-    expect($old->changes[0]->major)->toBeTrue();
+    expect($old->changes[0]->major)->toBeTrue()->and($old->options->any())->toBeFalse();
     expect(fn () => UpdatePlan::fromArray(['php' => ['version' => '8.2.1', 'source' => 'cli'], 'changes' => [
         ['type' => 'plugin', 'slug' => 'a', 'current_version' => '1', 'target_version' => '2', 'action' => 'update', 'quarantine_bypass' => 'nope'],
     ]]))->toThrow(UnexpectedValueException::class);

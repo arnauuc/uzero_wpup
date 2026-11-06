@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace App\Domain\Planning;
 
 use App\Domain\Drivers\Data\PhpRuntime;
+use App\Domain\Identity\Ability;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Runs\ReadOnlyStep;
+use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
 use App\Enums\ChangeResult;
@@ -28,7 +30,7 @@ final readonly class PlanStep implements ReadOnlyStep
     /** Size of the string columns of run_changes. */
     private const int COLUMN_LENGTH = 255;
 
-    public function __construct(private UpdatePlanner $planner, private int $timeoutSeconds, private int $verifiedPhpMaxAgeSeconds) {}
+    public function __construct(private UpdatePlanner $planner, private RunAuthorization $authorization, private int $timeoutSeconds, private int $verifiedPhpMaxAgeSeconds) {}
 
     public function name(): string
     {
@@ -54,6 +56,12 @@ final readonly class PlanStep implements ReadOnlyStep
             return StepOutcome::failed('No hi ha cap inventari fresc per planificar.');
         }
 
+        // Overrides of the version policy (ADR-0005): the operator must still be an admin.
+        $options = PlanOptions::fromFlags($context->run->flags);
+        if ($options->any() && $this->authorization->actorFor($context->run, Ability::OverrideVersionPolicy) === null) {
+            return StepOutcome::failed(RunAuthorization::deniedMessage($context->run));
+        }
+
         // The plan never probes the web, so the PHP may be the CLI's. The latest probe
         // verified PHP stands in for it only if it is recent and the CLI agrees on the minor.
         $php = $snapshot->php_version;
@@ -67,7 +75,7 @@ final readonly class PlanStep implements ReadOnlyStep
             }
         }
 
-        $plan = $this->planner->plan($snapshot, $site->refresh(), $site->profile, $php, $source);
+        $plan = $this->planner->plan($snapshot, $site->refresh(), $site->profile, $php, $source, $options);
         $this->recordSkips($context->run, $plan);
 
         return StepOutcome::succeeded($plan->summary(), '', $plan->toArray());

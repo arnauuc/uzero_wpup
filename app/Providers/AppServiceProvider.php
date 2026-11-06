@@ -80,6 +80,8 @@ use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
+use App\Domain\Vulnerabilities\NoVulnerabilitySource;
+use App\Domain\Vulnerabilities\VulnerabilitySource;
 use App\Enums\BackupTargetType;
 use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
@@ -274,8 +276,11 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.inventory.http_probe.max_extensions'),
         ));
         $this->app->bind(PackageVersions::class, static fn (): PackageVersions => new PackageVersions(self::configInt('wpup.planning.package_versions_retention_days')));
+        // Until UZEROWPUP-128 picks a source, no vulnerability is known (ADR-0005).
+        $this->app->bind(VulnerabilitySource::class, NoVulnerabilitySource::class);
         $this->app->bind(UpdatePlanner::class, static fn (Application $app): UpdatePlanner => new UpdatePlanner(
             $app->make(PackageVersions::class),
+            $app->make(VulnerabilitySource::class),
             self::configInt('wpup.planning.quarantine_days'),
         ));
         $this->app->bind(PendingUpdates::class, static fn (Application $app): PendingUpdates => new PendingUpdates(
@@ -398,7 +403,7 @@ class AppServiceProvider extends ServiceProvider
                     self::configInt('wpup.inventory.step_timeout_seconds'),
                     readOnlySite: true,
                 ),
-                new PlanStep($app->make(UpdatePlanner::class), self::configInt('wpup.planning.step_timeout_seconds'), self::configInt('wpup.planning.verified_php_max_age_seconds')),
+                new PlanStep($app->make(UpdatePlanner::class), $app->make(RunAuthorization::class), self::configInt('wpup.planning.step_timeout_seconds'), self::configInt('wpup.planning.verified_php_max_age_seconds')),
             ]));
         });
         $this->app->bind(RunEngineSettings::class, static fn (): RunEngineSettings => new RunEngineSettings(

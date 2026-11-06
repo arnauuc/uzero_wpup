@@ -127,9 +127,14 @@ sudo -u wpup wpup site:import llocs.csv
 
 - **Majors:** core `x.y`, WooCommerce `X.0` i plugins o temes amb canvi al primer número. Fins a F7 s'ometen amb «major pendent: cal staging (F7)», i el pla diu «Cal staging primer: sí». La taula hi afegeix `(major)`.
 - **Quarantena:** una versió nova espera `planning.quarantine_days` (per defecte, 7) des de la data de publicació de WordPress.org o des de la primera vegada que l'inventari la va veure (`package_versions`), la que sigui anterior. La taula mostra els dies que falten. Si surt una versió correctiva, compta la seva pròpia data.
-- **Excepció sense quarantena:** el core `x.y.z` dins de la mateixa branca.
+- **Excepcions sense quarantena:** el core `x.y.z` dins de la mateixa branca, i les actualitzacions que corregeixen una vulnerabilitat coneguda de la versió instal·lada (la font arriba amb UZEROWPUP-128). Només es consulta per a les versions que encara són en quarantena. S'aplica la primera versió que les corregeix, amb les mateixes regles de staging si és major; si és anterior a l'oferta, no se'n coneixen els requisits i s'omet amb el motiu. Surten a «Excepcions de seguretat».
 
-Amb `--json`, cada pla porta `requires_staging` i, per a cada canvi, `major`, `quarantine_bypass` i `quarantine_days_left`.
+| Opció | Què fa |
+| --- | --- |
+| `--allow-major` | Només `admin`. Aplica in-place, sense staging, els canvis majors d'aquesta execució. Surten a «Majors aplicades: cal revisar» |
+| `--skip-quarantine` | Només `admin`. Aplica les versions que encara són en quarantena, per a casos urgents que la font de vulnerabilitats no detecta |
+
+Totes dues queden a l'auditoria (`plan.version_policy_overridden`, i als `flags` de `run.queued`) i a l'execució (`runs.flags`), perquè l'actualització i l'informe en vegin el mateix valor. Un operador que les fa servir rep un error i queda a l'auditoria (`command.denied`). Si l'admin deixa de ser-ho abans que el worker planifiqui, el pas falla (`run.denied`). Amb `--json`, cada pla porta `requires_staging`, `overrides` i, per a cada canvi, `major`, `quarantine_bypass` i `quarantine_days_left`.
 
 ## Retenció dels punts de restauració (ADR-0009)
 
