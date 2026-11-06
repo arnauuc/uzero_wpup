@@ -320,6 +320,33 @@ return [
         ],
     ],
 
+    /*
+     * Package artifacts (UZEROWPUP-49): every package is downloaded by the tool
+     * server, kept per run with its SHA-256 and installed from there, so staging
+     * and production get the same bytes. Private directory (0700, files 0600).
+     */
+    'artifacts' => [
+        'dir' => env('WPUP_ARTIFACTS_DIR', storage_path('app/artifacts')),
+        // Kept while the run's restore point exists, and at least this long (ADR-0009).
+        'min_retention_days' => 30,
+        // Download (HTTPS only; redirects are followed by hand, HTTPS only too).
+        'connect_timeout_seconds' => 15,
+        'timeout_seconds' => 600,
+        'read_timeout_seconds' => 120,
+        'max_redirects' => 5,
+        'max_bytes' => 200 * 1024 * 1024,
+        // Sum of the uncompressed sizes of the ZIP entries (zip bombs).
+        'max_unpacked_bytes' => 1024 * 1024 * 1024,
+        'chunk_bytes' => 1_048_576,
+        // WP-CLI reads of the site's update data (transients, core check-update).
+        'command_timeout_seconds' => 60,
+        // sprintf(): WordPress.org slug, version.
+        'wordpress_org' => [
+            'plugin_url' => 'https://downloads.wordpress.org/plugin/%s.%s.zip',
+            'theme_url' => 'https://downloads.wordpress.org/theme/%s.%s.zip',
+        ],
+    ],
+
     'inventory' => [
         'step_timeout_seconds' => 600,
         // `wpup inventory --json` document version, bumped on incompatible changes.
