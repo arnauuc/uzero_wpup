@@ -7,7 +7,6 @@ namespace App\Domain\Updates;
 use App\Domain\Artifacts\ArtifactStore;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\SiteDriver;
-use App\Domain\Inventory\SiteState;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Planning\UpdatePlan;
@@ -46,7 +45,6 @@ final readonly class UpdateSteps
         private RunAuthorization $authorization,
         private UpdateChanges $changes,
         private SecretRedactor $redactor,
-        private SiteState $siteState,
         private PostUpdateSettings $postUpdate,
         private int $componentTimeoutSeconds,
         int $minimumTimeoutSeconds,
@@ -68,7 +66,7 @@ final readonly class UpdateSteps
             }
         }
         if ($steps !== []) {
-            $steps[] = new PostUpdateStep($plan->changes, $this->driverFor, $this->authorization, $this->siteState, $this->redactor, $this->postUpdate);
+            $steps[] = new PostUpdateStep($plan->changes, $this->driverFor, $this->authorization, $this->redactor, $this->postUpdate);
         }
 
         return $steps;

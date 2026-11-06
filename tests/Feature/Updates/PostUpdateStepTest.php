@@ -7,12 +7,12 @@ use App\Domain\Drivers\Data\CommandResult;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Exceptions\ConnectionFailed;
 use App\Domain\Drivers\SiteDriver;
-use App\Domain\Inventory\SiteState;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\StepContext;
 use App\Domain\Secrets\SecretRedactor;
+use App\Domain\Updates\PageCacheCommand;
 use App\Domain\Updates\PostUpdateSettings;
 use App\Domain\Updates\PostUpdateStep;
 use App\Enums\ComponentType;
@@ -33,8 +33,8 @@ function postStep(FakeDriver $driver, ?array $changes = null): PostUpdateStep
     return new PostUpdateStep(
         $changes ?? [new PlannedChange(ComponentType::Woocommerce, 'woocommerce', '10.0.0', '10.1.0', PlanAction::Update)],
         static fn (Site $s, AuditActor $a): SiteDriver => $driver,
-        app(RunAuthorization::class), app(SiteState::class), app(SecretRedactor::class),
-        new PostUpdateSettings(4500, 1800, 120, ['wp-rocket' => ['rocket', 'clean', '--confirm'], 'w3-total-cache' => ['w3tc', 'flush', 'all']]),
+        app(RunAuthorization::class), app(SecretRedactor::class),
+        new PostUpdateSettings(6600, 1800, 120, 900, ['wp-rocket' => new PageCacheCommand('rocket clean', ['--confirm']), 'w3-total-cache' => new PageCacheCommand('w3-total-cache flush', ['all'])]),
     );
 }
 
@@ -156,26 +156,84 @@ it('purges the page cache of the active caching plugins only', function (): void
     $driver = new FakeDriver;
     $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'wp-rocket', '3.17.0'));
     $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'w3-total-cache', '2.8.0', false));
+    $driver->cliCommands = ['rocket clean'];
     $driver->commandResults['rocket clean --confirm'] = new CommandResult(0, "Success: Cache cleared.\n", '', 1);
 
-    postStep($driver)->run(postContext());
+    $outcome = postStep($driver)->run(postContext());
 
-    expect(postCommands($driver))->toContain('rocket clean --confirm')
-        ->and(postCommands($driver))->not->toContain('w3tc flush all');
+    expect(postCommands($driver))->toContain('cli has-command rocket clean')->toContain('rocket clean --confirm')
+        ->and(postCommands($driver))->not->toContain('w3-total-cache flush all')
+        ->and($outcome->data['page_cache_purged'])->toBeTrue()
+        ->and($outcome->data['page_cache_plugins'])->toBe(['wp-rocket']);
 });
 
 it('only warns when a flush fails', function (): void {
     $driver = new FakeDriver;
     $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'wp-rocket', '3.17.0'));
+    $driver->cliCommands = ['rocket clean'];
     $driver->failingCommands = ['cache flush', 'rocket clean'];
 
     $outcome = postStep($driver)->run(postContext());
 
     expect($outcome->status)->toBe(RunStepStatus::Succeeded)
         ->and($outcome->data['flush_warnings'])->toBe(2)
+        ->and($outcome->data['page_cache_purged'])->toBeFalse()
+        ->and($outcome->data['page_cache_failed'])->toBe(['wp-rocket'])
         ->and($outcome->summary)->toContain("la memòria cau d'objectes")->toContain('wp-rocket')
         // The other flushes still ran.
         ->and(postCommands($driver))->toContain('transient delete --expired --skip-plugins --skip-themes');
+});
+
+it('warns and flags the page cache when an active plugin has no WP-CLI command', function (): void {
+    $driver = new FakeDriver;
+    $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'wp-rocket', '3.17.0'));
+
+    $outcome = postStep($driver)->run(postContext());
+
+    expect($outcome->status)->toBe(RunStepStatus::Succeeded)
+        ->and($outcome->summary)->toContain('wp-rocket està actiu però no té comanda WP-CLI per buidar-ne la cau')
+        ->and($outcome->data['page_cache_purged'])->toBeFalse()
+        ->and(postCommands($driver))->not->toContain('rocket clean --confirm');
+});
+
+it('reports the page cache as purged when no caching plugin is active', function (): void {
+    $outcome = postStep(new FakeDriver)->run(postContext());
+
+    expect($outcome->data['page_cache_purged'])->toBeTrue()->and($outcome->data['page_cache_plugins'])->toBe([]);
+});
+
+it('fails the step when the connection is lost while flushing', function (): void {
+    $driver = new class extends FakeDriver
+    {
+        public function wp(array $args, ?int $timeoutSeconds = null): CommandResult
+        {
+            if ($args[0] === 'cache') {
+                throw new ConnectionFailed('connexió perduda');
+            }
+
+            return parent::wp($args, $timeoutSeconds);
+        }
+    };
+
+    $outcome = postStep($driver)->run(postContext());
+
+    expect($outcome->status)->toBe(RunStepStatus::Failed)->and($outcome->summary)->toContain('connexió perduda');
+});
+
+it('only checks WooCommerce once, after wc update, when it was updated', function (): void {
+    $driver = new FakeDriver;
+    $driver->wcDbUpdateNeeded = true;
+
+    postStep($driver)->run(postContext());
+
+    expect(count(array_filter($driver->wpCalls, static fn (array $a): bool => $a[0] === 'eval')))->toBe(1);
+});
+
+it('describes wc update when it may run', function (): void {
+    $context = postContext();
+
+    expect(postStep(new FakeDriver)->describe($context))->toContain('wp wc update')
+        ->and(postStep(new FakeDriver, [])->describe($context))->toContain('wp wc update');
 });
 
 it('is idempotent: the second run succeeds and does not migrate again', function (): void {
@@ -193,11 +251,15 @@ it('masks secrets in the output', function (): void {
     $driver = new FakeDriver;
     app(SecretRedactor::class)->register('s3cr3t-value');
     $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'wp-rocket', '3.17.0'));
+    $driver->cliCommands = ['rocket clean'];
     $driver->commandResults['rocket clean --confirm'] = new CommandResult(0, 'token s3cr3t-value', '', 1);
 
     expect(postStep($driver)->run(postContext())->output)->not->toContain('s3cr3t-value');
 });
 
 it('refuses a step timeout that cannot cover its commands', function (): void {
-    expect(fn () => new PostUpdateSettings(100, 1800, 120, []))->toThrow(InvalidArgumentException::class, '3840');
+    // 2 × 1800 + (4 + 2 × 1) × 120 + 900 = 5220
+    expect(fn () => new PostUpdateSettings(5000, 1800, 120, 900, ['a' => new PageCacheCommand('a b')]))->toThrow(InvalidArgumentException::class, '5220')
+        ->and(fn () => new PostUpdateSettings(6600, 1800, 0, 900, []))->toThrow(InvalidArgumentException::class, 'command_timeout_seconds')
+        ->and(fn () => new PostUpdateSettings(6600, 1800, 120, -1, []))->toThrow(InvalidArgumentException::class, 'overhead_seconds');
 });

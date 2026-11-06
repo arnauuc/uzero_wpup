@@ -10,7 +10,6 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\Data\ComponentVersion;
 use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
-use App\Domain\Inventory\SiteState;
 use App\Domain\Planning\PlanAction;
 use App\Domain\Planning\PlannedChange;
 use App\Domain\Planning\UpdatePlan;
@@ -92,8 +91,8 @@ function updateBuilder(FakeDriver $driver, int $timeout = 60, int $minimum = 60)
 {
     return new UpdateSteps(
         app(ArtifactStore::class), static fn (Site $s, AuditActor $a): SiteDriver => $driver,
-        app(RunAuthorization::class), new UpdateChanges, app(SecretRedactor::class), app(SiteState::class),
-        new PostUpdateSettings(4500, 1800, 120, []), $timeout, $minimum,
+        app(RunAuthorization::class), new UpdateChanges, app(SecretRedactor::class),
+        new PostUpdateSettings(6600, 1800, 120, 900, []), $timeout, $minimum,
     );
 }
 

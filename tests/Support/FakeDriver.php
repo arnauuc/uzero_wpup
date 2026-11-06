@@ -27,6 +27,7 @@ use App\Domain\Drivers\WebFileName;
 use App\Domain\Drivers\WorkPath;
 use App\Domain\Inventory\PendingUpdates;
 use App\Domain\Inventory\SiteState;
+use App\Domain\Updates\PostUpdateStep;
 use App\Enums\CheckResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
@@ -187,6 +188,13 @@ class FakeDriver implements SiteDriver
     /** @var list<list<string>> every WP-CLI call, for assertions */
     public array $wpCalls = [];
 
+    /**
+     * Commands `wp cli has-command` finds (page-cache plugin commands…).
+     *
+     * @var list<string>
+     */
+    public array $cliCommands = [];
+
     /** `wp wc update` succeeds but WooCommerce still reports a pending database update. */
     public bool $wcUpdateLeavesPending = false;
 
@@ -309,7 +317,9 @@ class FakeDriver implements SiteDriver
             $args === ['wc', 'update', '--skip-themes'] => $this->wcUpdate(),
             in_array($args, [['cache', 'flush'], ['cache', 'flush', '--skip-plugins', '--skip-themes']], true) => $this->ok("Success: The cache was flushed.\n"),
             $args === ['transient', 'delete', '--expired', '--skip-plugins', '--skip-themes'] => $this->ok("Success: 0 expired transients deleted from the database.\n"),
-            isset($this->commandResults[implode(' ', array_values(array_filter($args, static fn (string $a): bool => ! str_starts_with($a, '--skip-'))))]) => $this->commandResults[implode(' ', array_values(array_filter($args, static fn (string $a): bool => ! str_starts_with($a, '--skip-'))))],
+            count($args) === 3 && $args[0] === 'cli' && $args[1] === 'has-command' => in_array($args[2], $this->cliCommands, true) ? $this->ok('') : new CommandResult(1, '', '', 1),
+            $args === ['eval', PostUpdateStep::WC_DB_SNIPPET, '--skip-themes'] => $this->ok($this->wcFails || $this->wcDbUpdateNeeded === null ? 'unknown' : ($this->wcDbUpdateNeeded ? 'pending' : 'ok')),
+            isset($this->commandResults[self::commandKey($args)]) => $this->commandResults[self::commandKey($args)],
             in_array($args, [['maintenance-mode', 'is-active'], ['maintenance-mode', 'is-active', '--skip-plugins', '--skip-themes']], true) => $this->maintenance
                 ? $this->ok('')
                 : new CommandResult(1, '', '', 1),
@@ -764,6 +774,15 @@ class FakeDriver implements SiteDriver
     private function ok(string $stdout): CommandResult
     {
         return new CommandResult(0, $stdout, '', 1);
+    }
+
+    /** The arguments joined with a space, without --skip-* flags: the key of $commandResults. */
+    /**
+     * @param  list<string>  $args
+     */
+    private static function commandKey(array $args): string
+    {
+        return implode(' ', array_values(array_filter($args, static fn (string $a): bool => ! str_starts_with($a, '--skip-'))));
     }
 
     private function wcUpdate(): CommandResult
