@@ -12,6 +12,7 @@ use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Drivers\DriverFactory;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Rollback\DatabaseRollbackStep;
+use App\Domain\Rollback\RollbackSteps;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunEngine;
@@ -63,7 +64,7 @@ function databaseRollbackFixture(): array
         app(DriverFactory::class)->forSite($s, $a), app(SecretRedactor::class), app(HttpFactory::class), app(SiteLocalSettings::class)->withRoot($storeRoot), $s->url,
     ));
     // The `wpup rollback` pipeline is UZEROWPUP-61: here, only this step.
-    app(PipelineResolver::class)->register(RunType::Rollback, static fn (): Pipeline => new Pipeline([app(DatabaseRollbackStep::class)]));
+    app(PipelineResolver::class)->register(RunType::Rollback, static fn (): Pipeline => new Pipeline([app(RollbackSteps::class)->database()]));
     Fixtures::run(DATABASE_ROLLBACK_FIXTURE, 'rm -f '.escapeshellarg("{$site->wp_path}/.maintenance"));
     $driver = app(DriverFactory::class)->forSite($site, AuditActor::system('tests'));
     $blogname = databaseRollbackOption($driver);

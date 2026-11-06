@@ -9,6 +9,7 @@ use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\NewWrites;
 use App\Domain\Backups\NewWritesDetector;
 use App\Domain\Backups\PostRestoreCheckFailed;
+use App\Domain\Backups\RestoreMaintenanceStep;
 use App\Domain\Backups\RestoreRefused;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\RestoreStep;
@@ -27,7 +28,6 @@ use App\Domain\Runs\StepOutcome;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\AuditResult;
 use App\Enums\BackupKind;
-use App\Enums\RunType;
 use App\Models\Backup;
 use App\Models\Run;
 use App\Models\RunStep;
@@ -82,9 +82,6 @@ final readonly class DatabaseRollbackStep implements Step
 {
     public const string NAME = 'rollback-database';
 
-    /** TODO(UZEROWPUP-59): SiteDriver::SAFE_MODE once UZEROWPUP-57 is on main. */
-    private const array SAFE_MODE = ['--skip-plugins', '--skip-themes'];
-
     /**
      * @param  Closure(Site, AuditActor): SiteDriver  $driverFor
      */
@@ -112,7 +109,7 @@ final readonly class DatabaseRollbackStep implements Step
     public function describe(StepContext $context): string
     {
         try {
-            $source = self::source($context->run);
+            $source = RollbackSource::of($context->run);
         } catch (RollbackRefused $e) {
             return $e->getMessage();
         }
@@ -130,7 +127,7 @@ final readonly class DatabaseRollbackStep implements Step
         }
 
         try {
-            $source = self::source($context->run);
+            $source = RollbackSource::of($context->run);
             $site = $source->site ?? throw new RollbackRefused("L'execució #{$source->id} no té cap lloc.");
             $candidates = $this->candidates($site, $source);
         } catch (RollbackRefused $e) {
@@ -174,7 +171,7 @@ final readonly class DatabaseRollbackStep implements Step
                     .(is_string($journal['import_started_at'] ?? null) ? $journal['import_started_at'] : '?').' sense escriptures noves.';
             }
 
-            if ($this->maintenanceOn($driver, $warnings)) {
+            if ($this->maintenanceOn($driver, $context->run->id, $warnings)) {
                 $enabled = true;
                 $journal['maintenance_enabled'] = true;
                 $this->remember($context->run, $journal);
@@ -268,27 +265,6 @@ final readonly class DatabaseRollbackStep implements Step
     }
 
     /**
-     * The update run whose point is restored: the run itself (rollback within
-     * the update, UZEROWPUP-60) or the parent of a `rollback` run (UZEROWPUP-61).
-     *
-     * TODO(UZEROWPUP-59): use RollbackSource::of() once UZEROWPUP-57 is on main.
-     *
-     * @throws RollbackRefused
-     */
-    private static function source(Run $run): Run
-    {
-        $source = $run->type === RunType::Rollback ? $run->parent : $run;
-        if ($source === null || $source->type !== RunType::Update) {
-            throw new RollbackRefused("L'execució #{$run->id} no indica quina actualització s'ha de desfer.");
-        }
-        if ($source->site_id === null || $source->site_id !== $run->site_id) {
-            throw new RollbackRefused("L'execució #{$source->id} no és del mateix lloc que el rollback.");
-        }
-
-        return $source;
-    }
-
-    /**
      * @return non-empty-list<Backup>
      *
      * @throws RollbackRefused
@@ -296,9 +272,7 @@ final readonly class DatabaseRollbackStep implements Step
     private function candidates(Site $site, Run $source): array
     {
         try {
-            $request = $this->selection->select($site, (string) $source->id, [], [BackupKind::Database], false);
-
-            return $this->selection->candidates($site, $request)[BackupKind::Database->value];
+            return $this->selection->ofPoint($site, (string) $source->id, BackupKind::Database);
         } catch (RestoreRefused $e) {
             throw new RollbackRefused("L'execució #{$source->id} no té cap còpia de la base de dades utilitzable: {$e->getMessage()}");
         }
@@ -374,34 +348,31 @@ final readonly class DatabaseRollbackStep implements Step
     }
 
     /**
-     * `is-active` exits 1 without an error when the mode is off (a warning on
-     * stderr does not count); any other failure leaves its state unknown: it
-     * is switched on and left on.
-     *
-     * TODO(UZEROWPUP-59): RestoreMaintenanceStep::state() once UZEROWPUP-57 is on main.
+     * The mode switched on when it was not, or when its state cannot be told
+     * (RestoreMaintenanceStep::state(): `is-active` exiting 1 without an
+     * error is off, a warning on stderr does not count); in that last case it
+     * is left on.
      *
      * @param  list<string>  $warnings
      * @return bool whether this step switched it on from off
      *
      * @throws RollbackRefused when it cannot be switched on
      */
-    private function maintenanceOn(SiteDriver $driver, array &$warnings): bool
+    private function maintenanceOn(SiteDriver $driver, int $runId, array &$warnings): bool
     {
-        try {
-            $state = $driver->wp(['maintenance-mode', 'is-active', ...self::SAFE_MODE]);
-            if ($state->successful()) {
-                return false;
-            }
-            $driver->setMaintenanceMode(true);
-            if ($state->exitCode === 1 && ! str_contains($state->stderr, 'Error:')) {
-                return true;
-            }
-            $warnings[] = "No s'ha pogut saber si el mode manteniment era actiu: es deixa activat. Revisa'l a mà.";
-
+        $state = RestoreMaintenanceStep::state($driver);
+        if ($state === true) {
             return false;
-        } catch (DriverException $e) {
-            throw new RollbackRefused("No s'ha pogut activar el mode manteniment, i sense no es pot garantir que no entri cap comanda abans de restaurar: {$this->redactor->redact($e->getMessage())}");
         }
+        $failed = RestoreMaintenanceStep::switchTo($driver, true, $this->redactor, $runId);
+        if ($failed !== null) {
+            throw new RollbackRefused("{$failed} Sense el mode manteniment no es pot garantir que no entri cap comanda abans de restaurar.");
+        }
+        if ($state === null) {
+            $warnings[] = "No s'ha pogut saber si el mode manteniment era actiu: es deixa activat. Revisa'l a mà.";
+        }
+
+        return $state === false;
     }
 
     /**
@@ -412,7 +383,7 @@ final readonly class DatabaseRollbackStep implements Step
      */
     private function refreshMaintenance(SiteDriver $driver): void
     {
-        $result = $driver->wp(['maintenance-mode', 'activate', '--force', ...self::SAFE_MODE]);
+        $result = $driver->wp(['maintenance-mode', 'activate', '--force', ...SiteDriver::SAFE_MODE]);
         if (! $result->successful()) {
             throw new RollbackRefused("No s'ha pogut tornar a escriure el mode manteniment just abans d'importar: ".trim($this->redactor->redact($result->stderr)));
         }
@@ -423,16 +394,9 @@ final readonly class DatabaseRollbackStep implements Step
      */
     private function maintenanceOff(SiteDriver $driver, bool $switch, int $runId, array &$warnings): void
     {
-        if (! $switch) {
-            return;
-        }
-
-        try {
-            $driver->setMaintenanceMode(false);
-        } catch (DriverException $e) {
-            $reason = $this->redactor->redact($e->getMessage());
-            Log::warning('Could not switch the maintenance mode off after a database rollback.', ['run_id' => $runId, 'reason' => $reason]);
-            $warnings[] = "No s'ha pogut desactivar el mode manteniment: {$reason}. Revisa'l a mà.";
+        $failed = $switch ? RestoreMaintenanceStep::switchTo($driver, false, $this->redactor, $runId) : null;
+        if ($failed !== null) {
+            $warnings[] = $failed;
         }
     }
 

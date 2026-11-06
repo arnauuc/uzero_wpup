@@ -26,10 +26,12 @@ use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\RunEngine;
 use App\Domain\Runs\RunRecovery;
 use App\Domain\Secrets\SecretRedactor;
+use App\Domain\Updates\UpdateChanges;
 use App\Enums\AuditChannel;
 use App\Enums\AuditResult;
 use App\Enums\BackupKind;
 use App\Enums\BackupTargetType;
+use App\Enums\ChangeResult;
 use App\Enums\RunStatus;
 use App\Enums\RunType;
 use App\Enums\UserRole;
@@ -37,6 +39,7 @@ use App\Models\AuditLogEntry;
 use App\Models\Backup;
 use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Run;
+use App\Models\RunChange;
 use App\Models\RunStep;
 use App\Models\Site;
 use App\Models\SiteProfile;
@@ -292,7 +295,7 @@ it('does not restore when the maintenance mode cannot be switched on', function 
     $run = databaseRollbackRun($site, $update);
 
     expect($run->status)->toBe(RunStatus::Failed)
-        ->and(databaseRollbackStep($run)->error)->toContain("No s'ha pogut activar el mode manteniment")->toContain("La base de dades no s'ha restaurat.")
+        ->and(databaseRollbackStep($run)->error)->toContain('Sense el mode manteniment no es pot garantir')->toContain("La base de dades no s'ha restaurat.")
         ->and($driver->writeCalls)->not->toContain('restoreDatabase');
 });
 
@@ -319,8 +322,23 @@ it('refuses a run that is not the rollback of an update of the same site', funct
     $run = databaseRollbackRun($site, $update);
 
     expect($run->status)->toBe(RunStatus::Failed)
-        ->and(databaseRollbackStep($run)->error)->toContain('no indica quina actualització')
+        ->and(databaseRollbackStep($run)->error)->toContain('no és una actualització')
         ->and($driver->writeCalls)->not->toContain('restoreDatabase');
+});
+
+it('never restores the database of an update with a later update of the site still applied (RollbackSource)', function (): void {
+    $driver = new DatabaseRollbackDriver;
+    databaseRollbackPipeline($driver);
+    [$site, $update] = databaseRollbackUpdate($driver);
+    $later = Run::factory()->create(['type' => RunType::Update, 'site_id' => $site->id, 'status' => RunStatus::Succeeded]);
+    RunChange::factory()->create(['run_id' => $later->id, 'step' => UpdateChanges::STEP, 'result' => ChangeResult::Updated]);
+
+    $run = databaseRollbackRun($site, $update);
+
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and(databaseRollbackStep($run)->error)->toContain("Reverteix primer la #{$later->id}")->toContain("La base de dades no s'ha restaurat.")
+        ->and($driver->writeCalls)->not->toContain('restoreDatabase')
+        ->and($driver->options['woocommerce_db_version'])->toBe('10.0.0');
 });
 
 /**

@@ -107,6 +107,19 @@ final class RestoreSelection
         return $rows;
     }
 
+    /**
+     * The usable copies of $kind of a point right now (UZEROWPUP-57): of the
+     * site, live and verified, the site-local one first.
+     *
+     * @return non-empty-list<Backup>
+     *
+     * @throws RestoreRefused
+     */
+    public function ofPoint(Site $site, string $point, BackupKind $kind): array
+    {
+        return $this->fromPoint($site, $point, [$kind])[$kind->value];
+    }
+
     public static function kindLabel(BackupKind $kind): string
     {
         return $kind === BackupKind::Database ? 'de la base de dades' : 'dels fitxers';
