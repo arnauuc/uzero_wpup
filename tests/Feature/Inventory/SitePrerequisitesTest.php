@@ -11,8 +11,7 @@ use App\Domain\Inventory\PrerequisiteCheck;
 use App\Domain\Inventory\SiteInventory;
 use App\Domain\Inventory\SitePrerequisites;
 use App\Domain\Inventory\WpCliReader;
-use App\Domain\Notifications\LogSiteBlockNotifier;
-use App\Domain\Notifications\SiteBlockNotifier;
+use App\Domain\Notifications\Notifier;
 use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\StepContext;
 use App\Domain\Secrets\SecretRedactor;
@@ -23,8 +22,11 @@ use App\Enums\RunStepStatus;
 use App\Enums\RunType;
 use App\Enums\SiteBlockSource;
 use App\Models\AuditLogEntry;
+use App\Models\NotificationDelivery;
 use App\Models\Run;
 use App\Models\Site;
+use App\Notifications\SiteBlockedNotification;
+use App\Notifications\WpupNotification;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Tests\Support\FakeDriver;
@@ -49,19 +51,16 @@ function failed(array $checks, PrerequisiteName $name): ?PrerequisiteCheck
 }
 
 /** Records what the notifier is told. */
-final class RecordingBlockNotifier implements SiteBlockNotifier
+final class RecordingBlockNotifier implements Notifier
 {
     /** @var list<string> */
     public array $calls = [];
 
-    public function siteBlocked(Site $site, string $reason): void
+    public function notify(WpupNotification $notification): void
     {
-        $this->calls[] = "blocked:{$reason}";
-    }
-
-    public function siteUnblocked(Site $site): void
-    {
-        $this->calls[] = 'unblocked';
+        $this->calls[] = $notification instanceof SiteBlockedNotification && $notification->reason !== null
+            ? "blocked:{$notification->reason}"
+            : 'unblocked';
     }
 }
 
@@ -389,16 +388,18 @@ it('lets the PHP checks decide nothing in a dry run and never promises to lift a
         ->and($kept->reason)->toBe('PHP < 7.4: no suportat');
 });
 
-it('logs through the default notifier', function (): void {
-    Log::shouldReceive('warning')->once();
-    Log::shouldReceive('info')->once();
+it('notifies blocks and releases through the notification system, with the log channel', function (): void {
+    Log::shouldReceive('log')->once()->withArgs(static fn (string $level, string $message): bool => $level === 'warning' && str_contains($message, 'bloquejat'));
+    Log::shouldReceive('log')->once()->withArgs(static fn (string $level, string $message): bool => $level === 'info' && str_contains($message, 'desbloquejat'));
     $site = Site::factory()->create(['name' => 'botiga']);
-    $notifier = app(SiteBlockNotifier::class);
+    $blocking = app(SiteBlocking::class);
+    $actor = AuditActor::system('tests');
 
-    $notifier->siteBlocked($site, 'PHP < 7.4: no suportat');
-    $notifier->siteUnblocked($site);
+    $blocking->blockForWpCli($site, $actor);
+    $blocking->apply($site, prerequisites()->check(new FakeDriver, '8.3.14', [], null)->checks, $actor, false);
 
-    expect($notifier)->toBeInstanceOf(LogSiteBlockNotifier::class);
+    expect(NotificationDelivery::query()->orderBy('id')->pluck('kind')->map->value->all())->toBe(['site_blocked', 'site_unblocked'])
+        ->and(NotificationDelivery::query()->pluck('channel')->unique()->all())->toBe(['log']);
 });
 
 /**

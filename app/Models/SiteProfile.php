@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\NotificationThreshold;
 use Database\Factories\SiteProfileFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -19,6 +20,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property array<int, mixed> $frozen_components
  * @property array<int, mixed> $excluded_components
  * @property array<int, mixed> $notification_channels
+ * @property NotificationThreshold $notification_min_severity
  * @property bool $include_uploads
  * @property array<string, mixed>|null $external_backup
  * @property bool|null $maintenance_mode null: the default of wpup.updates.maintenance.default
@@ -43,6 +45,7 @@ class SiteProfile extends Model
             'frozen_components' => 'array',
             'excluded_components' => 'array',
             'notification_channels' => 'array',
+            'notification_min_severity' => NotificationThreshold::class,
             'external_backup' => 'array',
             'diff_threshold' => 'decimal:2',
             'include_uploads' => 'boolean',

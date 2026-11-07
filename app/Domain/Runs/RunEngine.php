@@ -8,6 +8,7 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Locks\LockedException;
 use App\Domain\Locks\SiteLockManager;
+use App\Domain\Notifications\Notifier;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Concurrency\ConcurrencyLimitReached;
 use App\Domain\Runs\Concurrency\GlobalQueue;
@@ -26,10 +27,14 @@ use App\Enums\RunStepKind;
 use App\Enums\RunStepStatus;
 use App\Models\Run;
 use App\Models\RunStep;
+use App\Notifications\RunFinishedNotification;
+use App\Notifications\RunInterruptedNotification;
+use App\Notifications\WpupNotification;
 use Carbon\CarbonImmutable;
 use Closure;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use Throwable;
 
@@ -53,6 +58,8 @@ use Throwable;
  *   it on the run (runs.interruptions, RunInterruption) and in audit_log, with
  *   the step and its decision, so the operator is always told (UZEROWPUP-62).
  *   A recorded step that the pipeline no longer has fails the run loudly.
+ * - The end of a run (but a dry run) and every interruption go out as
+ *   notifications (UZEROWPUP-79); a failing channel never affects the run.
  * - Every summary, output, error and result is redacted before it is stored.
  * - A queued run that takes the global slot waits for the ones queued before
  *   it that may start (GlobalQueue): manual and scheduled runs share one queue.
@@ -70,6 +77,7 @@ final readonly class RunEngine
         private AuditLogger $audit,
         private StepTicker $ticker,
         private RunEngineSettings $settings,
+        private Notifier $notifier,
     ) {}
 
     /**
@@ -260,6 +268,7 @@ final readonly class RunEngine
             $run->id,
             $interruption->toArray(),
         );
+        $this->notify(static fn (): WpupNotification => new RunInterruptedNotification($run, $interruption));
     }
 
     /**
@@ -676,6 +685,23 @@ final readonly class RunEngine
             $run->id,
             ['status' => $status->value, 'failed_step' => $failure[0] ?? null],
         );
+        if (($run->flags['dry_run'] ?? false) !== true) {
+            $this->notify(static fn (): WpupNotification => new RunFinishedNotification($run));
+        }
+    }
+
+    /**
+     * Builds and sends a notification. Nothing about it may affect the run.
+     *
+     * @param  Closure(): WpupNotification  $build
+     */
+    private function notify(Closure $build): void
+    {
+        try {
+            $this->notifier->notify($build());
+        } catch (Throwable $e) {
+            Log::error('Could not build a run notification.', ['error' => $this->redactor->redact($e->getMessage())]);
+        }
     }
 
     /**

@@ -177,4 +177,14 @@ class Run extends Model
     {
         return $this->hasMany(Backup::class);
     }
+
+    /**
+     * The notifications sent about the run (UZEROWPUP-79): part of its report.
+     *
+     * @return HasMany<NotificationDelivery, $this>
+     */
+    public function notificationDeliveries(): HasMany
+    {
+        return $this->hasMany(NotificationDelivery::class);
+    }
 }
