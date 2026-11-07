@@ -5,8 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { COOKIE_BANNER_SELECTORS, stabilizingCss } from './capture.js';
-import { InputSchema } from './contract.js';
+import { InputSchema, isSafeSelector, type VerifierOutput } from './contract.js';
 import { validInput } from './testing.js';
 import { verify } from './verify.js';
 
@@ -45,7 +44,8 @@ let server: Server;
 let base: string;
 
 beforeAll(async () => {
-  const font = await readFile(FONT_FILE).catch(() => Buffer.alloc(0));
+  // No fallback: if the font is missing the test must fail, not silently stop testing fonts.
+  const font = await readFile(FONT_FILE);
   server = createServer((request, response) => {
     const send = (type: string, body: string | Buffer, delay = 0): void => {
       setTimeout(() => response.writeHead(200, { 'content-type': type }).end(body), delay);
@@ -59,6 +59,24 @@ beforeAll(async () => {
         return send('text/html', testPage({ banner: true }));
       case '/clean':
         return send('text/html', testPage({ banner: false }));
+      case '/csp-banner':
+      case '/csp-clean':
+        // Inline styles are forbidden: only a context that bypasses the CSP can inject the neutral CSS.
+        response.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "default-src 'self'; style-src 'self'" });
+        return void response.end(`<!doctype html><link rel="stylesheet" href="/csp.css"><p>csp page</p>${request.url === '/csp-banner' ? '<div id="CybotCookiebotDialog">cookies</div>' : ''}`);
+      case '/csp.css':
+        return send('text/css', '#CybotCookiebotDialog { position: fixed; left: 0; right: 0; bottom: 0; height: 200px; background: #000; }');
+      case '/locked':
+        return send('text/html', '<!doctype html><html style="overflow:hidden"><body style="margin:0;overflow:hidden;height:100vh"><div style="height:3000px;background:#69c"></div>');
+      case '/infinite':
+        return send(
+          'text/html',
+          `<!doctype html><body style="margin:0"><div style="height:1200px;background:#cde"></div><script>
+          addEventListener('scroll', () => { if (scrollY + innerHeight > document.documentElement.scrollHeight - 300) document.body.insertAdjacentHTML('beforeend', '<div style="height:1000px;background:#cde;border-top:4px solid #135"></div>'); });
+          </script>`,
+        );
+      case '/hang':
+        return send('text/html', '<!doctype html><p>hang</p><script>setTimeout(() => { const t = Date.now(); while (Date.now() - t < 8000); }, 300)</script>');
       default:
         response.writeHead(404).end();
     }
@@ -125,7 +143,7 @@ function diffRatio(a: Raster, b: Raster): number {
   return different / (a.width * a.height);
 }
 
-async function capture(paths: string[], extra: Partial<Parameters<typeof validInput>[0]> = {}): Promise<{ rasters: Raster[][]; dir: string }> {
+async function capture(paths: string[], extra: Partial<Parameters<typeof validInput>[0]> = {}): Promise<{ rasters: Raster[][]; dir: string; output: VerifierOutput }> {
   const dir = await mkdtemp(join(tmpdir(), 'wpup-capture-'));
   const output = await verify(
     validInput({
@@ -148,7 +166,7 @@ async function capture(paths: string[], extra: Partial<Parameters<typeof validIn
     rasters.push(await Promise.all(paths.map(async (_, index) => decodePng(await readFile(join(dir, viewport, `${index}.png`))))));
   }
 
-  return { rasters, dir };
+  return { rasters, dir, output };
 }
 
 describe('stable captures', () => {
@@ -190,19 +208,92 @@ describe('stable captures', () => {
   }, 120_000);
 });
 
-describe('stabilizingCss', () => {
-  it('has one rule per selector, so an invalid extra selector cannot break the known banners', () => {
-    const css = stabilizingCss(['.promo', '>>bad{']);
-    for (const selector of COOKIE_BANNER_SELECTORS) expect(css).toContain(`${selector} { display: none`);
-    expect(css).toContain('.promo { display: none');
-    expect(css).not.toMatch(/[{][^}]*[{]/);
-  });
+describe('robust preparation', () => {
+  it('captures a page behind a strict Content-Security-Policy (the banner is still hidden)', async () => {
+    const { rasters, dir } = await capture(['/csp-banner', '/csp-clean']);
+    try {
+      for (const pair of rasters) expect(diffRatio(pair[0]!, pair[1]!)).toBeLessThan(0.0001);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('drops an invalid selector with a warning and still applies the others', async () => {
+    const extra = { hide_selectors: ['.promo', 'div:not-a-real-pseudo(1)'] };
+    const { rasters, dir, output } = await capture(['/banner', '/clean'], extra);
+    try {
+      expect(output.results[0]?.warnings.some((warning) => warning.includes('invalid selector ignored'))).toBe(true);
+      for (const pair of rasters) expect(diffRatio(pair[0]!, pair[1]!)).toBeLessThan(0.0001);
+      // .promo (40 px, magenta) is gone from both: the page is shorter than a plain /clean capture would be.
+      const plain = await capture(['/clean']);
+      try {
+        expect(rasters[0]?.[1]?.height).toBeLessThan(plain.rasters[0]?.[0]?.height ?? 0);
+      } finally {
+        await rm(plain.dir, { recursive: true, force: true });
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('lifts a scroll lock so the full page is captured', async () => {
+    const { rasters, dir } = await capture(['/locked']);
+    try {
+      expect(rasters[0]?.[0]?.height).toBeGreaterThan(2500);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('cuts an infinite scroll at max_height so two captures are comparable', async () => {
+    const { rasters, dir, output } = await capture(['/infinite', '/infinite'], { capture: { max_height: 3000 } });
+    try {
+      for (const pair of rasters) {
+        expect(pair[0]?.height).toBe(3000);
+        expect(diffRatio(pair[0]!, pair[1]!)).toBeLessThan(0.0001);
+      }
+      expect(output.results[0]?.warnings.some((warning) => warning.includes('cut at 3000'))).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
-describe('contract: hide_selectors', () => {
-  it('is optional (protocol version 1 is unchanged) and bounded', () => {
+describe('a page that hangs', () => {
+  it('is reported with a warning and an error, and the run still finishes with a result', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wpup-capture-'));
+    try {
+      const started = Date.now();
+      const output = await verify(
+        validInput({
+          site: { name: 'local', base_url: base },
+          urls: [{ path: '/hang', profile: 'page' }],
+          viewports: [{ name: 'desktop', width: 1440 }],
+          masks: [],
+          output_dir: dir,
+          capture: { prepare_ms: 2000 },
+          timeouts: { navigation_ms: 30000, screenshot_ms: 2000, total_ms: 30000 },
+        }),
+      );
+      expect(Date.now() - started).toBeLessThan(20_000);
+      expect(output.results).toHaveLength(1);
+      expect(output.results[0]?.warnings.some((warning) => warning.includes('captured as is'))).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+describe('contract: hide_selectors and capture', () => {
+  it('are optional (protocol version 1 is unchanged) and bounded', () => {
     expect(InputSchema.safeParse(validInput()).success).toBe(true);
-    expect(InputSchema.safeParse(validInput({ hide_selectors: ['.promo'] })).success).toBe(true);
+    expect(InputSchema.safeParse(validInput({ hide_selectors: ['.promo'], capture: { prepare_ms: 5000, max_height: 8000 } })).success).toBe(true);
     expect(InputSchema.safeParse(validInput({ hide_selectors: Array.from({ length: 51 }, () => '.x') })).success).toBe(false);
+    expect(InputSchema.safeParse(validInput({ capture: { max_height: 10 } })).success).toBe(false);
+  });
+
+  it('rejects selectors that could leave their rule', () => {
+    for (const bad of ['a { color: red', '.x /* c */', '[data-x="a]', '.a)', 'a, b }', '@import "x"', '.x(']) expect(isSafeSelector(bad)).toBe(false);
+    for (const good of ['.promo > a', '[data-x="a)b"]', 'div:not(.a, .b)', '#id\\(x']) expect(isSafeSelector(good)).toBe(true);
   });
 });
