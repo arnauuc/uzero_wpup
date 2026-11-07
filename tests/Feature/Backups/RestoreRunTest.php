@@ -135,7 +135,7 @@ function restoreRunPipeline(FakeDriver $driver): void
             new InventoryStep(app(SiteInventory::class), $driverFor, app(RunAuthorization::class), 60, readOnlySite: true, advisory: true),
             new RestoreCheckStep(app(RestoreSelection::class), app(SiteRestore::class), app(FilesBackup::class), app(NewWritesDetector::class), $driverFor, app(RunAuthorization::class), 60),
             $maintenance,
-            new PreRestoreBackupStep(app(RestorePointService::class), $maintenance, $driverFor, app(RunAuthorization::class), 60),
+            new PreRestoreBackupStep(app(RestorePointService::class), $maintenance, $driverFor, app(RunAuthorization::class), app(SecretRedactor::class), 60),
             new RestoreStep(app(RestoreSelection::class), app(SiteRestore::class), app(RestorePointGate::class), $maintenance, $driverFor,
                 app(RunAuthorization::class), app(AuditLogger::class), app(SecretRedactor::class), 60),
         ]);

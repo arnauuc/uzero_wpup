@@ -25,10 +25,11 @@ trait LaunchesRuns
      * @param  array<string, mixed>  $flags
      * @param  (Closure(list<Run>): ?int)|null  $present  prints the final runs instead of the default run table / JSON;
      *                                                    it may return an exit code (e.g. 1 for a run without a usable result), used when the runs themselves gave 0
+     * @param  Run|null  $parent  the run they are launched from (runs.parent_run_id)
      */
-    protected function launchRuns(RunType $type, array $sites, array $flags = [], ?UpdateStrategy $strategy = null, ?Closure $present = null): int
+    protected function launchRuns(RunType $type, array $sites, array $flags = [], ?UpdateStrategy $strategy = null, ?Closure $present = null, ?Run $parent = null): int
     {
-        $runs = app(RunLauncher::class)->launch($type, $sites, $this->actor(), $flags, $strategy);
+        $runs = app(RunLauncher::class)->launch($type, $sites, $this->actor(), $flags, $strategy, $parent);
         $follow = $this->option('follow') === true;
 
         if (! $follow && $this->option('wait') !== true) {
@@ -56,20 +57,33 @@ trait LaunchesRuns
         $presentedCode = null;
         if ($present !== null) {
             $presentedCode = $present($final);
-        } elseif ($this->wantsJson()) {
-            $this->emitJson(['runs' => array_map(self::runJson(...), $final)]);
         } else {
-            $this->table(['Execució', 'Lloc', 'Estat', 'Motiu'], array_map(static fn (Run $run): array => [
-                "#{$run->id}",
-                self::siteLabel($run),
-                $run->status->value,
-                $run->failureReason() ?? '',
-            ], $final));
+            $this->presentRuns($final);
         }
 
         $code = RunFollower::exitCode($final);
 
         return $code !== 0 ? $code : ($presentedCode ?? 0);
+    }
+
+    /**
+     * The default presentation of finished runs: a table, or the JSON document with --json.
+     *
+     * @param  list<Run>  $runs
+     */
+    protected function presentRuns(array $runs): void
+    {
+        if ($this->wantsJson()) {
+            $this->emitJson(['runs' => array_map(self::runJson(...), $runs)]);
+
+            return;
+        }
+        $this->table(['Execució', 'Lloc', 'Estat', 'Motiu'], array_map(static fn (Run $run): array => [
+            "#{$run->id}",
+            self::siteLabel($run),
+            $run->status->value,
+            $run->failureReason() ?? '',
+        ], $runs));
     }
 
     private static function siteLabel(Run $run): string
