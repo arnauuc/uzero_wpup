@@ -35,6 +35,14 @@ final readonly class MaintenanceWindowGate
     ) {}
 
     /**
+     * The time zone the windows are read in (app.timezone).
+     */
+    public function timezone(): string
+    {
+        return $this->timezone;
+    }
+
+    /**
      * @throws InvalidArgumentException when the site's stored window is malformed, or
      *                                  shorter than the minimum (no update could ever start in it)
      */

@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Domain\Locks\SiteLockManager;
 use App\Domain\Scheduling\SchedulerAction;
 use App\Domain\Scheduling\SchedulerDecision;
 use App\Domain\Scheduling\UpdateDurationEstimator;
@@ -11,9 +12,11 @@ use App\Enums\RunStatus;
 use App\Enums\RunStepKind;
 use App\Enums\RunStepStatus;
 use App\Enums\RunType;
+use App\Enums\RunType as Type;
 use App\Enums\ScheduledWindowStatus;
 use App\Enums\SiteBlockSource;
 use App\Enums\UpdateStrategy;
+use App\Jobs\ExecuteRun;
 use App\Models\AuditLogEntry;
 use App\Models\Run;
 use App\Models\RunStep;
@@ -22,6 +25,7 @@ use App\Models\Site;
 use App\Models\SiteSnapshot;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Redis;
 
 /*
  * The scheduler of ADR-0006 (UZEROWPUP-129) on a simulated clock. Runs are
@@ -31,6 +35,7 @@ use Illuminate\Support\Facades\Queue;
 
 beforeEach(function (): void {
     Queue::fake();
+    Redis::connection('locks')->command('flushdb');
     config([
         'wpup.updates.window.enforced' => true,
         'wpup.updates.window.minimum_minutes' => 15,
@@ -212,7 +217,7 @@ it('orders the queue: pending security, deferred from the previous window, longe
     $deferred = schedSite('y-deferred');
     schedHistory($deferred, 5, 1);
     ScheduledWindow::query()->create([
-        'site_id' => $deferred->id, 'opens_at' => CarbonImmutable::parse('2026-11-01 01:00', 'Europe/Madrid'),
+        'site_id' => $deferred->id, 'window_date' => '2026-11-01', 'opens_at' => CarbonImmutable::parse('2026-11-01 01:00', 'Europe/Madrid'),
         'closes_at' => CarbonImmutable::parse('2026-11-01 06:00', 'Europe/Madrid'), 'status' => ScheduledWindowStatus::Deferred,
     ]);
 
@@ -301,7 +306,7 @@ it('defers the sites still queued when their window closes', function (): void {
         ->and(ScheduledWindow::query()->where('status', ScheduledWindowStatus::Deferred->value)->sole()->reason)->toContain("s'ha tancat");
 });
 
-it('lets manual runs that may start go first and is not held back by one that waits for its window', function (): void {
+it('does not queue behind a manual run that may start, nor is held back by one that waits for its window', function (): void {
     $manual = schedSite('manual', ['maintenance_window' => ['days' => [1], 'start' => '10:00', 'end' => '13:00'], 'auto_update' => false]);
     $waiting = Run::factory()->create(['site_id' => $manual->id, 'type' => RunType::Update, 'actor' => 'oper1', 'channel' => AuditChannel::Cli]);
     schedSite('alfa');
@@ -378,4 +383,125 @@ it('writes nothing in a dry run', function (): void {
         ->and(Run::query()->count())->toBe(0);
     command('engine:schedule-updates', ['--dry-run' => true])->assertSuccessful();
     expect(Run::query()->count())->toBe(0);
+});
+
+it('waits while any run that takes the global slot is active or holds it, not only updates', function (): void {
+    schedSite('alfa');
+    $backup = Run::factory()->create(['site_id' => schedSite('other', ['auto_update' => false])->id, 'type' => Type::Backup, 'status' => RunStatus::Running]);
+
+    expect(schedActions(schedTick('2026-11-02 01:00'), SchedulerAction::Launched))->toBe([]);
+
+    $backup->forceFill(['status' => RunStatus::Succeeded, 'finished_at' => CarbonImmutable::now()])->save();
+    // Something still holds the global slot in Redis (a worker between steps).
+    Redis::connection('locks')->command('zadd', ['wpup:slots:global', microtime(true) + 60, 'token']);
+    $held = schedTick('2026-11-02 01:01');
+    expect(schedActions($held, SchedulerAction::Launched))->toBe([])
+        ->and(collect($held)->firstWhere('action', SchedulerAction::Waiting)?->reason)->toContain('plaça');
+
+    Redis::connection('locks')->command('del', ['wpup:slots:global']);
+    expect(schedActions(schedTick('2026-11-02 01:02'), SchedulerAction::Launched))->toBe(['alfa']);
+});
+
+it('passes over a site whose lock is held and queues the next one', function (): void {
+    $locked = schedSite('a-locked');
+    schedSite('b-free');
+    app(SiteLockManager::class)->acquire($locked, 'oper1');
+
+    $decisions = schedTick('2026-11-02 01:00');
+
+    expect(schedActions($decisions, SchedulerAction::Launched))->toBe(['b-free'])
+        ->and(ScheduledWindow::query()->where('site_id', $locked->id)->sole()->status)->toBe(ScheduledWindowStatus::Pending);
+});
+
+it('handles a site once per window even when its run starts after the window closed', function (): void {
+    schedSite('alfa');
+    schedTick('2026-11-02 01:00');
+    $run = Run::query()->sole();
+
+    // Next night: the run of the previous window has not even started.
+    expect(schedActions(schedTick('2026-11-03 01:00'), SchedulerAction::Enqueued))->toBe([])
+        ->and(ScheduledWindow::query()->count())->toBe(1);
+
+    $run->forceFill(['status' => RunStatus::Succeeded, 'started_at' => CarbonImmutable::now(), 'finished_at' => CarbonImmutable::now()])->save();
+    $decisions = schedTick('2026-11-03 01:30');
+    $first = ScheduledWindow::query()->where('window_date', '2026-11-02')->sole();
+
+    expect($first->status)->toBe(ScheduledWindowStatus::Succeeded)
+        ->and($first->run_id)->toBe($run->id)
+        ->and(schedActions($decisions, SchedulerAction::Settled))->toBe(['alfa'])
+        ->and(schedActions($decisions, SchedulerAction::Enqueued))->toBe(['alfa']);
+});
+
+it('keeps one window through the repeated hour when the clocks go back', function (): void {
+    // 2026-10-25, Sunday: 02:00–03:00 happens twice in Madrid.
+    schedSite('nit', ['maintenance_window' => ['days' => [7], 'start' => '02:30', 'end' => '04:00']]);
+    schedAt('2026-10-24 12:00');
+
+    // 02:30 CEST, 02:30 CET and 02:45 CET: the same window, queued once, no duplicate key.
+    $enqueued = [];
+    foreach (['2026-10-25 00:30', '2026-10-25 01:30', '2026-10-25 01:45'] as $utc) {
+        $now = CarbonImmutable::parse($utc, 'UTC');
+        CarbonImmutable::setTestNow($now);
+        array_push($enqueued, ...schedActions(app(UpdateScheduler::class)->tick($now), SchedulerAction::Enqueued));
+    }
+
+    $entry = ScheduledWindow::query()->sole();
+    expect($enqueued)->toBe(['nit'])
+        ->and($entry->window_date)->toBe('2026-10-25')
+        // 04:00 CET, after the change.
+        ->and($entry->closes_at->utc()->format('Y-m-d H:i'))->toBe('2026-10-25 03:00');
+});
+
+it('follows an edit of the window: a new end is applied, a window that no longer is open is cancelled, never a second one that day', function (): void {
+    $site = schedSite('alfa', ['maintenance_window' => ['days' => [1], 'start' => '01:00', 'end' => '03:00']]);
+    // Its lock is held: it stays queued, reviewed every tick.
+    $lease = app(SiteLockManager::class)->acquire($site, 'oper1');
+    schedTick('2026-11-02 01:00');
+
+    // The operator makes it longer: the queued window follows.
+    $site->forceFill(['maintenance_window' => ['days' => [1], 'start' => '00:30', 'end' => '05:00']])->save();
+    schedTick('2026-11-02 01:10');
+    $entry = ScheduledWindow::query()->sole();
+    expect($entry->closes_at->setTimezone('Europe/Madrid')->format('H:i'))->toBe('05:00')
+        ->and($entry->status)->toBe(ScheduledWindowStatus::Pending);
+
+    // Then moves it to the afternoon: tonight's queued window is cancelled, and today gets no other.
+    $site->forceFill(['maintenance_window' => ['days' => [1], 'start' => '15:00', 'end' => '18:00']])->save();
+    $cancelled = schedTick('2026-11-02 01:20');
+    app(SiteLockManager::class)->release($lease);
+    expect(schedActions($cancelled, SchedulerAction::Cancelled))->toBe(['alfa'])
+        ->and(schedActions(schedTick('2026-11-02 15:00'), SchedulerAction::Enqueued))->toBe([])
+        ->and(ScheduledWindow::query()->count())->toBe(1)
+        ->and(schedActions(schedTick('2026-11-09 15:00'), SchedulerAction::Launched))->toBe(['alfa']);
+});
+
+it('records the run and its window together, and one site that fails does not stop the others', function (): void {
+    $broken = schedSite('a-broken');
+    schedSite('b-fine');
+    Run::creating(static function (Run $run) use ($broken): void {
+        if ($run->site_id === $broken->id) {
+            throw new RuntimeException('database hiccup');
+        }
+    });
+
+    $decisions = schedTick('2026-11-02 01:00');
+
+    expect(schedActions($decisions, SchedulerAction::Launched))->toBe(['b-fine'])
+        ->and(Run::query()->where('site_id', $broken->id)->exists())->toBeFalse()
+        ->and(ScheduledWindow::query()->where('site_id', $broken->id)->sole()->status)->toBe(ScheduledWindowStatus::Pending)
+        ->and(ScheduledWindow::query()->where('site_id', $broken->id)->sole()->run_id)->toBeNull();
+    Queue::assertPushed(ExecuteRun::class, 1);
+});
+
+it('looks at a site\'s pending updates once per window', function (): void {
+    schedSite('a-first');
+    $second = schedSite('b-second');
+    schedTick('2026-11-02 01:00');
+    expect(ScheduledWindow::query()->where('site_id', $second->id)->sole()->details['outlook'] ?? null)->toBeArray()->toHaveKey('nothing_to_do', null);
+
+    // A fresh inventory with nothing to do arrives later: the window keeps the outlook it had.
+    schedSnapshot($second, []);
+    schedFinish('a-first');
+
+    expect(schedActions(schedTick('2026-11-02 01:10'), SchedulerAction::Launched))->toBe(['b-second']);
 });

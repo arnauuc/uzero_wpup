@@ -31,7 +31,7 @@ final class EngineScheduleUpdates extends Command implements ChangesState
     {
         $dryRun = $this->option('dry-run') === true;
         // withoutOverlapping() covers the scheduler; this covers a manual run beside it.
-        $lock = Cache::lock('wpup:scheduler:tick', 300);
+        $lock = Cache::lock('wpup:scheduler:tick', config()->integer('wpup.scheduler.tick_lock_seconds'));
         if (! $dryRun && ! $lock->get()) {
             $this->warn('Ja hi ha un altre torn del planificador en marxa.');
 

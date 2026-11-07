@@ -5,6 +5,10 @@ declare(strict_types=1);
 namespace App\Domain\Scheduling;
 
 use App\Domain\Audit\AuditActor;
+use App\Domain\Locks\LockLevel;
+use App\Domain\Locks\SiteLockManager;
+use App\Domain\Runs\Concurrency\ConcurrencyGate;
+use App\Domain\Runs\Concurrency\GlobalQueue;
 use App\Domain\Runs\Concurrency\MaintenanceWindowGate;
 use App\Domain\Runs\RunLauncher;
 use App\Enums\RunStatus;
@@ -16,8 +20,10 @@ use App\Models\Run;
 use App\Models\ScheduledWindow;
 use App\Models\Site;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
+use Throwable;
 
 /**
  * The continuous scheduler of ADR-0006 (UZEROWPUP-129), one tick a minute:
@@ -27,27 +33,37 @@ use InvalidArgumentException;
  * 2. Closes the queued windows that closed before their turn: deferred to the
  *    site's next window, with priority.
  * 3. Queues every active site with automatic updates whose window is open and
- *    that has no record for that occurrence of it yet (scheduled_windows: one
- *    per site and opening, so a site is handled once per window).
- * 4. Starts the next site, only when no update is running or waiting to start
- *    (one update at a time, ADR-0006 §2). Queued manual runs go first: they
- *    already wait in the global queue, and the scheduler never adds a second
- *    run behind them. An admin's --now skips the queue altogether.
- *    Order: a pending security update (known vulnerability or core x.y.z),
- *    then the sites deferred from their previous window, then the longest
- *    without a successful update, then by name. Sites with nothing applicable
- *    (UpdateOutlooks, offline) are skipped without spending any time; a site
- *    whose estimated duration (UpdateDurationEstimator) does not fit in what is
- *    left of its window waits for its next one, with priority.
+ *    that has no record for that window yet. A window is identified by the
+ *    site and the local date it opens on (scheduled_windows.window_date), so
+ *    editing the window or a change of the clocks never makes a second one;
+ *    and a site whose previous window is still open (its run started late) is
+ *    not queued again until that one is settled.
+ * 4. Queues the update of the next scheduled site, only when nothing holds or
+ *    waits for the single queue (no run that takes the global slot is active,
+ *    holds the slot or may start: GlobalQueue). Manual and scheduled runs then
+ *    share that queue in the order they were queued; only an admin's --now
+ *    goes ahead. Which scheduled site goes next: a pending security update
+ *    (known vulnerability or core x.y.z), then the sites deferred from their
+ *    previous window, then the longest without a successful update, then by
+ *    name. A site whose lock (or its hosting account's) is held waits for the
+ *    next tick. Sites with nothing applicable (UpdateOutlooks, offline, once
+ *    per window) are skipped without spending any time; a site whose estimated
+ *    duration (UpdateDurationEstimator) does not fit in what is left of its
+ *    window waits for its next one, with priority.
  *
  * The runs are queued as `sistema (scheduler)` with the site's strategy and
  * the version policy of ADR-0005: never --allow-major nor --skip-quarantine.
- * A dry run decides the same and writes nothing.
+ * The run and its window are recorded in one transaction; the run reaches the
+ * engine after the commit. A site that fails to be handled is logged and the
+ * tick goes on with the others. A dry run decides the same and writes nothing.
  */
 final readonly class UpdateScheduler
 {
     public function __construct(
         private MaintenanceWindowGate $windows,
+        private GlobalQueue $queue,
+        private ConcurrencyGate $slots,
+        private SiteLockManager $locks,
         private UpdateOutlooks $outlooks,
         private UpdateDurationEstimator $estimator,
         private RunLauncher $launcher,
@@ -115,39 +131,65 @@ final readonly class UpdateScheduler
         $queued = [];
         foreach ($this->eligibleSites() as $site) {
             try {
-                $window = $this->windows->windowOf($site);
-            } catch (InvalidArgumentException $e) {
-                Log::warning('A site with automatic updates has an invalid maintenance window.', ['site' => $site->name, 'error' => $e->getMessage()]);
+                $entry = $this->windowFor($site, $now);
+            } catch (Throwable $e) {
+                Log::error('The scheduler could not queue a site.', ['site' => $site->name, 'error' => $e->getMessage()]);
 
                 continue;
             }
-            $occurrence = $window->occurrence($now);
-            if ($occurrence === null) {
+            if ($entry === null) {
                 continue;
             }
-            [$opens, $closes] = $occurrence;
-            if (ScheduledWindow::query()->where('site_id', $site->id)->where('opens_at', self::bind($opens))->exists()) {
-                continue;
-            }
-
-            $previous = ScheduledWindow::query()->where('site_id', $site->id)->orderByDesc('opens_at')->first();
-            $entry = new ScheduledWindow([
-                'site_id' => $site->id,
-                'opens_at' => $opens,
-                'closes_at' => $closes,
-                'status' => ScheduledWindowStatus::Pending,
-                'priority' => $previous?->status === ScheduledWindowStatus::Deferred,
-                'details' => ['window' => $window->label()],
-            ]);
-            $entry->setRelation('site', $site);
             if (! $dryRun) {
                 $entry->save();
             }
             $queued[] = $entry;
-            $decisions[] = new SchedulerDecision(SchedulerAction::Enqueued, $site->name, $window->label().' fins a les '.$closes->format('H:i').($entry->priority ? ', amb prioritat' : ''));
+            $label = $entry->details['window'] ?? null;
+            $decisions[] = new SchedulerDecision(SchedulerAction::Enqueued, $site->name, (is_string($label) ? $label : '').' fins a les '
+                .$entry->closes_at->setTimezone($this->windows->timezone())->format('H:i').($entry->priority ? ', amb prioritat' : ''));
         }
 
         return $queued;
+    }
+
+    /**
+     * The new (unsaved) record of the site's open window; null when its window
+     * is closed or already has one, or its previous one is still open.
+     */
+    private function windowFor(Site $site, CarbonImmutable $now): ?ScheduledWindow
+    {
+        try {
+            $window = $this->windows->windowOf($site);
+        } catch (InvalidArgumentException $e) {
+            Log::warning('A site with automatic updates has an invalid maintenance window.', ['site' => $site->name, 'error' => $e->getMessage()]);
+
+            return null;
+        }
+        $occurrence = $window->occurrence($now);
+        if ($occurrence === null) {
+            return null;
+        }
+        [$opens, $closes] = $occurrence;
+        $date = $this->dateOf($opens);
+        $records = ScheduledWindow::query()->where('site_id', $site->id);
+        if ((clone $records)->where('window_date', $date)->exists()
+            || (clone $records)->whereIn('status', [ScheduledWindowStatus::Pending->value, ScheduledWindowStatus::Launched->value])->exists()) {
+            return null;
+        }
+
+        $previous = (clone $records)->orderByDesc('window_date')->first();
+        $entry = new ScheduledWindow([
+            'site_id' => $site->id,
+            'window_date' => $date,
+            'opens_at' => $opens->utc(),
+            'closes_at' => $closes->utc(),
+            'status' => ScheduledWindowStatus::Pending,
+            'priority' => $previous?->status === ScheduledWindowStatus::Deferred,
+            'details' => ['window' => $window->label()],
+        ]);
+        $entry->setRelation('site', $site);
+
+        return $entry;
     }
 
     /**
@@ -173,86 +215,178 @@ final readonly class UpdateScheduler
 
         $candidates = [];
         foreach ($pending as $entry) {
-            $site = $entry->site;
-            if ($site === null) {
-                continue;
-            }
-            $site->refresh();
-            if (! $site->active || ! $site->auto_update) {
-                $reason = ! $site->active ? 'El lloc està desactivat.' : "S'ha desactivat l'actualització automàtica del lloc.";
-                $this->close($entry, ScheduledWindowStatus::Cancelled, $reason, [], $dryRun);
-                $decisions[] = new SchedulerDecision(SchedulerAction::Cancelled, $site->name, $reason);
+            try {
+                $outlook = $this->review($entry, $now, $dryRun, $decisions);
+            } catch (Throwable $e) {
+                Log::error('The scheduler could not review a queued site.', ['site' => $entry->site?->name, 'error' => $e->getMessage()]);
 
                 continue;
             }
-            $skip = $this->notAutomatic($site);
-            $outlook = $skip === null ? $this->outlooks->of($site, $now) : null;
-            if ($skip === null && $outlook?->nothingToDo === true) {
-                $skip = 'Res a aplicar: '.$outlook->note;
+            if ($outlook !== null && $entry->site !== null) {
+                $candidates[] = ['entry' => $entry, 'site' => $entry->site, 'outlook' => $outlook];
             }
-            if ($skip !== null) {
-                $this->close($entry, ScheduledWindowStatus::Skipped, $skip, $outlook === null ? [] : ['outlook' => $outlook->toArray()], $dryRun);
-                $decisions[] = new SchedulerDecision(SchedulerAction::Skipped, $site->name, $skip);
-
-                continue;
-            }
-            $candidates[] = ['entry' => $entry, 'site' => $site, 'outlook' => $outlook ?? UpdateOutlook::unknown(), 'last' => $this->lastSuccess($site)];
         }
 
-        usort($candidates, static fn (array $a, array $b): int => [! $a['outlook']->security, ! $a['entry']->priority, $a['last'] ?? 0, $a['site']->name]
-            <=> [! $b['outlook']->security, ! $b['entry']->priority, $b['last'] ?? 0, $b['site']->name]);
+        $last = $this->lastSuccess(array_map(static fn (array $c): int => $c['site']->id, $candidates));
+        usort($candidates, static fn (array $a, array $b): int => [! $a['outlook']->security, ! $a['entry']->priority, $last[$a['site']->id] ?? 0, $a['site']->name]
+            <=> [! $b['outlook']->security, ! $b['entry']->priority, $last[$b['site']->id] ?? 0, $b['site']->name]);
 
         foreach ($candidates as ['entry' => $entry, 'site' => $site, 'outlook' => $outlook]) {
-            $estimate = $this->estimator->estimateSeconds($site, $site->strategy);
-            $needed = max($estimate, $this->minimumMinutes * 60);
-            $left = $entry->closes_at->getTimestamp() - $now->getTimestamp();
-            $details = ['estimate_seconds' => $estimate, 'outlook' => $outlook->toArray()];
-            if ($left < $needed) {
-                $reason = sprintf('No hi cap: cal uns %d min i en queden %d de la finestra.', intdiv($needed + 59, 60), intdiv(max(0, $left), 60));
-                $this->close($entry, ScheduledWindowStatus::Deferred, $reason, $details, $dryRun);
-                $decisions[] = new SchedulerDecision(SchedulerAction::Deferred, $site->name, $reason);
-
-                continue;
+            try {
+                if ($this->start($entry, $site, $outlook, $now, $dryRun, $decisions)) {
+                    return;
+                }
+            } catch (Throwable $e) {
+                Log::error('The scheduler could not start a site.', ['site' => $site->name, 'error' => $e->getMessage()]);
             }
-
-            $runId = null;
-            if (! $dryRun) {
-                [$run] = $this->launcher->launch(RunType::Update, [$site], AuditActor::system($this->actor), ['scheduled' => true, 'scheduled_window_id' => $entry->id], $site->strategy);
-                $runId = $run->id;
-                $entry->forceFill(['status' => ScheduledWindowStatus::Launched, 'run_id' => $runId, 'details' => [...$entry->details, ...$details]])->save();
-            }
-            $decisions[] = new SchedulerDecision(SchedulerAction::Launched, $site->name, sprintf('estimació: %d min%s', intdiv($estimate + 59, 60), $outlook->security ? '; actualització de seguretat pendent' : ''), $runId);
-
-            return;
         }
     }
 
     /**
-     * Why nothing may start now (an update is running, or one is waiting and may start); null when idle.
+     * Whether the queued window may still go: its outlook when it is a
+     * candidate; null when it was cancelled or skipped (recorded).
+     *
+     * @param  list<SchedulerDecision>  $decisions
      */
-    private function busy(CarbonImmutable $now): ?string
+    private function review(ScheduledWindow $entry, CarbonImmutable $now, bool $dryRun, array &$decisions): ?UpdateOutlook
     {
-        $active = Run::query()->where('type', RunType::Update->value)
-            ->whereIn('status', [RunStatus::Running->value, RunStatus::RollingBack->value, RunStatus::Interrupted->value])
-            ->orderBy('id')->value('id');
-        if (is_int($active)) {
-            return "L'actualització #{$active} està en curs.";
+        $site = $entry->site;
+        if ($site === null) {
+            return null;
+        }
+        $site->refresh();
+
+        $cancel = match (true) {
+            ! $site->active => 'El lloc està desactivat.',
+            ! $site->auto_update => "S'ha desactivat l'actualització automàtica del lloc.",
+            default => $this->windowChanged($entry, $site, $now, $dryRun),
+        };
+        if ($cancel !== null) {
+            $this->close($entry, ScheduledWindowStatus::Cancelled, $cancel, [], $dryRun);
+            $decisions[] = new SchedulerDecision(SchedulerAction::Cancelled, $site->name, $cancel);
+
+            return null;
         }
 
-        $queued = Run::query()->with('site')->where('type', RunType::Update->value)->where('status', RunStatus::Queued->value)->orderBy('id')->get();
-        foreach ($queued as $run) {
-            try {
-                $startable = ($run->flags['now'] ?? false) === true || $run->site === null || $this->windows->nextStart($run->site, $now) === null;
-            } catch (InvalidArgumentException) {
-                // Its engine fails it as soon as it picks it up.
-                $startable = true;
+        $skip = $this->notAutomatic($site);
+        $outlook = null;
+        if ($skip === null) {
+            $outlook = $this->outlookOf($entry, $site, $now, $dryRun);
+            if ($outlook->nothingToDo === true) {
+                $skip = 'Res a aplicar: '.$outlook->note;
             }
-            if ($startable) {
-                return "L'actualització #{$run->id} espera torn a la cua.";
+        }
+        if ($skip !== null) {
+            $this->close($entry, ScheduledWindowStatus::Skipped, $skip, [], $dryRun);
+            $decisions[] = new SchedulerDecision(SchedulerAction::Skipped, $site->name, $skip);
+
+            return null;
+        }
+
+        return $outlook;
+    }
+
+    /**
+     * Why the queued window no longer stands after an edit of the site's
+     * window (null when it does; a later closing is applied to it).
+     */
+    private function windowChanged(ScheduledWindow $entry, Site $site, CarbonImmutable $now, bool $dryRun): ?string
+    {
+        try {
+            $occurrence = $this->windows->windowOf($site)->occurrence($now);
+        } catch (InvalidArgumentException $e) {
+            return "La finestra del lloc ja no és vàlida: {$e->getMessage()}";
+        }
+        if ($occurrence === null || $this->dateOf($occurrence[0]) !== $entry->window_date) {
+            return "La finestra del lloc ha canviat i ja no és oberta: s'espera a la propera.";
+        }
+        if (! $occurrence[1]->equalTo($entry->closes_at)) {
+            $entry->forceFill(['opens_at' => $occurrence[0]->utc(), 'closes_at' => $occurrence[1]->utc()]);
+            if (! $dryRun) {
+                $entry->save();
             }
         }
 
         return null;
+    }
+
+    /**
+     * The site's outlook, computed once per window and kept with it.
+     */
+    private function outlookOf(ScheduledWindow $entry, Site $site, CarbonImmutable $now, bool $dryRun): UpdateOutlook
+    {
+        $stored = $entry->details['outlook'] ?? null;
+        if (is_array($stored)) {
+            return UpdateOutlook::fromArray($stored);
+        }
+        $outlook = $this->outlooks->of($site, $now);
+        $entry->forceFill(['details' => [...$entry->details, 'outlook' => $outlook->toArray()]]);
+        if (! $dryRun) {
+            $entry->save();
+        }
+
+        return $outlook;
+    }
+
+    /**
+     * Queues the site's update if it may start now and fits in its window.
+     * True when it did (the tick is over).
+     *
+     * @param  list<SchedulerDecision>  $decisions
+     */
+    private function start(ScheduledWindow $entry, Site $site, UpdateOutlook $outlook, CarbonImmutable $now, bool $dryRun, array &$decisions): bool
+    {
+        // It could not start now: another one may.
+        if ($this->locks->holder(LockLevel::Site, $site->id) !== null || $this->locks->holder(LockLevel::HostingAccount, $site->hosting_account_id) !== null) {
+            $decisions[] = new SchedulerDecision(SchedulerAction::Waiting, $site->name, 'El lloc o el seu compte d\'hosting estan ocupats.');
+
+            return false;
+        }
+
+        $estimate = $this->estimator->estimateSeconds($site, $site->strategy);
+        $needed = max($estimate, $this->minimumMinutes * 60);
+        $left = $entry->closes_at->getTimestamp() - $now->getTimestamp();
+        if ($left < $needed) {
+            $reason = sprintf('No hi cap: cal uns %d min i en queden %d de la finestra.', intdiv($needed + 59, 60), intdiv(max(0, $left), 60));
+            $this->close($entry, ScheduledWindowStatus::Deferred, $reason, ['estimate_seconds' => $estimate], $dryRun);
+            $decisions[] = new SchedulerDecision(SchedulerAction::Deferred, $site->name, $reason);
+
+            return false;
+        }
+
+        $run = null;
+        if (! $dryRun) {
+            // The run and its window together, or neither; the engine sees the run after the commit.
+            $run = DB::transaction(function () use ($entry, $site, $estimate): Run {
+                $run = $this->launcher->prepare(RunType::Update, $site, AuditActor::system($this->actor), ['scheduled' => true, 'scheduled_window_id' => $entry->id], $site->strategy);
+                $entry->forceFill(['status' => ScheduledWindowStatus::Launched, 'run_id' => $run->id, 'details' => [...$entry->details, 'estimate_seconds' => $estimate]])->save();
+
+                return $run;
+            });
+            $this->launcher->dispatch($run);
+        }
+        $decisions[] = new SchedulerDecision(SchedulerAction::Launched, $site->name, sprintf('estimació: %d min%s', intdiv($estimate + 59, 60), $outlook->security ? '; actualització de seguretat pendent' : ''), $run?->id);
+
+        return true;
+    }
+
+    /**
+     * Why nothing may be queued now (a run holds or waits for the single queue); null when idle.
+     */
+    private function busy(CarbonImmutable $now): ?string
+    {
+        $active = Run::query()->whereIn('type', GlobalQueue::slotTypes())
+            ->whereIn('status', [RunStatus::Running->value, RunStatus::RollingBack->value, RunStatus::Interrupted->value])
+            ->orderBy('id')->value('id');
+        if (is_int($active)) {
+            return "L'execució #{$active} està en curs.";
+        }
+        if ($this->slots->occupied('global')) {
+            return 'Una execució té la plaça de la cua global.';
+        }
+        $head = $this->queue->head($now);
+
+        return $head === null ? null : "L'execució #{$head->id} espera torn a la cua.";
     }
 
     /**
@@ -271,14 +405,27 @@ final readonly class UpdateScheduler
     }
 
     /**
-     * Unix time of the site's last successful update run; null when it never had one.
+     * Unix time of each site's last successful update run (absent: never), in one query.
+     *
+     * @param  list<int>  $siteIds
+     * @return array<int, int>
      */
-    private function lastSuccess(Site $site): ?int
+    private function lastSuccess(array $siteIds): array
     {
-        $last = Run::query()->where('site_id', $site->id)->where('type', RunType::Update->value)
-            ->where('status', RunStatus::Succeeded->value)->max('finished_at');
+        if ($siteIds === []) {
+            return [];
+        }
+        $last = [];
+        $rows = Run::query()->toBase()->whereIn('site_id', $siteIds)->where('type', RunType::Update->value)
+            ->where('status', RunStatus::Succeeded->value)->groupBy('site_id')
+            ->selectRaw('site_id, MAX(finished_at) AS last')->get();
+        foreach ($rows as $row) {
+            if (is_numeric($row->site_id ?? null) && is_string($row->last ?? null)) {
+                $last[(int) $row->site_id] = CarbonImmutable::parse($row->last)->getTimestamp();
+            }
+        }
 
-        return is_string($last) ? CarbonImmutable::parse($last)->getTimestamp() : null;
+        return $last;
     }
 
     /**
@@ -301,10 +448,18 @@ final readonly class UpdateScheduler
     }
 
     /**
-     * A timestamptz query binding with its offset: never read in the session's time zone.
+     * The local date a window occurrence opens on: its identity.
+     */
+    private function dateOf(CarbonImmutable $opens): string
+    {
+        return $opens->setTimezone($this->windows->timezone())->format('Y-m-d');
+    }
+
+    /**
+     * A timestamptz query binding in UTC with its offset: never read in the session's time zone.
      */
     private static function bind(CarbonImmutable $moment): string
     {
-        return $moment->format('Y-m-d H:i:sP');
+        return $moment->utc()->format('Y-m-d H:i:sP');
     }
 }

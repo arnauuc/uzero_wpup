@@ -310,7 +310,10 @@ return [
      * Scheduled updates (ADR-0006, UZEROWPUP-129). `engine:schedule-updates` runs
      * every minute: it queues the sites with automatic updates whose window is
      * open and that were not handled in that occurrence of it, and starts them one
-     * at a time, as `actor` (never with --allow-major or --skip-quarantine).
+     * at a time, as `actor` (never with --allow-major or --skip-quarantine). Manual and
+     * scheduled runs share one queue in the order they were queued (GlobalQueue); only
+     * an admin's --now goes ahead. Among the scheduled sites, which one is queued next
+     * follows ADR-0006 §3 (security, deferred, longest without updating, name).
      * - estimate: a site's duration is the median of its last `history_runs`
      *   update runs that went past the plan, with the same strategy; without any,
      *   `default_minutes` of its strategy. A site starts only if that fits in
@@ -325,6 +328,12 @@ return [
      */
     'scheduler' => [
         'actor' => 'sistema (scheduler)',
+        // A tick holds this lock so a manual tick never overlaps the scheduler's.
+        'tick_lock_seconds' => 300,
+        // A run queued longer than this (a lost job) no longer holds the single queue.
+        'queue' => [
+            'stale_queued_hours' => 24,
+        ],
         'estimate' => [
             'history_runs' => 5,
             'default_minutes' => ['in_place' => 10, 'staging_first' => 30],

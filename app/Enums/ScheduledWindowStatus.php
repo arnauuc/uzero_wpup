@@ -26,11 +26,6 @@ enum ScheduledWindowStatus: string
     /** The site stopped being eligible (automatic updates off, deactivated, blocked) or the run was cancelled. */
     case Cancelled = 'cancelled';
 
-    public function isOpen(): bool
-    {
-        return $this === self::Pending || $this === self::Launched;
-    }
-
     /**
      * Catalan text for the operator.
      */

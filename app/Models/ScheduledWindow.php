@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  *
  * @property int $id
  * @property int $site_id
+ * @property string $window_date Y-m-d, local date the occurrence opens on
  * @property CarbonImmutable $opens_at
  * @property CarbonImmutable $closes_at
  * @property ScheduledWindowStatus $status
@@ -29,6 +30,9 @@ class ScheduledWindow extends Model
 {
     /** @var list<string> */
     protected $guarded = [];
+
+    /** With the offset: never read in the session's time zone, unambiguous across a DST change. */
+    protected $dateFormat = 'Y-m-d H:i:sP';
 
     /** @var array<string, mixed> */
     protected $attributes = ['details' => '{}', 'priority' => false, 'status' => 'pending'];

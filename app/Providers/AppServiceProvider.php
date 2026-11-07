@@ -86,6 +86,7 @@ use App\Domain\Rollback\RollbackMaintenanceRestoreStep;
 use App\Domain\Rollback\RollbackSteps;
 use App\Domain\Rollback\UntouchedFailureMaintenance;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
+use App\Domain\Runs\Concurrency\GlobalQueue;
 use App\Domain\Runs\Concurrency\MaintenanceWindowGate;
 use App\Domain\Runs\OnFailure;
 use App\Domain\Runs\Pipeline;
@@ -227,8 +228,15 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.scheduler.outlook.snapshot_max_age_hours'),
             self::configInt('wpup.planning.verified_php_max_age_seconds'),
         ));
+        $this->app->bind(GlobalQueue::class, static fn (Application $app): GlobalQueue => new GlobalQueue(
+            $app->make(MaintenanceWindowGate::class),
+            self::configInt('wpup.scheduler.queue.stale_queued_hours'),
+        ));
         $this->app->bind(UpdateScheduler::class, static fn (Application $app): UpdateScheduler => new UpdateScheduler(
             $app->make(MaintenanceWindowGate::class),
+            $app->make(GlobalQueue::class),
+            $app->make(ConcurrencyGate::class),
+            $app->make(SiteLockManager::class),
             $app->make(UpdateOutlooks::class),
             $app->make(UpdateDurationEstimator::class),
             $app->make(RunLauncher::class),

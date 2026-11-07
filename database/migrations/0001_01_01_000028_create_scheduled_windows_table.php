@@ -10,8 +10,10 @@ use Illuminate\Support\Facades\Schema;
 
 /*
  * The scheduler's record of each maintenance window occurrence of a site
- * (ADR-0006, UZEROWPUP-129): one row per site and opening, so a site is
- * handled once per window (never retried in the same one), what it ended in
+ * (ADR-0006, UZEROWPUP-129): one row per site and window day (the local date
+ * the occurrence opens on; a site has at most one window a day), so a site is
+ * handled once per window even if its window is edited meanwhile or the clocks
+ * change (never retried in the same one), what it ended in
  * (updated, failed, skipped with its reason, deferred to the next window with
  * priority) and the daily summary's source.
  */
@@ -23,6 +25,9 @@ return new class extends Migration
             $table->id();
             // Sites are deactivated, never deleted: history must not cascade.
             $table->foreignId('site_id')->constrained()->restrictOnDelete();
+            // Local date (app.timezone) the occurrence opens on: the identity of the window.
+            $table->date('window_date');
+            // Instants, written in UTC with their offset (ScheduledWindow::$dateFormat).
             $table->timestampTz('opens_at');
             $table->timestampTz('closes_at');
             $table->text('status')->default(ScheduledWindowStatus::Pending->value);
@@ -34,7 +39,7 @@ return new class extends Migration
             $table->jsonb('details')->default('{}');
             $table->timestampsTz();
 
-            $table->unique(['site_id', 'opens_at']);
+            $table->unique(['site_id', 'window_date']);
             $table->index('status');
             $table->index('updated_at');
         });

@@ -31,6 +31,23 @@ final readonly class UpdateOutlook
     }
 
     /**
+     * @param  array<mixed>  $data  as written by toArray()
+     */
+    public static function fromArray(array $data): self
+    {
+        $nothing = $data['nothing_to_do'] ?? null;
+        $majors = $data['majors'] ?? null;
+        $note = $data['note'] ?? null;
+
+        return new self(
+            is_bool($nothing) ? $nothing : null,
+            ($data['security'] ?? false) === true,
+            is_array($majors) ? array_values(array_filter($majors, is_string(...))) : [],
+            is_string($note) ? $note : null,
+        );
+    }
+
+    /**
      * @return array{nothing_to_do: ?bool, security: bool, majors: list<string>, note: ?string}
      */
     public function toArray(): array
