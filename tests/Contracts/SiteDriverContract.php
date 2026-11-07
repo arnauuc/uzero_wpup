@@ -528,9 +528,10 @@ final class SiteDriverContract
     }
 
     /**
-     * Builds a minimal, harmless plugin zip at the given version.
+     * Builds a minimal, harmless plugin zip at the given version, with $code
+     * after its header (the update tests give a version that breaks the site).
      */
-    public static function contractPluginZip(string $version): string
+    public static function contractPluginZip(string $version, string $code = ''): string
     {
         $path = sys_get_temp_dir().'/wpup-contract-plugin-'.bin2hex(random_bytes(4)).'.zip';
         $zip = new ZipArchive;
@@ -542,6 +543,7 @@ final class SiteDriverContract
              * Version: {$version}
              * Description: Test-only plugin installed by the SiteDriver contract suite.
              */
+            {$code}
             PHP);
         $zip->close();
 
