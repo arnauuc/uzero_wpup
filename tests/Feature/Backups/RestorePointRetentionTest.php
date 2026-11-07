@@ -180,6 +180,19 @@ it('holds the point of a reverted or failed run until it is reviewed, even if it
     expect(retentionPurges())->toBe([$point => 'expired']);
 })->with([RunStatus::RolledBack, RunStatus::Failed]);
 
+it('holds the point of a succeeded update a rollback undid (runs.reverted_at) until it is reviewed', function (): void {
+    $site = RetentionFixture::site();
+    $run = RetentionFixture::run($site, RunStatus::Succeeded, ['reverted_at' => now()]);
+    $point = RetentionFixture::point($site, $run, 9);
+
+    expect(retentionPurges())->toBe([])
+        ->and(retentionHolds())->toBe([$point => RetentionHold::IncidentNotReviewed->value]);
+
+    $run->update(['reviewed_at' => now()]);
+
+    expect(retentionPurges())->toBe([$point => 'expired']);
+});
+
 it('never purges the point of a run an unfinished run was launched from', function (): void {
     $site = RetentionFixture::site();
     $update = RetentionFixture::run($site);

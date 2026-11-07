@@ -24,10 +24,11 @@ trait LaunchesRuns
      * @param  array<string, mixed>  $flags
      * @param  (Closure(list<Run>): ?int)|null  $present  prints the final runs instead of the default run table / JSON;
      *                                                    it may return an exit code (e.g. 1 for a run without a usable result), used when the runs themselves gave 0
+     * @param  Run|null  $parent  the run they are launched from (runs.parent_run_id)
      */
-    protected function launchRuns(RunType $type, array $sites, array $flags = [], ?UpdateStrategy $strategy = null, ?Closure $present = null): int
+    protected function launchRuns(RunType $type, array $sites, array $flags = [], ?UpdateStrategy $strategy = null, ?Closure $present = null, ?Run $parent = null): int
     {
-        $runs = app(RunLauncher::class)->launch($type, $sites, $this->actor(), $flags, $strategy);
+        $runs = app(RunLauncher::class)->launch($type, $sites, $this->actor(), $flags, $strategy, $parent);
         $follow = $this->option('follow') === true;
 
         if (! $follow && $this->option('wait') !== true) {

@@ -46,6 +46,9 @@ use Throwable;
  *   with deletion, so components the update removed come back and those it
  *   added go, and nothing the archive excluded (uploads unless the profile
  *   included them, caches, the work directory) is touched.
+ * - Right before the mirror the update is marked as being undone
+ *   (RevertedChanges::started): the retention holds its point until it is
+ *   reviewed, whatever the rollback ends as (UZEROWPUP-61).
  * - A failure during the mirror may leave the site half restored: the step
  *   fails saying so, never "nothing restored".
  * - Afterwards the components the update touched must be back at their
@@ -135,6 +138,7 @@ final readonly class FilesRollbackStep implements Step
                 $warnings[] = "No s'ha pogut saber si el mode manteniment era actiu: s'activarà després de restaurar els fitxers. Revisa'l a mà.";
             }
             $this->restore->purgeTemporaries($driver);
+            $this->changes->started($source);
             $row = $this->mirror($site, $driver, $candidates, $actor, $audit, $warnings);
 
             try {

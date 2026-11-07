@@ -180,7 +180,7 @@ Totes tres queden a l'auditoria: `--allow-major` i `--skip-quarantine` com a `pl
 
 Un punt de restauració d'una actualització correcta es conserva 7 dies, i cada lloc en té com a màxim 2 (`backups.retention_days` i `backups.max_per_site` a `config/wpup.php`). Fer-ne un de tercer esborra el més antic que no estigui retingut. La mateixa retenció s'aplica a la còpia externa.
 
-Mai no s'esborra, sigui quina sigui l'edat: un punt protegit manualment (`backups.protected`); el d'una execució que no ha acabat; el d'una execució revertida o fallida que encara no s'ha revisat; el d'una execució de la qual depèn una execució en curs (p. ex. un rollback); el que fa servir una restauració encara no acabada (`backup:restore`, des que s'encua); el més recent verificat d'un lloc amb una execució en curs; ni cap punt d'un lloc que té agafat el bloqueig, el seu o el del seu compte d'hosting. La retenció ho llegeix de l'estat de l'execució: no cal marcar res.
+Mai no s'esborra, sigui quina sigui l'edat: un punt protegit manualment (`backups.protected`); el d'una execució que no ha acabat; el d'una execució revertida o fallida que encara no s'ha revisat (també una actualització correcta que s'ha desfet a mà amb `wpup rollback`, encara que s'hagués revisat abans); el d'una execució de la qual depèn una execució en curs (p. ex. un rollback); el que fa servir una restauració encara no acabada (`backup:restore`, des que s'encua); el més recent verificat d'un lloc amb una execució en curs; ni cap punt d'un lloc que té agafat el bloqueig, el seu o el del seu compte d'hosting. La retenció ho llegeix de l'estat de l'execució: no cal marcar res.
 
 | Comanda | Què fa |
 | --- | --- |
@@ -247,6 +247,27 @@ Per restaurar-la igualment, sabent que es perdran aquestes comandes i usuaris, e
 sudo -u wpup wpup backup:restore botiga --point=run12 --db --accept-data-loss --dry-run
 sudo -u wpup wpup backup:restore botiga --point=run12 --db --accept-data-loss
 ```
+
+## `rollback`
+
+Desfà a mà una actualització anterior (UZEROWPUP-61), amb les mateixes regles que el rollback automàtic.
+
+```bash
+sudo -u wpup wpup rollback 12 --dry-run --wait
+sudo -u wpup wpup rollback 12 --follow
+```
+
+- **Què es pot desfer:** una execució de tipus `update` acabada que va aplicar algun canvi i que no s'ha revertit (ni ella mateixa ni amb un altre `rollback`). Es refusa abans d'encuar, amb el motiu, si després hi ha una altra actualització del mateix lloc que no s'ha revertit (cal desfer primer la més recent), si ja n'hi ha un rollback en curs, o si el punt de restauració de l'actualització no té una còpia dels fitxers i una de la base de dades vives, verificades i sense caducar (ADR-0009: 7 dies). Cada refús queda a l'auditoria (`rollback.refused`).
+- **Execució** de tipus `rollback`, enllaçada a l'actualització (`parent_run_id`) i amb el bloqueig del lloc:
+  1. Inventari nou, de només lectura i orientatiu (un lloc trencat també s'ha de poder desfer).
+  2. Comprovació, abans d'escriure res, que l'actualització encara es pot desfer i del SHA-256 de les còpies del punt a la seva destinació (calculat dels bytes que hi ha). Si cap còpia d'un tipus no la supera, no es toca el lloc.
+  3. Mode manteniment (si no ho estava), sigui quin sigui el perfil.
+  4. Punt de restauració verificat de l'estat actual (regla de seguretat 3), que conserva les comandes noves. Si no es pot fer, no es desfà res.
+  5. Els fitxers de codi del punt de l'actualització i la comprovació de versions; els canvis queden com a revertits.
+  6. La base de dades **només** si no s'ha escrit res a les comandes ni als usuaris des de la còpia (vegeu la secció anterior). Si n'hi ha, es restauren només els fitxers, el pas acaba com a «BD no restaurada» i la comanda en mostra l'avís amb les comandes afectades i com forçar-ho amb `backup:restore`.
+  7. El mode manteniment com estava abans. Si el rollback falla a mitges, el lloc es queda en mode manteniment per a un operador.
+- **Confirmació:** cal escriure el nom del lloc, o `--force` (scripts). Sense terminal interactiu, o amb `--json`, cal `--force` o `--dry-run`. No hi ha pèrdua de dades possible (la base de dades mai es força), per això `--force` n'hi ha prou. Amb `--dry-run` només fa l'inventari i la comprovació. L'encuament queda a l'auditoria (`rollback.queued`, amb com s'ha confirmat).
+- **Retenció:** en començar a restaurar els fitxers, l'actualització queda marcada com a revertida (`runs.reverted_at`) i el seu punt de restauració es reté fins que es revisa (`run:ack`), com el d'una execució revertida.
 
 És la mateixa restauració de sempre, amb totes les proteccions: cal escriure el nom del lloc en un terminal interactiu (`--force` no ho salta), abans es fa un punt verificat de l'estat actual (amb les comandes noves, per poder-les recuperar), l'execució torna a comprovar i llistar les escriptures noves, i queda a l'auditoria (`backup.restore`). Una restauració manual demana sempre aquesta confirmació en una botiga, també quan no hi ha escriptures noves. El punt d'una execució revertida no caduca mentre no s'ha revisat (`run:ack`).
 

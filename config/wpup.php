@@ -455,6 +455,10 @@ return [
         // The database of the run's point, put back only when nothing was written to
         // the orders or users since the copy (UZEROWPUP-59).
         'database_timeout_seconds' => 3600,
+        // `wpup rollback <run>` (UZEROWPUP-61): the check of the point's copies at their
+        // destination (SHA-256 of their bytes, also external ones) and the maintenance steps.
+        'check_timeout_seconds' => 1800,
+        'maintenance_timeout_seconds' => 120,
     ],
 
     /*

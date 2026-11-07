@@ -69,11 +69,13 @@ final readonly class RestorePointRetention
      * is held until an operator reviews the run (`run:ack`). Read from the run
      * itself (status and reviewed_at), conservatively: any run that ended
      * rolled back or failed (it may have changed the site before failing, or
-     * its rollback may have failed).
+     * its rollback may have failed), and any update a rollback started to
+     * undo (runs.reverted_at), also one that had succeeded and was rolled
+     * back by hand (`wpup rollback <run>`, UZEROWPUP-61).
      */
     public static function isIncident(Run $run): bool
     {
-        return in_array($run->status, [RunStatus::RolledBack, RunStatus::Failed], true);
+        return in_array($run->status, [RunStatus::RolledBack, RunStatus::Failed], true) || $run->reverted_at !== null;
     }
 
     /**
@@ -297,7 +299,7 @@ final readonly class RestorePointRetention
             ->get();
 
         $localTargetIds = array_values(BackupTargetRecord::query()->where('type', BackupTargetType::SiteLocal)->get(['id'])->map(static fn (BackupTargetRecord $r): int => $r->id)->all());
-        $runs = Run::query()->whereIn('id', $rows->pluck('run_id')->filter()->unique()->values())->get(['id', 'status', 'reviewed_at'])->keyBy('id');
+        $runs = Run::query()->whereIn('id', $rows->pluck('run_id')->filter()->unique()->values())->get(['id', 'status', 'reviewed_at', 'reverted_at'])->keyBy('id');
         $unfinished = Run::query()
             ->whereNotIn('status', array_map(static fn (RunStatus $s): string => $s->value, array_filter(RunStatus::cases(), static fn (RunStatus $s): bool => $s->isTerminal())))
             ->whereIn('site_id', $rows->pluck('site_id')->unique()->values())
