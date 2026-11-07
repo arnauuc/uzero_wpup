@@ -8,7 +8,7 @@
 set -euo pipefail
 
 root="$(dirname "$(readlink -f "$0")")"
-allowed='^(list|help|site:.*|user:add|user:list|user:role|user:deactivate|lock:.*|backup:.*|backup-target:.*|agent:.*|client:.*|billing:.*|ssh-key:.*|secrets:.*|staging:.*|run:.*|tool:backup|inventory|plan|backup|update|verify|rollback|runs|report|cleanup|doctor|stats)$'
+allowed='^(list|help|site:.*|user:add|user:list|user:role|user:deactivate|lock:.*|backup:.*|backup-target:.*|agent:.*|client:.*|billing:.*|ssh-key:.*|secrets:.*|staging:.*|run:.*|tool:backup|inventory|plan|backup|update|verify|rollback|runs|summary|report|cleanup|doctor|stats)$'
 
 for arg in "$@"; do
     case "$arg" in

@@ -11,7 +11,8 @@ use App\Models\Run;
 
 /**
  * Latest runs, newest first. A run that was interrupted says so, with the
- * step and the decision of each interruption (UZEROWPUP-62).
+ * step and the decision of each interruption (UZEROWPUP-62), and so do the
+ * warnings added to it (result_summary.warnings, UZEROWPUP-129).
  */
 final class RunsCommand extends WpupCommand
 {
@@ -55,6 +56,7 @@ final class RunsCommand extends WpupCommand
                 'queued_at' => $run->queued_at->toIso8601String(),
                 'finished_at' => $run->finished_at?->toIso8601String(),
                 'interruptions' => array_map(static fn (RunInterruption $i): array => $i->toArray(), RunInterruption::of($run)),
+                'warnings' => self::warnings($run),
             ])->all()]);
 
             return self::SUCCESS;
@@ -79,7 +81,24 @@ final class RunsCommand extends WpupCommand
                 $this->warn("#{$id}: {$interruption->describe()}");
             }
         }
+        foreach ($runs as $run) {
+            foreach (self::warnings($run) as $warning) {
+                $this->warn("#{$run->id}: {$warning}");
+            }
+        }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Warnings added to a finished run (the scheduler's block after failed windows, UZEROWPUP-129).
+     *
+     * @return list<string>
+     */
+    private static function warnings(Run $run): array
+    {
+        $warnings = $run->result_summary['warnings'] ?? null;
+
+        return is_array($warnings) ? array_values(array_filter($warnings, is_string(...))) : [];
     }
 }

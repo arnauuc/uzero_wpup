@@ -102,7 +102,7 @@ return [
             'list', 'help',
             'site:', 'user:add', 'user:list', 'user:role', 'user:deactivate',
             'lock:', 'backup:', 'backup-target:', 'agent:', 'client:', 'billing:', 'ssh-key:', 'secrets:', 'staging:', 'run:', 'tool:backup',
-            'inventory', 'plan', 'backup', 'update', 'verify', 'rollback', 'runs', 'report', 'cleanup', 'doctor', 'stats',
+            'inventory', 'plan', 'backup', 'update', 'verify', 'rollback', 'runs', 'summary', 'report', 'cleanup', 'doctor', 'stats',
         ],
     ],
 
@@ -340,6 +340,25 @@ return [
         ],
         'outlook' => [
             'snapshot_max_age_hours' => 24,
+        ],
+        // After this many consecutive failed windows (succeeded ones reset the count) the
+        // site is blocked for automatic updates until an operator turns them on again.
+        'failures' => [
+            'block_after' => 2,
+        ],
+        // Free space (on `disk_path`, the tool's storage) and available memory of the tool's
+        // server checked before each site: below either, nothing starts and the operators are
+        // warned (logged and audited at most every warn_every_minutes).
+        'resources' => [
+            'disk_path' => env('WPUP_SCHEDULER_DISK_PATH', storage_path()),
+            'min_free_disk_mb' => (int) env('WPUP_SCHEDULER_MIN_FREE_DISK_MB', 10240),
+            'min_free_memory_mb' => (int) env('WPUP_SCHEDULER_MIN_FREE_MEMORY_MB', 2048),
+            'warn_every_minutes' => 60,
+        ],
+        // The daily summary of the last `hours` (engine:daily-summary; `wpup summary` on demand).
+        'daily_summary' => [
+            'time' => '07:00',
+            'hours' => 24,
         ],
     ],
 
