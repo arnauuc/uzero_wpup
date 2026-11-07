@@ -75,6 +75,16 @@ final readonly class Pipeline
         return in_array($name, $this->growsAfter, true);
     }
 
+    public function has(string $name): bool
+    {
+        return isset($this->byName[$name]);
+    }
+
+    public function hasRecovery(string $name): bool
+    {
+        return isset($this->recoveryByName[$name]);
+    }
+
     /**
      * @throws UnknownStep
      */

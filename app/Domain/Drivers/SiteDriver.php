@@ -224,7 +224,10 @@ interface SiteDriver
 
     /**
      * Mirrors an archive made by archiveFiles() onto the WordPress root, never
-     * touching what it excluded. $archive->path is a WorkPath, checked like
+     * touching what it excluded. Nor `.maintenance` in the root: it is neither
+     * deleted nor restored from the archive, so the maintenance mode is the
+     * same after the mirror (and during it, when the tool dies halfway) as
+     * before (UZEROWPUP-62). $archive->path is a WorkPath, checked like
      * restoreDatabase()'s.
      *
      * @throws DriverException including IntegrityCheckFailed on a mismatch

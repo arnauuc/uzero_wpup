@@ -28,7 +28,7 @@ Pipeline de l'actualització in-place (`InPlaceUpdatePipeline`). «Política» �
 | `smoke:php-log-baseline` | atura | Es repeteix (només llegeix; encara no s'ha actualitzat res). | — |
 | `restore-point-gate` | atura | Es repeteix (només llegeix la BD de l'eina). Cap actualització sense punt verificat (regla 3). | — |
 | `maintenance-on` | atura | Es repeteix: l'estat d'abans es desa a `runs.flags` **abans** d'activar res, així que la repetició sap quin era. Si s'esgoten els intents, l'execució falla i el lloc pot quedar en manteniment (tancat, l'estat segur): cal revisar-lo. | — |
-| `update:<tipus>:<slug>` | recupera | Es repeteix llegint primer la versió instal·lada: la del pla ⇒ s'instal·la (els paquets que hagi deixat l'intent mort s'esborren abans de pujar el nou); la nova **i** aquesta execució n'havia registrat la instal·lació acabada ⇒ no es toca; la nova **sense** aquest registre ⇒ **falla ⇒ rollback** (la capçalera pot ser nova i la resta de fitxers no: no es pot saber si el component és sencer); qualsevol altra ⇒ falla ⇒ rollback. | — |
+| `update:<tipus>:<slug>` | recupera | Es repeteix llegint primer la versió instal·lada: la del pla ⇒ s'instal·la (els paquets que hagi deixat l'intent mort s'esborren abans de pujar el nou); la nova **i** aquesta execució n'havia registrat la instal·lació acabada ⇒ no es toca; la nova **sense** aquest registre ⇒ **falla ⇒ rollback** (la capçalera pot ser nova i la resta de fitxers no: no es pot saber si el component és sencer); qualsevol altra ⇒ falla ⇒ rollback. En un primer intent (sense cap interrupció), trobar-hi la versió nova vol dir que s'ha actualitzat fora de l'eina des del pla: no es toca. | — |
 | `post-update` | recupera | Es repeteix: cada ordre (`core update-db`, `wc update`, memòries cau) no fa res si ja està feta. | — |
 | `maintenance-off` | recupera | Es repeteix (idempotent; només toca el que aquesta execució ha activat). | — |
 | `smoke:check` | recupera | Es repeteix contra la mateixa línia base del log: torna a comprovar la portada i els fatals nous. | — |
@@ -38,8 +38,8 @@ Branca de rollback (passos `recovery`, en ordre), quan falla un pas de l'interva
 
 | Pas | Si el worker mor durant el pas |
 | --- | --- |
-| `rollback-maintenance-on` | Es repeteix (idempotent). Marca a l'execució que el rollback vol el lloc tancat (`flags.maintenance_rollback`). |
-| `rollback-files` | Es repeteix el mirall amb el mateix arxiu i es tornen a comprovar les versions. El mirall esborra `.maintenance`: si l'intent mort l'ha esborrat i el rollback el volia actiu, **es torna a activar abans del mirall**, de manera que la botiga continua tancada. |
+| `rollback-maintenance-on` | Es repeteix (idempotent). |
+| `rollback-files` | Es repeteix el mirall amb el mateix arxiu i es tornen a comprovar les versions. El mirall **no toca mai `.maintenance`** (ni l'esborra ni en restaura un de l'arxiu, `SiteDriver::restoreFiles()`), de manera que la botiga continua tancada també quan el worker mor a mig mirall. En acabar es torna a escriure, perquè WordPress ignora un `.maintenance` de més de 10 minuts. |
 | `rollback-database` | Es continua amb **la mateixa còpia**: la decisió («cap escriptura nova, importació de la còpia X començada») es desa a la fila del pas abans d'importar, i no es torna a comprovar contra una BD a mig importar. Si hi havia comandes o usuaris nous, no es restaura (regla 4). |
 | `maintenance-restore` | Es repeteix (idempotent): deixa el mode com estava abans de l'execució. |
 
@@ -57,7 +57,7 @@ Si un pas de la branca falla (també per massa interrupcions), la branca s'atura
 | La finestra de manteniment s'ha tancat | Es reprèn igualment. |
 | El termini de l'execució ha passat mentre no hi havia worker | El pas següent d'endavant falla ⇒ la seva política (rollback si ja s'ha tocat el lloc). |
 | El worker perd el claim o el lock a mig pas (Redis caigut, worker bloquejat més que el TTL) | El worker s'atura de seguida sense tocar l'execució; el vigilant la marca interrompuda i es reprèn com si hagués mort. |
-| Desplegament que canvia els passos entre la caiguda i la represa | Endavant: si els passos registrats ja no coincideixen amb els nous, falla el pas següent ⇒ la seva política. Si no es pot ni reconstruir l'execució, falla amb el punt de restauració guardat. Durant el rollback: un pas registrat que ja no existeix fa fallar l'execució (abans es reintentava cada minut sense fi). |
+| Desplegament que canvia els passos entre la caiguda i la represa | Endavant: si els passos registrats ja no coincideixen amb els nous, o el pas següent ja no existeix, aquest pas falla i s'aplica la seva política; la d'un pas que ja no existeix és la del pas registrat anterior més proper que encara hi és (el mateix tram del pipeline). Si no es pot ni reconstruir l'execució (també si encara constava en curs), falla amb el punt de restauració guardat. Durant el rollback, o quan cal compensar un pas que ja no existeix: l'execució falla (abans es reintentava cada minut sense fi). |
 
 **Risc residual.** Quan el worker mor, una ordre remota que estava en curs (una instal·lació, un mirall, una importació) pot continuar al servidor fins al seu propi timeout (`timeout` de coreutils). Si la represa arriba abans, el pas repetit es pot creuar amb l'ordre antiga. Els passos ho toleren en gran part (comproven l'estat abans d'actuar i després), però no es pot descartar del tot.
 
@@ -65,8 +65,15 @@ Si un pas de la branca falla (també per massa interrupcions), la branca s'atura
 
 Cada represa queda registrada, sigui quin sigui el resultat final de l'execució:
 
-- A l'execució, a `runs.interruptions` (una entrada per interrupció, només s'hi afegeix): quan, la fase (`running` o `rolling_back`), el pas i el seu tipus, els intents que ja havia fet i la decisió: `retry_step` (es repeteix el pas), `next_step` (es continua amb el següent), `give_up` (massa interrupcions: el pas falla i s'aplica la seva política) o `fail` (no s'ha pogut reconstruir: l'execució falla).
-- A `audit_log`, com a `run.resumed` amb les mateixes dades (resultat `failure` per a `give_up` i `fail`), a més del `run.interrupted` del vigilant.
+- A l'execució, a `runs.interruptions` (una entrada per interrupció, només s'hi afegeix): quan, la fase (`running` o `rolling_back`), el pas i el seu tipus, els intents que ja havia fet i la decisió. La decisió surt de la mateixa selecció i de les mateixes comprovacions que el motor aplica just després:
+  - `retry_step`: es repeteix el pas que estava en curs.
+  - `next_step`: es continua amb el pas següent.
+  - `give_up`: massa interrupcions; el pas falla i s'aplica la seva política.
+  - `deadline`: s'ha superat el termini; el pas falla i s'aplica la seva política.
+  - `apply_failure_policy`: un pas ja havia fallat sense que comencés el rollback, o el pas ja no existeix; s'aplica la seva política.
+  - `finish`: tots els passos s'havien acabat; es tanca l'execució.
+  - `fail`: no s'ha pogut reconstruir l'execució, o el rollback ja havia fallat o no es pot continuar; l'execució falla.
+- A `audit_log`, com a `run.resumed` amb les mateixes dades (resultat `failure` per a les decisions que fan fallar un pas o l'execució), a més del `run.interrupted` del vigilant.
 - A la sortida de `wpup update` (amb `--wait`/`--follow`) i de `wpup runs`: una línia d'avís per interrupció amb el pas i la decisió; al JSON, el camp `interruptions`.
 
 Els canals de notificació (F5) faran servir aquestes mateixes dades.

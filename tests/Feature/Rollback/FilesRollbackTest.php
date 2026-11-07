@@ -139,7 +139,7 @@ it('puts back the code of the run: updated, added and removed components, and ma
         ->and($driver->components)->not->toHaveKey('plugin:new-dependency')
         ->and($driver->components)->toHaveKey('theme:storefront')
         ->and($driver->writeCalls)->not->toContain('restoreDatabase')
-        // Kept on: the mirror removes .maintenance.
+        // Kept on: the mirror never touches .maintenance.
         ->and($driver->maintenance)->toBeTrue()
         ->and($driver->files)->not->toHaveKey('restore-0123456789abcdef.files.tar.gz')
         ->and($step->summary)->toContain("l'execució #{$update->id}");

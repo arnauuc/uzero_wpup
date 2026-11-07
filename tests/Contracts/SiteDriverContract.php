@@ -202,6 +202,30 @@ final class SiteDriverContract
                 }
             });
 
+            it('keeps the maintenance mode as it is through a files restore, whatever the archive holds', function () use ($factory): void {
+                $driver = $factory();
+                $active = static fn (): bool => $driver->wp(['maintenance-mode', 'is-active'])->successful();
+
+                try {
+                    // An archive made in maintenance (it holds `.maintenance`) does not switch it on…
+                    $driver->setMaintenanceMode(true);
+                    $archive = $driver->archiveFiles(SiteDriverContract::remoteName('files.tar.gz'), ['wp-content/uploads']);
+                    $driver->setMaintenanceMode(false);
+                    $driver->restoreFiles($archive);
+                    expect($active())->toBeFalse();
+
+                    // …and a mirror never removes it (UZEROWPUP-62: the shop stays closed during a rollback).
+                    $driver->setMaintenanceMode(true);
+                    $driver->restoreFiles($archive);
+                    expect($active())->toBeTrue();
+                } finally {
+                    $driver->setMaintenanceMode(false);
+                    if (isset($archive)) {
+                        $driver->remove($archive->path);
+                    }
+                }
+            });
+
             it('installs a package of the tool server idempotently, keeping its activation and no upload', function () use ($factory): void {
                 $driver = $factory();
                 $archive = $driver->archiveFiles(SiteDriverContract::remoteName('files.tar.gz'), ['wp-content/uploads']);

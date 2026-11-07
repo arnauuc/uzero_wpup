@@ -60,6 +60,10 @@ final class RunsCommand extends WpupCommand
             return self::SUCCESS;
         }
 
+        $interruptions = [];
+        foreach ($runs as $run) {
+            $interruptions[$run->id] = RunInterruption::of($run);
+        }
         $this->table(['#', 'Lloc', 'Tipus', 'Estat', 'Qui', 'Encuada', 'Interrupcions'], $runs->map(static fn (Run $run): array => [
             $run->id,
             $run->targetLabel(),
@@ -67,12 +71,12 @@ final class RunsCommand extends WpupCommand
             $run->status->value,
             $run->actor,
             $run->queued_at->format('Y-m-d H:i'),
-            count(RunInterruption::of($run)) ?: '—',
+            count($interruptions[$run->id] ?? []) ?: '—',
         ])->all());
 
-        foreach ($runs as $run) {
-            foreach (RunInterruption::of($run) as $interruption) {
-                $this->warn("#{$run->id}: {$interruption->describe()}");
+        foreach ($interruptions as $id => $list) {
+            foreach ($list as $interruption) {
+                $this->warn("#{$id}: {$interruption->describe()}");
             }
         }
 

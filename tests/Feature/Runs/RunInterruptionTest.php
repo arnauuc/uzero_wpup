@@ -16,6 +16,7 @@ use App\Enums\RunStepStatus;
 use App\Enums\RunType;
 use App\Models\AuditLogEntry;
 use App\Models\Run;
+use App\Models\RunStep;
 use Illuminate\Support\Facades\Redis;
 use Tests\Support\Runs\ScriptedStep;
 
@@ -107,6 +108,54 @@ it('records an interrupted run that cannot be rebuilt as failed', function (): v
         ->and(interruptionsOf($run))->toBe([['running', 'a', 'forward', 1, 'fail']]);
 });
 
+it('records what the engine then does, from the same decision', function (array $rows, array $expected, RunStatus $final, array $attributes): void {
+    /** @var list<array{string, RunStepStatus, int, 3?: RunStepKind}> $rows */
+    /** @var array<string, mixed> $attributes */
+    interruptionPipeline();
+    $run = interruptedRun($rows);
+    $run->forceFill($attributes)->save();
+
+    app(RunEngine::class)->execute($run);
+
+    expect($run->status)->toBe($final)
+        ->and(interruptionsOf($run))->toBe([$expected]);
+})->with([
+    'between the failure and the rollback' => [[['a', RunStepStatus::Failed, 1], ['b', RunStepStatus::Pending, 0]], ['running', 'a', 'forward', 1, 'apply_failure_policy'], RunStatus::RolledBack, []],
+    'a pending step already interrupted too many times' => [[['a', RunStepStatus::Succeeded, 1], ['b', RunStepStatus::Pending, 2]], ['running', 'b', 'forward', 2, 'give_up'], RunStatus::RolledBack, []],
+    'after the last step' => [[['a', RunStepStatus::Succeeded, 1], ['b', RunStepStatus::Succeeded, 1]], ['running', null, null, 0, 'finish'], RunStatus::Succeeded, []],
+    'past the deadline' => [[['a', RunStepStatus::Succeeded, 1], ['b', RunStepStatus::Running, 1]], ['running', 'b', 'forward', 1, 'deadline'], RunStatus::RolledBack, ['deadline_at' => now()->subMinute()]],
+    'before any step was recorded' => [[], ['running', 'a', 'forward', 0, 'next_step'], RunStatus::Succeeded, []],
+    'after a failed rollback step' => [[['a', RunStepStatus::Failed, 1], ['rollback', RunStepStatus::Failed, 1, RunStepKind::Recovery], ['restore', RunStepStatus::Pending, 0, RunStepKind::Recovery]],
+        ['rolling_back', 'rollback', 'recovery', 1, 'fail'], RunStatus::Failed, []],
+]);
+
+it('applies the failure policy of a forward step the code no longer has: the recovery runs', function (): void {
+    // Deployed between the interruption and the resume: «b» became «c».
+    interruptionPipeline();
+    $run = interruptedRun([['a', RunStepStatus::Succeeded, 1], ['old-b', RunStepStatus::Running, 1]]);
+
+    app(RunEngine::class)->execute($run);
+
+    expect($run->status)->toBe(RunStatus::RolledBack)
+        ->and($run->result_summary['failed_step'] ?? null)->toBe('old-b')
+        ->and($run->steps()->where('kind', RunStepKind::Recovery->value)->orderBy('sequence')->get()->map(static fn (RunStep $s): string => "{$s->name} {$s->status->value}")->all())
+        ->toBe(['rollback succeeded', 'restore succeeded'])
+        ->and($run->steps()->where('name', 'old-b')->value('error'))->toContain('ja no existeix')
+        ->and(interruptionsOf($run))->toBe([['running', 'old-b', 'forward', 1, 'apply_failure_policy']]);
+});
+
+it('fails, noted, a run whose worker was lost while it was active and whose pipeline cannot be rebuilt', function (): void {
+    app(PipelineResolver::class)->register(RunType::Update, static fn (): Pipeline => throw new LogicException('configuració trencada'));
+    $run = interruptedRun([['a', RunStepStatus::Running, 1]]);
+    // Still marked running: the watchdog has not seen it yet, and the claim expired.
+    $run->forceFill(['status' => RunStatus::Running])->save();
+
+    expect(fn () => app(RunEngine::class)->execute($run))->toThrow(LogicException::class);
+
+    expect($run->fresh()?->status)->toBe(RunStatus::Failed)
+        ->and(interruptionsOf($run))->toBe([['running', 'a', 'forward', 1, 'fail']]);
+});
+
 it('fails, instead of retrying forever, a rollback whose recorded step the code no longer has', function (): void {
     // Deployed between the interruption and the resume: the recovery branch lost «rollback».
     interruptionPipeline(withRollback: false);
@@ -117,5 +166,5 @@ it('fails, instead of retrying forever, a rollback whose recorded step the code 
     expect($run->status)->toBe(RunStatus::Failed)
         ->and($run->result_summary['failed_step'] ?? null)->toBe('rollback')
         ->and($run->failureReason())->toContain('ja no existeix')
-        ->and(interruptionsOf($run))->toBe([['rolling_back', 'rollback', 'recovery', 1, 'retry_step']]);
+        ->and(interruptionsOf($run))->toBe([['rolling_back', 'rollback', 'recovery', 1, 'fail']]);
 });
