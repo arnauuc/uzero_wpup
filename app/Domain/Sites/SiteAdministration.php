@@ -42,8 +42,6 @@ final readonly class SiteAdministration
 
     private const ABSOLUTE_PATH = '#^/[A-Za-z0-9._/-]*$#';
 
-    private const TIME = '/^(?:[01]\d|2[0-3]):[0-5]\d$/';
-
     private const HOSTNAME = '/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/';
 
     private const SYSTEM_USER = '/^[a-z_][a-z0-9_.-]{0,31}$/';
@@ -401,14 +399,8 @@ final readonly class SiteAdministration
 
         $days = array_values(array_unique($days));
         sort($days);
-        if ($days === [] || array_filter($days, static fn (int $d): bool => $d < 1 || $d > 7) !== []) {
-            $errors[] = 'Els dies de la finestra han de ser entre 1 (dilluns) i 7 (diumenge).';
-        }
-        if (preg_match(self::TIME, $start) !== 1 || preg_match(self::TIME, $end) !== 1) {
-            $errors[] = "L'inici i el final de la finestra han de tenir el format HH:MM.";
-        } elseif ($start === $end) {
-            $errors[] = "L'inici i el final de la finestra no poden coincidir.";
-        }
+        $minimum = config('wpup.updates.window.minimum_minutes');
+        array_push($errors, ...MaintenanceWindow::errors($days, $start, $end, is_int($minimum) ? $minimum : 0));
 
         return ['days' => $days, 'start' => $start, 'end' => $end];
     }

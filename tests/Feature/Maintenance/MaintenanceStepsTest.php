@@ -17,6 +17,7 @@ use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\RunStatus;
+use App\Enums\RunStepKind;
 use App\Enums\RunStepStatus;
 use App\Enums\RunType;
 use App\Models\Run;
@@ -102,9 +103,13 @@ it('does not update a site that is in maintenance already, and never touches its
 
     app(RunEngine::class)->execute($run);
 
-    $on = $run->steps()->where('name', 'maintenance-on')->firstOrFail();
+    // The step has two rows: the forward one, and its compensation (which finds nothing to
+    // restore). Read each by kind: without ORDER BY, PostgreSQL may return either first.
+    $on = $run->steps()->where('name', 'maintenance-on')->where('kind', RunStepKind::Forward->value)->sole();
+    $undo = $run->steps()->where('name', 'maintenance-on')->where('kind', RunStepKind::Compensation->value)->sole();
     expect($run->status)->not->toBe(RunStatus::Succeeded)
         ->and($on->status)->toBe(RunStepStatus::Failed)
+        ->and($undo->status)->toBe(RunStepStatus::Skipped)
         ->and($on->error)->toContain("El lloc ja és en mode manteniment: no s'actualitza fins que s'acabi")
         ->and($seen)->toBe([])
         ->and($driver->maintenance)->toBeTrue()

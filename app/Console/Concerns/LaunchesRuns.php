@@ -6,6 +6,7 @@ namespace App\Console\Concerns;
 
 use App\Domain\Runs\RunFollower;
 use App\Domain\Runs\RunLauncher;
+use App\Enums\RunStepKind;
 use App\Enums\RunType;
 use App\Enums\UpdateStrategy;
 use App\Models\Run;
@@ -47,7 +48,7 @@ trait LaunchesRuns
         $final = app(RunFollower::class)->wait(
             array_map(static fn (Run $run): int => $run->id, $runs),
             $follow && ! $this->wantsJson() ? function (Run $run, RunStep $step): void {
-                $prefix = $step->kind->value === 'compensation' ? 'desfent ' : '';
+                $prefix = $step->kind === RunStepKind::Forward ? '' : 'desfent ';
                 $summary = $step->summary !== null && $step->summary !== '' ? " — {$step->summary}" : '';
                 $this->line("[#{$run->id} ".self::siteLabel($run)."] {$prefix}{$step->name}: {$step->status->value}{$summary}");
             } : null,

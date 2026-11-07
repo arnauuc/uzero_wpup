@@ -44,6 +44,7 @@
         <env name="REDIS_LOCKS_DB" value="12"/>
         <env name="WPUP_DEV_KEK" value="ce1CKPFN8+2OT6TXkqt+CjLOw/XlAp4CvkGMdf7wup8="/>
         <env name="QUEUE_CONNECTION" value="sync"/>
+        <env name="WPUP_UPDATE_WINDOW_ENFORCED" value="false"/>
         <env name="SESSION_DRIVER" value="array"/>
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
