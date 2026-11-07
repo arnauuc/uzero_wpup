@@ -93,7 +93,11 @@ use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\RunClaim;
 use App\Domain\Runs\RunEngineSettings;
+use App\Domain\Runs\RunLauncher;
 use App\Domain\Runs\Step;
+use App\Domain\Scheduling\UpdateDurationEstimator;
+use App\Domain\Scheduling\UpdateOutlooks;
+use App\Domain\Scheduling\UpdateScheduler;
 use App\Domain\Secrets\EnvelopeSecretStore;
 use App\Domain\Secrets\Kek\ConfigPublicKeyRing;
 use App\Domain\Secrets\Kek\EnvKekProvider;
@@ -209,6 +213,28 @@ class AppServiceProvider extends ServiceProvider
                 config('wpup.updates.window.enforced') !== false,
             );
         });
+        // Scheduled updates (ADR-0006, UZEROWPUP-129). Bound: tests change the settings per test.
+        $this->app->bind(UpdateDurationEstimator::class, static function (): UpdateDurationEstimator {
+            $defaults = [];
+            foreach ((array) config('wpup.scheduler.estimate.default_minutes') as $strategy => $minutes) {
+                $defaults[(string) $strategy] = is_int($minutes) ? $minutes : throw new \UnexpectedValueException('wpup.scheduler.estimate.default_minutes must hold integers.');
+            }
+
+            return new UpdateDurationEstimator(self::configInt('wpup.scheduler.estimate.history_runs'), $defaults);
+        });
+        $this->app->bind(UpdateOutlooks::class, static fn (Application $app): UpdateOutlooks => new UpdateOutlooks(
+            $app->make(UpdatePlanner::class),
+            self::configInt('wpup.scheduler.outlook.snapshot_max_age_hours'),
+            self::configInt('wpup.planning.verified_php_max_age_seconds'),
+        ));
+        $this->app->bind(UpdateScheduler::class, static fn (Application $app): UpdateScheduler => new UpdateScheduler(
+            $app->make(MaintenanceWindowGate::class),
+            $app->make(UpdateOutlooks::class),
+            $app->make(UpdateDurationEstimator::class),
+            $app->make(RunLauncher::class),
+            self::configString('wpup.scheduler.actor'),
+            self::configInt('wpup.updates.window.minimum_minutes'),
+        ));
         $this->app->singleton(PipelineResolver::class);
         $this->app->bind(SiteLocalSettings::class, static fn (): SiteLocalSettings => new SiteLocalSettings(
             self::configString('wpup.backups.site_local.root'),

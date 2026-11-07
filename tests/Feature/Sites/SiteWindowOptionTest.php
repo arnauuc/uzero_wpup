@@ -38,6 +38,7 @@ it('wraps a range of days past Sunday', function (): void {
 });
 
 it('refuses a malformed window with the same rules as the separate options', function (array $params, string $message): void {
+    /** @var array<string, mixed> $params */
     command('site:edit', ['name' => 'botiga-w', '--no-interaction' => true] + $params)
         ->expectsOutputToContain($message)->assertFailed();
 
