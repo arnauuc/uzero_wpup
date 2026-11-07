@@ -500,7 +500,8 @@ final class SshDriver implements SiteDriver
             .' && tar -xzf '.escapeshellarg($this->workPath($archive->path)).' -C "$d"'
             .' && test -f "$d/.wpup-excludes"'
             .' && sed "s|^|/|" "$d/.wpup-excludes" > "$d.ex" && rm -f "$d/.wpup-excludes"'
-            .' && rsync -a --delete --exclude-from="$d.ex" "$d/" '.escapeshellarg(rtrim($this->target->wpPath, '/').'/')
+            // `.maintenance` is the maintenance mode, not code: never deleted nor restored (SiteDriver).
+            .' && rsync -a --delete --exclude=/.maintenance --exclude-from="$d.ex" "$d/" '.escapeshellarg(rtrim($this->target->wpPath, '/').'/')
             .'; rc=$?; rm -rf "$d" "$d.ex"; exit $rc',
             'La restauració dels fitxers',
             $this->settings->transferTimeoutSeconds,

@@ -571,8 +571,7 @@ class FakeDriver implements SiteDriver
     {
         $this->verifyWorkFile($archive);
         $this->writeCalls[] = 'restoreFiles';
-        // The mirror removes .maintenance, which no archive holds.
-        $this->maintenance = false;
+        // The mirror never touches .maintenance (SiteDriver::restoreFiles()).
         $data = unserialize($this->files[$archive->path], ['allowed_classes' => [ComponentVersion::class, ComponentType::class]]);
 
         if (is_array($data) && is_string($data['core'] ?? null) && is_array($data['components'] ?? null)) {

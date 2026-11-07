@@ -4,14 +4,17 @@ declare(strict_types=1);
 
 use App\Console\ChangesState;
 use App\Domain\Runs\Exceptions\RunException;
+use App\Domain\Runs\InterruptionDecision;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunEngine;
 use App\Domain\Runs\RunFollower;
+use App\Domain\Runs\RunInterruption;
 use App\Domain\Runs\StepOutcome;
 use App\Domain\Sites\SiteSelectionException;
 use App\Domain\Sites\SiteSelector;
 use App\Enums\RunStatus;
+use App\Enums\RunStepKind;
 use App\Enums\RunType;
 use App\Enums\UserRole;
 use App\Models\Run;
@@ -133,4 +136,18 @@ it('lists the latest runs', function (): void {
     Run::factory()->create(['site_id' => Site::query()->where('name', 'blog')->value('id'), 'status' => RunStatus::Succeeded]);
 
     command('runs', ['--site' => 'blog'])->expectsOutputToContain('succeeded')->assertSuccessful();
+});
+
+it('warns about every interruption of the listed runs, with the step and the decision', function (): void {
+    $interruption = new RunInterruption(now()->toImmutable(), 'rolling_back', 'rollback-files', RunStepKind::Recovery, 1, InterruptionDecision::RetryStep);
+    $run = Run::factory()->create(['site_id' => Site::query()->where('name', 'blog')->value('id'), 'status' => RunStatus::RolledBack, 'interruptions' => [$interruption->toArray()]]);
+
+    command('runs', ['--site' => 'blog'])
+        ->expectsOutputToContain("#{$run->id}: Execució interrompuda el ".$interruption->at->format('d/m/Y H:i:s').' al pas «rollback-files» (recovery) durant el rollback: es torna a executar el pas.')
+        ->assertSuccessful();
+
+    Artisan::call('runs', ['--site' => 'blog', '--json' => true]);
+    /** @var array{runs: list<array{interruptions: mixed}>} $json */
+    $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+    expect($json['runs'][0]['interruptions'])->toBe([$interruption->toArray()]);
 });

@@ -20,8 +20,8 @@ use Closure;
  * Maintenance mode for a restore (UZEROWPUP-46), switched on right after the
  * copies are checked and before the point of the current state is made, so
  * that no order enters between that point and the restore. RestoreStep
- * switches it on again after mirroring the files (the mirror removes
- * `.maintenance`) and leaves it as it was before the run at the end, also
+ * switches it on again after mirroring the files (the mirror keeps
+ * `.maintenance`, but a long one outlives its 10 minutes) and leaves it as it was before the run at the end, also
  * when it fails; PreRestoreBackupStep does it when the point cannot be made.
  * It is not a compensable step on purpose: a failed restore must end as
  * failed, never as rolled back. A site where it cannot be switched on

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Runs;
 
-use App\Domain\Runs\Exceptions\RunException;
+use App\Domain\Runs\Exceptions\UnknownStep;
 use InvalidArgumentException;
 
 /**
@@ -75,14 +75,30 @@ final readonly class Pipeline
         return in_array($name, $this->growsAfter, true);
     }
 
-    public function get(string $name): Step
+    public function has(string $name): bool
     {
-        return $this->byName[$name] ?? throw new RunException("The pipeline has no step named «{$name}».");
+        return isset($this->byName[$name]);
     }
 
+    public function hasRecovery(string $name): bool
+    {
+        return isset($this->recoveryByName[$name]);
+    }
+
+    /**
+     * @throws UnknownStep
+     */
+    public function get(string $name): Step
+    {
+        return $this->byName[$name] ?? throw new UnknownStep($name, false);
+    }
+
+    /**
+     * @throws UnknownStep
+     */
     public function recoveryStep(string $name): Step
     {
-        return $this->recoveryByName[$name] ?? throw new RunException("The pipeline has no recovery step named «{$name}».");
+        return $this->recoveryByName[$name] ?? throw new UnknownStep($name, true);
     }
 
     public function onFailure(string $name): OnFailure

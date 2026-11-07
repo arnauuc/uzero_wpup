@@ -34,11 +34,14 @@ use Throwable;
  * uploads it, so staging and production get the same bytes.
  *
  * Idempotent, and never acting on a site that changed since the plan: the
- * installed version is read first. The target ⇒ nothing to do (a resumed
- * step); the plan's current version ⇒ install; anything else (newer, older,
- * removed) ⇒ fail, the run must plan again. Every outcome, also an
- * unexpected error or the step timeout, is one run_changes row (step =
- * update) with the version before and after.
+ * installed version is read first. The target ⇒ nothing to do, on a first
+ * attempt (updated meanwhile, outside the tool) or when this run already
+ * recorded the install as done; but on a RESUMED attempt without that record
+ * ⇒ fail: the worker died halfway through the install (UZEROWPUP-62) and the
+ * version header proves nothing about the other files, so the run rolls back
+ * to its restore point. The plan's current version ⇒ install; anything else (newer, older, removed) ⇒ fail, the run must plan
+ * again. Every outcome, also an unexpected error or the step timeout, is one
+ * run_changes row (step = update) with the version before and after.
  */
 final readonly class ComponentUpdateStep implements Step
 {
@@ -94,7 +97,7 @@ final readonly class ComponentUpdateStep implements Step
         // WordPress ignores a .maintenance file older than 10 minutes (UZEROWPUP-53).
         $this->maintenance?->refresh($driver, $context->run);
         try {
-            return $this->update($context->run, $driver, $before);
+            return $this->update($context, $driver, $before);
         } catch (ArtifactException|DriverException $e) {
             $output = $e instanceof RemoteCommandFailed && $e->result !== null ? $e->result->stdout."\n".$e->result->stderr : '';
 
@@ -113,12 +116,17 @@ final readonly class ComponentUpdateStep implements Step
      * @throws ArtifactException
      * @throws DriverException
      */
-    private function update(Run $run, SiteDriver $driver, ?string &$before): StepOutcome
+    private function update(StepContext $context, SiteDriver $driver, ?string &$before): StepOutcome
     {
+        $run = $context->run;
         $target = $this->change->targetVersion;
         $before = $driver->installedState($this->change->type, $this->change->slug)?->version;
+        if ($before === $target && $context->resumed() && ! $this->changes->wasUpdated($run, $this->change->type, $this->change->slug)) {
+            // Recorded as from the plan's version: the rollback must put that one back.
+            return $this->fail($run, $this->change->currentVersion, $before, "l'intent anterior d'aquest pas es va interrompre abans d'acabar la instal·lació i el lloc ja diu que té la versió {$target}: no es pot saber si els fitxers són sencers, cal revertir.");
+        }
         if ($before === $target) {
-            // A resumed step whose install had finished: nothing is uploaded.
+            // Updated meanwhile outside the tool, or a resumed step whose install had finished and was recorded: nothing is uploaded.
             $this->record($run, $this->change->currentVersion, $target, ChangeResult::Updated, null);
 
             return StepOutcome::succeeded("{$this->label()} ja era a la versió {$target}: no s'ha tocat.", '', $this->data($this->change->currentVersion, $target, true));

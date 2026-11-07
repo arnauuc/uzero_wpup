@@ -19,7 +19,9 @@ use App\Domain\Runs\StepOutcome;
  * If the mode cannot be switched on, the step still succeeds with a warning:
  * the files rollback, always safe, must not be blocked by it, and the
  * database rollback switches it on itself and does not restore anything when
- * it cannot. Idempotent.
+ * it cannot. Idempotent. The files mirror never touches `.maintenance`
+ * (SiteDriver::restoreFiles()), so the mode stays on through the whole
+ * rollback, also when the worker dies halfway through it (UZEROWPUP-62).
  */
 final readonly class MaintenanceForceOnStep implements Step
 {
