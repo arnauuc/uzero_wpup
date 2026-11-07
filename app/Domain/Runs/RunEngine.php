@@ -10,6 +10,8 @@ use App\Domain\Locks\LockedException;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Concurrency\ConcurrencyLimitReached;
+use App\Domain\Runs\Concurrency\MaintenanceWindowGate;
+use App\Domain\Runs\Concurrency\OutsideMaintenanceWindow;
 use App\Domain\Runs\Exceptions\ClaimLost;
 use App\Domain\Runs\Exceptions\InvalidTransition;
 use App\Domain\Runs\Exceptions\RunAlreadyClaimed;
@@ -26,6 +28,7 @@ use Carbon\CarbonImmutable;
 use Closure;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
 use Throwable;
 
 /**
@@ -35,8 +38,15 @@ use Throwable;
  *   with the StepTicker. Losing either stops the worker without touching the run.
  * - Steps are materialised in run_steps before running; a resumed run skips the
  *   finished ones and runs the interrupted one again.
- * - A failed step (error, timeout, run deadline, too many interruptions) rolls
- *   the run back through the compensations, in reverse order.
+ * - A failed step (error, timeout, run deadline, too many interruptions) is
+ *   handled by its OnFailure policy: the compensations, in reverse order
+ *   (default); the pipeline's recovery branch, in order (UZEROWPUP-60); or
+ *   nothing (the run fails and keeps what it did).
+ * - A pipeline may grow at its end (UZEROWPUP-60: the update steps exist once
+ *   the plan ran): it is resolved again after the steps it names
+ *   (Pipeline::growsAfter) and when a run resumes. Recorded steps never
+ *   change. A pipeline that cannot be resolved again, or that would change
+ *   them, fails the step that was about to run, with that step's policy.
  * - Every summary, output, error and result is redacted before it is stored.
  */
 final readonly class RunEngine
@@ -46,6 +56,7 @@ final readonly class RunEngine
         private RunClaim $claims,
         private SiteLockManager $locks,
         private ConcurrencyGate $gate,
+        private MaintenanceWindowGate $windows,
         private SecretRedactor $redactor,
         private AuditLogger $audit,
         private StepTicker $ticker,
@@ -57,6 +68,7 @@ final readonly class RunEngine
      *
      * @throws RunAlreadyClaimed when another worker is executing it
      * @throws ConcurrencyLimitReached when a concurrency level is full (the run waits)
+     * @throws OutsideMaintenanceWindow when the site's window is closed (the run waits)
      * @throws LockedException when the site or its hosting account is busy
      * @throws ClaimLost when the worker lost its claim midway (recovery resumes it)
      */
@@ -76,6 +88,17 @@ final readonly class RunEngine
                 return $run;
             }
 
+            // Only a run that has not started waits for its window: one interrupted is resumed or rolled back now.
+            if ($run->status === RunStatus::Queued) {
+                try {
+                    $this->windows->assertMayStart($run, CarbonImmutable::now());
+                } catch (InvalidArgumentException $e) {
+                    $this->finish($run, RunStatus::Failed, ['', "La finestra de manteniment del lloc no és vàlida: {$e->getMessage()}"]);
+
+                    return $run;
+                }
+            }
+
             // Credential operations (site:test…) skip the slots and the site lock: see RunType.
             if ($run->type->usesConcurrencyLimits()) {
                 $leases->slots = $this->gate->acquire($run, $token);
@@ -89,10 +112,14 @@ final readonly class RunEngine
 
             try {
                 $pipeline = $this->pipelines->resolve($run);
-            } catch (RunException $e) {
-                // A run that cannot even start must not stay queued in silence.
-                if ($run->status === RunStatus::Queued) {
-                    $this->finish($run, RunStatus::Failed, ['', $e->getMessage()]);
+            } catch (Throwable $e) {
+                // A run that cannot even start (or be rebuilt to resume) must not
+                // stay queued or interrupted in silence. Without its pipeline there
+                // is nothing to undo with: it fails loudly, its restore point kept.
+                if (in_array($run->status, [RunStatus::Queued, RunStatus::Interrupted], true)) {
+                    $this->finish($run, RunStatus::Failed, ['', $run->status === RunStatus::Queued
+                        ? $e->getMessage()
+                        : "No s'ha pogut reconstruir l'execució per reprendre-la: {$e->getMessage()} Cal revisar el lloc."]);
                 }
 
                 throw $e;
@@ -166,7 +193,7 @@ final readonly class RunEngine
             }
         }
 
-        $rollingBack = $this->rows($run, RunStepKind::Compensation)->isNotEmpty();
+        $rollingBack = $this->undoRows($run)->isNotEmpty();
         self::transition($run, $rollingBack ? RunStatus::RollingBack : RunStatus::Running);
         $this->materialize($run, $pipeline);
         $this->audit->record(AuditActor::system(), 'run.resumed', AuditResult::Success, 'run', $run->id, ['phase' => $run->status->value]);
@@ -188,16 +215,34 @@ final readonly class RunEngine
     /**
      * @return array{string, string}|null the failed step and why
      */
-    private function forward(Run $run, Pipeline $pipeline, string $token, ExecutionLeases $leases): ?array
+    private function forward(Run $run, Pipeline &$pipeline, string $token, ExecutionLeases $leases): ?array
     {
         $dryRun = ($run->flags['dry_run'] ?? false) === true;
+        // A resumed run may have stopped right after a step the pipeline grows from.
+        $regrow = $pipeline->grows();
 
-        foreach ($this->rows($run, RunStepKind::Forward) as $row) {
-            if ($row->status === RunStepStatus::Failed) {
-                return [$row->name, $row->error ?? ''];
+        while (true) {
+            if ($regrow) {
+                $grown = $this->grow($run, $pipeline);
+                if ($grown !== null) {
+                    return $grown;
+                }
+                $regrow = false;
             }
-            if ($row->status->isFinished()) {
-                continue;
+
+            $row = null;
+            foreach ($this->rows($run, RunStepKind::Forward) as $candidate) {
+                if ($candidate->status === RunStepStatus::Failed) {
+                    return [$candidate->name, $candidate->error ?? ''];
+                }
+                if (! $candidate->status->isFinished()) {
+                    $row = $candidate;
+
+                    break;
+                }
+            }
+            if ($row === null) {
+                return null;
             }
 
             $step = $pipeline->get($row->name);
@@ -220,7 +265,62 @@ final readonly class RunEngine
             if ($row->status === RunStepStatus::Failed) {
                 return [$row->name, (string) $row->error];
             }
+            $regrow = $pipeline->growsAfter($row->name);
         }
+    }
+
+    /**
+     * Resolves the pipeline again, from what the run stored so far, and records
+     * the steps it added at its end. When it cannot, the failure belongs to the
+     * step that was about to run (recorded as failed, so a resumed run sees it)
+     * or, when none is left, to the last one, and follows that step's policy.
+     *
+     * @return array{string, string}|null why the run cannot go on
+     */
+    private function grow(Run $run, Pipeline &$pipeline): ?array
+    {
+        $rows = $this->rows($run, RunStepKind::Forward);
+        $recorded = array_values($rows->map(static fn (RunStep $row): string => $row->name)->all());
+
+        try {
+            $latest = $this->pipelines->resolve($run);
+            $names = $latest->names();
+            $reason = array_slice($names, 0, count($recorded)) === $recorded
+                ? null
+                : "Els passos de l'execució ja no coincideixen amb els registrats: no es continua.";
+        } catch (Throwable $e) {
+            if (! $e instanceof RunException) {
+                report($e);
+            }
+            $latest = null;
+            $names = [];
+            $reason = "No s'han pogut preparar els passos següents: {$e->getMessage()}";
+        }
+
+        if ($latest === null || $reason !== null) {
+            $next = $rows->first(static fn (RunStep $row): bool => ! $row->status->isFinished()) ?? $rows->last();
+            if ($next === null) {
+                return ['', $this->clip((string) $reason)];
+            }
+            if (! $next->status->isFinished()) {
+                $this->stepTransition($next, RunStepStatus::Failed, ['finished_at' => CarbonImmutable::now(), 'error' => $this->clip((string) $reason)]);
+            }
+
+            return [$next->name, $this->clip((string) $reason)];
+        }
+        $pipeline = $latest;
+
+        $added = array_slice($names, count($recorded));
+        if ($added === []) {
+            return null;
+        }
+        DB::transaction(static function () use ($run, $added): void {
+            $max = $run->steps()->max('sequence');
+            $sequence = is_numeric($max) ? (int) $max : 0;
+            foreach ($added as $name) {
+                $run->steps()->create(['sequence' => ++$sequence, 'name' => $name, 'kind' => RunStepKind::Forward]);
+            }
+        });
 
         return null;
     }
@@ -231,35 +331,62 @@ final readonly class RunEngine
     private function rollback(Run $run, Pipeline $pipeline, string $token, ExecutionLeases $leases, array $failure): void
     {
         if ($run->status === RunStatus::Running) {
-            $toUndo = $this->rows($run, RunStepKind::Forward)
-                ->filter(static fn (RunStep $row): bool => in_array($row->status, [RunStepStatus::Succeeded, RunStepStatus::Failed], true)
-                    && $pipeline->get($row->name) instanceof CompensableStep)
-                ->reverse();
+            $policy = $pipeline->onFailure($failure[0]);
+            if ($policy === OnFailure::Stop) {
+                $this->finish($run, RunStatus::Failed, $failure);
 
-            if ($toUndo->isEmpty()) {
+                return;
+            }
+
+            if ($policy === OnFailure::Recover) {
+                $kind = RunStepKind::Recovery;
+                $names = array_map(static fn (Step $step): string => $step->name(), $pipeline->recovery);
+            } else {
+                $kind = RunStepKind::Compensation;
+                $names = array_values($this->rows($run, RunStepKind::Forward)
+                    ->filter(static fn (RunStep $row): bool => in_array($row->status, [RunStepStatus::Succeeded, RunStepStatus::Failed], true)
+                        && $pipeline->get($row->name) instanceof CompensableStep)
+                    ->reverse()
+                    ->map(static fn (RunStep $row): string => $row->name)
+                    ->all());
+            }
+
+            if ($names === []) {
                 $this->finish($run, RunStatus::Failed, $failure);
 
                 return;
             }
 
             self::transition($run, RunStatus::RollingBack);
-            DB::transaction(static function () use ($run, $toUndo): void {
+            DB::transaction(static function () use ($run, $names, $kind): void {
                 $max = $run->steps()->max('sequence');
                 $sequence = is_numeric($max) ? (int) $max : 0;
-                foreach ($toUndo as $row) {
-                    $run->steps()->create(['sequence' => ++$sequence, 'name' => $row->name, 'kind' => RunStepKind::Compensation]);
+                foreach ($names as $name) {
+                    $run->steps()->create(['sequence' => ++$sequence, 'name' => $name, 'kind' => $kind]);
                 }
             });
         }
 
-        foreach ($this->rows($run, RunStepKind::Compensation) as $row) {
+        $dryRun = ($run->flags['dry_run'] ?? false) === true;
+        foreach ($this->undoRows($run) as $row) {
             if ($row->status === RunStepStatus::Pending) {
-                $step = $pipeline->get($row->name);
-                if (! $step instanceof CompensableStep) {
-                    throw new RunException("Step «{$row->name}» has no compensation.");
-                }
                 $context = $this->context($run, $failure);
-                $this->runStep($run, $row, $step->timeoutSeconds(), null, static fn (): StepOutcome => $step->compensate($context), $token, $leases);
+                if ($row->kind === RunStepKind::Recovery) {
+                    $step = $pipeline->recoveryStep($row->name);
+                    if ($dryRun && ! $step instanceof ReadOnlyStep) {
+                        $this->stepTransition($row, RunStepStatus::Skipped, ['summary' => $this->clip('[dry-run] '.$step->describe($context))]);
+
+                        continue;
+                    }
+                    $action = static fn (): StepOutcome => $step->run($context);
+                } else {
+                    $step = $pipeline->get($row->name);
+                    if (! $step instanceof CompensableStep) {
+                        throw new RunException("Step «{$row->name}» has no compensation.");
+                    }
+                    $action = static fn (): StepOutcome => $step->compensate($context);
+                }
+                $this->runStep($run, $row, $step->timeoutSeconds(), null, $action, $token, $leases);
             }
 
             if ($row->status === RunStepStatus::Failed) {
@@ -415,6 +542,19 @@ final readonly class RunEngine
     {
         return $run->steps()
             ->when($kind !== null, static fn ($query) => $query->where('kind', $kind?->value))
+            ->orderBy('sequence')
+            ->get();
+    }
+
+    /**
+     * The compensation or recovery rows of the run (only one kind ever exists), in order.
+     *
+     * @return Collection<int, RunStep>
+     */
+    private function undoRows(Run $run): Collection
+    {
+        return $run->steps()
+            ->where('kind', '!=', RunStepKind::Forward->value)
             ->orderBy('sequence')
             ->get();
     }

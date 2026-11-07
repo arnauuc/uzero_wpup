@@ -6,6 +6,7 @@ namespace App\Jobs;
 
 use App\Domain\Locks\LockedException;
 use App\Domain\Runs\Concurrency\ConcurrencyLimitReached;
+use App\Domain\Runs\Concurrency\OutsideMaintenanceWindow;
 use App\Domain\Runs\Exceptions\RunAlreadyClaimed;
 use App\Domain\Runs\RunEngine;
 use App\Domain\Secrets\SecretRedactor;
@@ -46,6 +47,11 @@ final class ExecuteRun implements ShouldQueue
         } catch (ConcurrencyLimitReached $e) {
             // Waiting for a slot is normal (ADR-0006: one update at a time): no attempt is spent.
             $this->release(self::seconds('wpup.concurrency.retry_seconds'));
+        } catch (OutsideMaintenanceWindow $e) {
+            // ADR-0006: the update waits for its site's window; checked again at least every window.recheck_seconds.
+            $wait = max(1, min((int) now()->diffInSeconds($e->opensAt, true), self::seconds('wpup.updates.window.recheck_seconds')));
+            Log::info('Run waits for its maintenance window.', ['run' => $this->runId, 'opens_at' => $e->opensAt->toIso8601String()]);
+            $this->release($wait);
         } catch (LockedException $e) {
             Log::info('Run waits for a busy lock.', ['run' => $this->runId, 'lock' => $e->getMessage()]);
             $this->release(self::seconds('wpup.runs.lock_retry_seconds'));

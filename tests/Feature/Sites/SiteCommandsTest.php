@@ -95,6 +95,7 @@ it('validates fields and reports every error', function (array $params, string $
     'bad strategy' => [['--strategy' => 'yolo'], 'in_place o staging_first'],
     'bad days' => [['--window-days' => '0,9'], 'format'],
     'bad time' => [['--window-start' => '25:00'], 'HH:MM'],
+    'window too short to start an update' => [['--window-start' => '05:50'], 'com a mínim 15 minuts'],
     'bad threshold' => [['--diff-threshold' => '101'], 'entre 0 i 100'],
     'foreign verify url' => [['--verify-url' => ['https://altre.test/']], 'mateix domini'],
     'bad tag' => [['--tag' => ['Mala Etiqueta']], 'etiqueta'],
