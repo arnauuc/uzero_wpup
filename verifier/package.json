@@ -9,7 +9,7 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --dir src",
     "build": "tsc"
   },
   "dependencies": {
