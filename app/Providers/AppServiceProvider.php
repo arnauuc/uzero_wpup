@@ -672,6 +672,9 @@ class AppServiceProvider extends ServiceProvider
             reportedLines: self::configInt('wpup.smoke_check.reported_lines'),
             lineMaxChars: self::configInt('wpup.smoke_check.line_max_chars'),
             fatalPatterns: self::configStrings('wpup.smoke_check.fatal_patterns'),
+            warningPatterns: self::configStrings('wpup.smoke_check.warning_patterns'),
+            noticePatterns: self::configStrings('wpup.smoke_check.notice_patterns'),
+            maxGroups: self::configInt('wpup.smoke_check.max_groups'),
         ));
         $this->app->bind(SmokeCheckSteps::class, static fn (Application $app): SmokeCheckSteps => new SmokeCheckSteps(
             static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),

@@ -6,6 +6,7 @@ namespace App\Domain\Updates;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Drivers\Data\LogCursor;
+use App\Domain\Drivers\Data\LogScan;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
 use App\Domain\Runs\Exceptions\StepTimedOut;
@@ -41,6 +42,11 @@ use Throwable;
  *   be missing. More candidates than the cap: warning too.
  * - A fatal whose signature was already in the log before the baseline is a
  *   warning ("fatal preexistent repetit"), not a failure.
+ * - UZEROWPUP-71: the new lines of wp-content/debug.log (when it is apart from
+ *   the web log) are classified like the web log's. A new PHP warning only
+ *   warns; notices and deprecations are only counted. Repeated lines are
+ *   grouped by signature (count, first and last time) in the step data, for
+ *   the aggregation of UZEROWPUP-72 and the report.
  * - HTTP connection error, timeout or too many redirects: failure. A site
  *   that does not answer after an update may be down, and a false rollback
  *   is cheaper than a store left down.
@@ -102,7 +108,7 @@ final readonly class SmokeCheckStep implements Step
 
         // First the requests, then the log: what they break must be in what is read.
         $http = $this->requestHomeRepeatedly($site);
-        [$fatals, $warnings] = $this->readLog($context, $site, $actor);
+        [$fatals, $php, $warnings] = $this->readLog($context, $site, $actor);
 
         $problems = [];
         if ($fatals['count'] > 0) {
@@ -112,8 +118,22 @@ final readonly class SmokeCheckStep implements Step
             $problems[] = $http['failure'];
         }
 
-        $output = implode("\n", [...array_map(static fn (string $w): string => "AVÍS: {$w}", $warnings), ...$fatals['lines']]);
-        $data = ['fatals' => $fatals['count'], 'repeated_fatals' => $fatals['repeated'], 'http_status' => $http['status'], 'warnings' => $warnings];
+        $output = implode("\n", [
+            ...array_map(static fn (string $w): string => "AVÍS: {$w}", $warnings),
+            ...$fatals['lines'],
+            ...array_map(static fn (LogIssueGroup $g): string => "×{$g->count} [{$g->firstSeen} – {$g->lastSeen}] {$g->message}", $php['groups']),
+        ]);
+        $data = [
+            'fatals' => $fatals['count'],
+            'repeated_fatals' => $fatals['repeated'],
+            'http_status' => $http['status'],
+            'warnings' => $warnings,
+            'php_warnings' => $php['warnings'],
+            'php_notices' => $php['notices'],
+            'repeated_warnings' => $php['repeated'],
+            'fatal_groups' => array_map(static fn (LogIssueGroup $g): array => $g->toArray(), $fatals['groups']),
+            'warning_groups' => array_map(static fn (LogIssueGroup $g): array => $g->toArray(), $php['groups']),
+        ];
         $warned = $warnings === [] ? '' : ' AVÍS: '.implode('; ', $warnings).'.';
 
         if ($problems !== []) {
@@ -124,49 +144,125 @@ final readonly class SmokeCheckStep implements Step
     }
 
     /**
-     * The new fatals and the warnings. Any error reading the log is a warning:
-     * the HTTP check still decides (only the step timeout is let through).
+     * The new fatals, the new warnings and notices, and the warnings (notes).
+     * Any error reading a log is a note: the HTTP check still decides (only
+     * the step timeout is let through).
      *
-     * @return array{array{count: int, repeated: int, lines: list<string>}, list<string>}
+     * @return array{array{count: int, repeated: int, lines: list<string>, groups: list<LogIssueGroup>}, array{warnings: int, repeated: int, distinct: int, notices: int, groups: list<LogIssueGroup>}, list<string>}
      */
     private function readLog(StepContext $context, Site $site, AuditActor $actor): array
     {
-        $none = ['count' => 0, 'repeated' => 0, 'lines' => []];
+        $none = ['count' => 0, 'repeated' => 0, 'lines' => [], 'groups' => []];
+        $noPhp = ['warnings' => 0, 'repeated' => 0, 'distinct' => 0, 'notices' => 0, 'groups' => []];
         $baseline = $context->resultOf(PhpLogBaselineStep::NAME);
         $path = $baseline['path'] ?? null;
         if ($baseline === []) {
-            return [$none, ['no hi ha cap posició base del log de PHP (el pas «'.PhpLogBaselineStep::NAME."» no s'ha executat)"]];
+            return [$none, $noPhp, ['no hi ha cap posició base del log de PHP (el pas «'.PhpLogBaselineStep::NAME."» no s'ha executat)"]];
         }
         if (! is_string($path)) {
-            return [$none, ["el log de PHP no era llegible abans d'actualitzar"]];
+            return [$none, $noPhp, ["el log de PHP no era llegible abans d'actualitzar"]];
         }
 
         $warnings = [];
         if (($baseline['web_verified'] ?? false) !== true) {
             $warnings[] = 'camí del log no verificat pel web';
         }
+        $known = $this->stringsOf($baseline['signatures'] ?? null);
+        $knownWarnings = $this->stringsOf($baseline['warning_signatures'] ?? null);
+        $sources = [$this->cursorOf($baseline)];
+        $debug = $baseline['debug'] ?? null;
+        if (is_array($debug) && is_string($debug['path'] ?? null)) {
+            $sources[] = $this->cursorOf($debug);
+        }
+
+        $fatalLines = [];
+        $warningLines = [];
+        $notices = 0;
         try {
-            $cursor = new LogCursor($path, is_int($baseline['offset'] ?? null) ? $baseline['offset'] : 0, is_string($baseline['file_id'] ?? null) ? $baseline['file_id'] : null);
-            $known = array_values(array_filter(is_array($baseline['signatures'] ?? null) ? $baseline['signatures'] : [], is_string(...)));
-            $scan = ($this->driverFor)($site, $actor)->phpLogFatalsSince($cursor, $this->settings->maxCandidateLines);
-            $fatals = $this->scanner->fatals($scan->lines, $known);
+            $driver = ($this->driverFor)($site, $actor);
+            foreach ($sources as $cursor) {
+                // A source that fails is a note, and the others are still read.
+                try {
+                    $scan = $driver->phpLogScanSince($cursor, $this->settings->maxCandidateLines, $this->settings->maxCandidateLines);
+                    $fatalLines = [...$fatalLines, ...$scan->lines];
+                    $warningLines = [...$warningLines, ...$scan->warnings];
+                    $notices += $scan->notices;
+                    $warnings = [...$warnings, ...$this->scanNotes($scan, $cursor)];
+                } catch (StepTimedOut $e) {
+                    throw $e;
+                } catch (Throwable $e) {
+                    $warnings[] = "no s'ha pogut llegir el log de PHP «{$cursor->path}»: ".$this->redactor->redact($e->getMessage());
+                }
+            }
         } catch (StepTimedOut $e) {
             throw $e;
         } catch (Throwable $e) {
-            return [$none, [...$warnings, "no s'ha pogut llegir el log de PHP: ".$this->redactor->redact($e->getMessage())]];
+            return [$none, $noPhp, [...$warnings, "no s'ha pogut llegir el log de PHP: ".$this->redactor->redact($e->getMessage())]];
         }
 
-        if ($scan->rotated) {
-            $warnings[] = "el log ha rotat durant l'actualització: poden faltar línies".($scan->siblingRead ? " (s'ha llegit també el fitxer rotat)" : '');
-        }
-        if ($scan->capped) {
-            $warnings[] = "hi havia més de {$this->settings->maxCandidateLines} línies candidates: només s'han mirat les primeres";
-        }
+        $warnings = array_values(array_unique($warnings));
+        $fatals = $this->scanner->fatals($fatalLines, $known);
+        // A fatal line can also hold a warning part, so both kinds of line are looked at.
+        $php = [...$this->scanner->warnings([...$fatalLines, ...$warningLines], $knownWarnings), 'notices' => $notices];
         if ($fatals['repeated'] > 0) {
             $warnings[] = "fatal preexistent repetit ({$fatals['repeated']}): ja era al log abans d'actualitzar";
         }
+        if ($php['warnings'] > 0) {
+            $warnings[] = "{$php['warnings']} warning(s) nou(s) de PHP al log ({$this->groupsLabel($php)})";
+        }
 
-        return [$fatals, $warnings];
+        return [$fatals, $php, $warnings];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function stringsOf(mixed $value): array
+    {
+        return array_values(array_filter(is_array($value) ? $value : [], is_string(...)));
+    }
+
+    /**
+     * @param  array<array-key, mixed>  $data  a baseline entry: path, offset and file_id
+     */
+    private function cursorOf(array $data): LogCursor
+    {
+        return new LogCursor(
+            is_string($data['path'] ?? null) ? $data['path'] : null,
+            is_int($data['offset'] ?? null) ? $data['offset'] : 0,
+            is_string($data['file_id'] ?? null) ? $data['file_id'] : null,
+        );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function scanNotes(LogScan $scan, LogCursor $cursor): array
+    {
+        $notes = [];
+        if ($scan->rotated) {
+            $notes[] = "el log ha rotat durant l'actualització: poden faltar línies".($scan->siblingRead ? " (s'ha llegit també el fitxer rotat)" : '');
+        }
+        if ($scan->capped) {
+            $notes[] = "hi havia més de {$this->settings->maxCandidateLines} línies candidates de fatals a «{$cursor->path}»: només s'han mirat les primeres";
+        }
+        if ($scan->warningsCapped) {
+            $notes[] = "hi havia més de {$this->settings->maxCandidateLines} línies candidates de warnings a «{$cursor->path}»: només s'han mirat les primeres";
+        }
+
+        return $notes;
+    }
+
+    /**
+     * The real number of different new warnings, and how many are kept.
+     *
+     * @param  array{distinct: int, groups: list<LogIssueGroup>}  $php
+     */
+    private function groupsLabel(array $php): string
+    {
+        $kept = count($php['groups']);
+
+        return "{$php['distinct']} missatge(s) diferent(s)".($php['distinct'] > $kept ? ", se'n desen {$kept}" : '');
     }
 
     /**

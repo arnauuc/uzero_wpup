@@ -224,6 +224,15 @@ return [
         'fatal_patterns' => [
             '/^(?:\[[^\]]*\]\s*)*(?:AH\d+:\s*Got error \')?(?:PHP message:\s*)?PHP (?:Fatal error|Parse error):\s/',
         ],
+        // UZEROWPUP-71: same anchoring as the fatals. A new warning only warns; notices and deprecations are counted.
+        'warning_patterns' => [
+            '/^(?:\[[^\]]*\]\s*)*(?:AH\d+:\s*Got error \')?(?:PHP message:\s*)?PHP Warning:\s/',
+        ],
+        'notice_patterns' => [
+            '/^(?:\[[^\]]*\]\s*)*(?:AH\d+:\s*Got error \')?(?:PHP message:\s*)?PHP (?:Notice|Deprecated|Strict Standards):\s/',
+        ],
+        // Most distinct messages kept (with their counts) in the step data.
+        'max_groups' => 20,
     ],
 
     /*

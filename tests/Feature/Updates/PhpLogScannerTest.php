@@ -5,13 +5,14 @@ declare(strict_types=1);
 use App\Domain\Secrets\SecretRedactor;
 use App\Domain\Updates\PhpLogScanner;
 use App\Domain\Updates\SmokeCheckSettings;
+use App\Enums\PhpLogLevel;
 
 /**
  * @param  list<string>|null  $patterns
  */
 function smokeSettings(?array $patterns = null, int $reportedLines = 5, int $lineMaxChars = 300): SmokeCheckSettings
 {
-    return new SmokeCheckSettings(3000, 30, 5, 3, 0, true, 200, 1024, $reportedLines, $lineMaxChars, $patterns ?? app(SmokeCheckSettings::class)->fatalPatterns);
+    return new SmokeCheckSettings(3000, 30, 5, 3, 0, true, 200, 1024, $reportedLines, $lineMaxChars, $patterns ?? app(SmokeCheckSettings::class)->fatalPatterns, app(SmokeCheckSettings::class)->warningPatterns, app(SmokeCheckSettings::class)->noticePatterns, 20);
 }
 
 function scanner(): PhpLogScanner
@@ -88,7 +89,7 @@ it('does not count a fatal that was already in the log before the baseline', fun
 });
 
 it('finds nothing in an empty or clean log', function (): void {
-    expect(scanner()->fatals([]))->toBe(['count' => 0, 'repeated' => 0, 'lines' => []])
+    expect(scanner()->fatals([]))->toBe(['count' => 0, 'repeated' => 0, 'lines' => [], 'groups' => []])
         ->and(scanner()->fatals(['[x] PHP Notice:  x'])['count'])->toBe(0);
 });
 
@@ -108,9 +109,77 @@ it('boots with the configured patterns', function (): void {
 it('covers the worst case of the step with the configured timeout', function (): void {
     $settings = app(SmokeCheckSettings::class);
 
-    expect($settings->worstCaseSeconds(15, 300))->toBe(15 + 8 * 300 + 3 * 6 * 30 + 2 * 2)
+    expect($settings->worstCaseSeconds(15, 300))->toBe(15 + SmokeCheckSettings::REMOTE_COMMANDS * 300 + 3 * 6 * 30 + 2 * 2)
         ->and($settings->stepTimeoutSeconds)->toBeGreaterThanOrEqual($settings->worstCaseSeconds(
             config()->integer('wpup.ssh.connect_timeout_seconds'),
             config()->integer('wpup.ssh.command_timeout_seconds'),
         ));
+});
+
+it('classifies the lines of the PHP log by level, anchored to the log format', function (string $line, ?PhpLogLevel $level): void {
+    expect(scanner()->level($line))->toBe($level);
+})->with([
+    'fatal' => ['[06-Nov-2026 10:00:00 UTC] PHP Fatal error:  Uncaught Error: x in /a.php:1', PhpLogLevel::Fatal],
+    'warning' => ['[06-Nov-2026 10:00:00 UTC] PHP Warning:  Undefined variable $x in /a.php on line 2', PhpLogLevel::Warning],
+    'apache warning' => ['[Fri Nov 06 10:00:00.1 2026] [php:warn] [pid 12] [client 1.2.3.4:5] PHP Warning:  x in /a.php on line 4', PhpLogLevel::Warning],
+    'notice' => ['[06-Nov-2026 10:00:00 UTC] PHP Notice:  Undefined index: a in /a.php on line 2', PhpLogLevel::Notice],
+    'deprecated' => ['[06-Nov-2026 10:00:00 UTC] PHP Deprecated:  x is deprecated in /a.php on line 2', PhpLogLevel::Notice],
+    'plugin message that says warning' => ['[06-Nov-2026 10:00:00 UTC] Stripe: PHP Warning: reported by the API', null],
+    'plain line' => ['WordPress database error Table x doesn\'t exist', null],
+]);
+
+it('groups repeated lines by signature with count and first and last time, by timestamp and redacted', function (): void {
+    $redactor = new SecretRedactor;
+    $redactor->register('s3cr3t-token-value');
+    $scanner = new PhpLogScanner($redactor, smokeSettings());
+
+    $groups = $scanner->warnings([
+        '[06-Nov-2026 10:00:07 UTC] PHP Warning:  bad s3cr3t-token-value in /a.php on line 2',
+        '[06-Nov-2026 10:00:05 UTC] PHP Warning:  other in /b.php on line 9',
+        '[06-Nov-2026 10:00:00 UTC] PHP Warning:  bad s3cr3t-token-value in /a.php on line 2',
+        '[06-Nov-2026 10:00:08 UTC] PHP Warning:  bad s3cr3t-token-value in /a.php on line 3',
+    ])['groups'];
+
+    expect($groups)->toHaveCount(3)
+        ->and($groups[0]->count)->toBe(2)
+        ->and($groups[0]->firstSeen)->toBe('06-Nov-2026 10:00:00 UTC')
+        ->and($groups[0]->lastSeen)->toBe('06-Nov-2026 10:00:07 UTC')
+        ->and($groups[0]->message)->not->toContain('s3cr3t-token-value')->toStartWith('PHP Warning:')
+        ->and($groups[1]->count)->toBe(1);
+});
+
+it('counts new warnings and the ones already known apart, and ignores everything else', function (): void {
+    $known = scanner()->warningSignatures(['[x] PHP Warning:  a in /a.php on line 1']);
+    $result = scanner()->warnings([
+        '[y] PHP Warning:  a in /a.php on line 1',
+        '[x] PHP Warning:  b in /a.php on line 2',
+        '[x] PHP Notice:  c in /a.php on line 2',
+        '[x] PHP Fatal error:  d in /a.php:4',
+        'plain',
+    ], $known);
+
+    expect($result['warnings'])->toBe(1)->and($result['repeated'])->toBe(1)->and($result['distinct'])->toBe(1);
+});
+
+it('splits a proxy_fcgi line with several messages before classifying it', function (): void {
+    $line = "[Fri Nov 06 10:00:00 2026] [proxy_fcgi:error] [pid 1] AH01071: Got error 'PHP message: PHP Warning:  careful in /a.php on line 1PHP message: PHP Fatal error:  Uncaught Error: boom in /b.php:2'";
+
+    $fatals = scanner()->fatals([$line]);
+    $warnings = scanner()->warnings([$line]);
+
+    expect($fatals['lines'][0])->toContain('Fatal error');
+    expect($fatals['lines'][0])->not->toContain('careful');
+    expect($fatals['count'])->toBe(1)
+        ->and($warnings['warnings'])->toBe(1)
+        ->and(scanner()->signatures([$line]))->toHaveCount(1);
+});
+
+it('caps the groups kept but reports how many there were', function (): void {
+    $base = app(SmokeCheckSettings::class);
+    $settings = new SmokeCheckSettings(3000, 30, 5, 3, 0, true, 200, 1024, 5, 300, $base->fatalPatterns, $base->warningPatterns, $base->noticePatterns, 2);
+    $lines = array_map(static fn (int $i): string => "[x] PHP Warning:  w{$i} in /a.php on line {$i}", [1, 2, 3, 4]);
+
+    $result = (new PhpLogScanner(new SecretRedactor, $settings))->warnings($lines);
+
+    expect($result['groups'])->toHaveCount(2)->and($result['distinct'])->toBe(4);
 });
