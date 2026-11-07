@@ -142,31 +142,20 @@ final class RollbackCommand extends WpupCommand implements ChangesState
     }
 
     /**
-     * The default table, plus what the database step says when it left the database untouched.
+     * The default table (or JSON), plus what the database step says when it left the database untouched.
      *
      * @param  list<Run>  $runs
      */
     private function present(array $runs): void
     {
+        $this->presentRuns($runs);
         if ($this->wantsJson()) {
-            $this->emitJson(['runs' => array_map(fn (Run $run): array => [
-                'id' => $run->id, 'site' => $run->site?->name, 'type' => $run->type->value, 'status' => $run->status->value,
-                'source_run_id' => $run->parent_run_id, 'database' => $this->databaseStep($run)?->result, 'result' => $run->result_summary,
-            ], $runs)]);
-
             return;
         }
-
-        $this->table(['Execució', 'Lloc', 'Estat', 'Motiu'], array_map(static fn (Run $run): array => [
-            "#{$run->id}", $run->targetLabel(), $run->status->value, $run->failureReason() ?? '',
-        ], $runs));
         foreach ($runs as $run) {
             $result = $this->databaseStep($run)->result ?? [];
             if (($result['restored'] ?? null) === false) {
                 $this->warn(is_string($result['warning'] ?? null) ? $result['warning'] : 'La base de dades no s\'ha restaurat.');
-                if (is_string($result['force_command'] ?? null)) {
-                    $this->line("Per restaurar-la igualment (es perden les dades noves): {$result['force_command']}");
-                }
             }
         }
     }

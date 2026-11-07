@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Domain\Audit\AuditActor;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\BackupTargetRegistry;
+use App\Domain\Backups\FlysystemTarget;
 use App\Domain\Backups\RestoreMaintenanceStep;
 use App\Domain\Backups\RestorePointRetention;
 use App\Domain\Backups\RestorePointService;
@@ -13,6 +14,8 @@ use App\Domain\Backups\SiteLocalDestination;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Drivers\Data\ComponentVersion;
+use App\Domain\Drivers\Data\RemoteFile;
+use App\Domain\Drivers\Exceptions\RemoteCommandFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Inventory\InventoryStep;
 use App\Domain\Inventory\SiteInventory;
@@ -36,6 +39,7 @@ use App\Enums\RunType;
 use App\Enums\UserRole;
 use App\Models\AuditLogEntry;
 use App\Models\Backup;
+use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Run;
 use App\Models\RunChange;
 use App\Models\Site;
@@ -44,8 +48,11 @@ use App\Models\User;
 use App\Providers\AppServiceProvider;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
+use League\Flysystem\Filesystem;
+use League\Flysystem\Local\LocalFilesystemAdapter;
 use Tests\Support\FakeDriver;
 
 /*
@@ -78,11 +85,19 @@ function manualRollbackPipeline(FakeDriver $driver): void
  * A succeeded update with its inventory and verified restore point, after
  * which the "update" changed classic-editor and the database (an option).
  */
-function manualRollbackUpdate(FakeDriver $driver, string $name = 'botiga'): Run
+function manualRollbackUpdate(FakeDriver $driver, string $name = 'botiga', ?string $externalDir = null): Run
 {
     $site = Site::factory()->create(['name' => $name]);
     SiteProfile::factory()->create(['site_id' => $site->id]);
     app(SiteLocalDestination::class)->attach($site);
+    if ($externalDir !== null) {
+        // An external destination that also holds the point (after the site-local copy).
+        $record = BackupTargetRecord::factory()->create(['type' => BackupTargetType::Sftp, 'name' => 'extern']);
+        $site->backupTargets()->attach($record->id);
+        app(BackupTargetRegistry::class)->register(BackupTargetType::Sftp, static fn (): BackupTarget => new FlysystemTarget(
+            new Filesystem(new LocalFilesystemAdapter($externalDir)), app(SecretRedactor::class), 1_048_576,
+        ));
+    }
     $user = User::query()->where('unix_username', 'oper1')->sole();
     $update = Run::factory()->create(['type' => RunType::Update, 'site_id' => $site->id, 'user_id' => $user->id, 'actor' => $user->name,
         'channel' => AuditChannel::Cli, 'status' => RunStatus::Succeeded, 'finished_at' => now()]);
@@ -100,7 +115,47 @@ function manualRollbackUpdate(FakeDriver $driver, string $name = 'botiga'): Run
 
 function manualRollbackRun(): Run
 {
-    return Run::query()->where('type', RunType::Rollback)->sole();
+    return Run::query()->where('type', RunType::Rollback)->latest('id')->firstOrFail();
+}
+
+/**
+ * @return array{local: Backup, external: Backup}
+ */
+function manualRollbackCopies(Run $update, BackupKind $kind): array
+{
+    $rows = Backup::query()->with('backupTarget')->where('run_id', $update->id)->where('kind', $kind)->get();
+    $local = $rows->first(fn (Backup $b): bool => $b->backupTarget?->type === BackupTargetType::SiteLocal);
+    $external = $rows->first(fn (Backup $b): bool => $b->backupTarget?->type === BackupTargetType::Sftp);
+
+    return ['local' => $local ?? throw new LogicException('no local copy'), 'external' => $external ?? throw new LogicException('no external copy')];
+}
+
+/** A FakeDriver that runs $onMaintenance once, when the maintenance mode is first switched on (after the check). */
+class ManualRollbackDriver extends FakeDriver
+{
+    public ?Closure $onMaintenance = null;
+
+    public bool $failMirror = false;
+
+    public function setMaintenanceMode(bool $enabled): void
+    {
+        parent::setMaintenanceMode($enabled);
+        if ($enabled && $this->onMaintenance !== null) {
+            $hook = $this->onMaintenance;
+            $this->onMaintenance = null;
+            $hook($this);
+        }
+    }
+
+    public function restoreFiles(RemoteFile $archive): void
+    {
+        if ($this->failMirror) {
+            $this->writeCalls[] = 'restoreFiles';
+
+            throw new RemoteCommandFailed('rsync: connexió perduda');
+        }
+        parent::restoreFiles($archive);
+    }
 }
 
 it('rolls back a succeeded update as a rollback run linked to it: point of the current state, files, database, maintenance as before', function (): void {
@@ -308,4 +363,129 @@ it('holds the point of an update undone by hand until it is reviewed, also one t
     Backup::query()->where('run_id', $update->id)->update(['expires_at' => now()->subDay()]);
 
     expect($holds())->not->toHaveKey($directory);
+});
+
+it('can be retried after a manual rollback that failed once the files were restored', function (): void {
+    $driver = new FakeDriver;
+    manualRollbackPipeline($driver);
+    $update = manualRollbackUpdate($driver);
+    // The earlier rollback restored the files (changes reverted) and failed in the database.
+    $update->changes()->update(['result' => ChangeResult::Reverted->value, 'reverted_at' => now()]);
+    $update->update(['reverted_at' => now()]);
+    $failed = Run::factory()->create(['type' => RunType::Rollback, 'site_id' => $update->site_id, 'parent_run_id' => $update->id, 'status' => RunStatus::Failed]);
+
+    $exit = Artisan::call('rollback', ['run' => (string) $update->id, '--force' => true, '--wait' => true]);
+
+    $run = manualRollbackRun();
+    expect($exit)->toBe(0, Artisan::output())
+        ->and($run->id)->not->toBe($failed->id)
+        ->and($run->status)->toBe(RunStatus::Succeeded)
+        ->and($driver->options)->not->toHaveKey('woocommerce_db_version');
+});
+
+it('uses an expired copy the retention still keeps: an unreviewed failed update, or a protected copy', function (Closure $keep): void {
+    $driver = new FakeDriver;
+    manualRollbackPipeline($driver);
+    $update = manualRollbackUpdate($driver);
+    Backup::query()->where('run_id', $update->id)->update(['expires_at' => now()->subDay()]);
+    $keep($update);
+
+    $exit = Artisan::call('rollback', ['run' => (string) $update->id, '--force' => true, '--wait' => true]);
+
+    expect($exit)->toBe(0, Artisan::output())
+        ->and(manualRollbackRun()->status)->toBe(RunStatus::Succeeded)
+        ->and($driver->components['plugin:classic-editor']->version)->toBe('1.6.3');
+})->with([
+    'failed, not reviewed' => [fn (Run $u) => $u->update(['status' => RunStatus::Failed])],
+    'protected' => [fn (Run $u) => Backup::query()->where('run_id', $u->id)->update(['protected' => true])],
+]);
+
+it('verifies a site-local copy on the site and an external one only while restoring it, and restores exactly the copy it chose', function (): void {
+    $dir = sys_get_temp_dir().'/wpup-manual-rollback-'.bin2hex(random_bytes(6));
+    mkdir($dir, 0700, true);
+
+    try {
+        $driver = new FakeDriver;
+        manualRollbackPipeline($driver);
+        $update = manualRollbackUpdate($driver, externalDir: $dir);
+        $files = manualRollbackCopies($update, BackupKind::Files);
+        $driver->files["restore-points/{$files['local']->path}"] .= 'alterat';
+
+        $exit = Artisan::call('rollback', ['run' => (string) $update->id, '--force' => true, '--wait' => true]);
+
+        $run = manualRollbackRun();
+        $check = $run->steps()->where('name', RollbackCheckStep::NAME)->sole();
+        expect($exit)->toBe(0, Artisan::output())
+            ->and($check->result['chosen'] ?? null)->toMatchArray(['files' => $files['external']->id, 'database' => manualRollbackCopies($update, BackupKind::Database)['local']->id])
+            ->and($check->output)->toContain("se'n comprovarà el SHA-256 mentre es descarregui")
+            ->and(AuditLogEntry::query()->where('action', 'rollback.files')->sole()->context['backup_id'] ?? null)->toBe($files['external']->id)
+            ->and($driver->components['plugin:classic-editor']->version)->toBe('1.6.3');
+    } finally {
+        File::deleteDirectory($dir);
+    }
+});
+
+it('never falls back to another copy than the one it checked, and puts the maintenance mode back when nothing was touched', function (): void {
+    $dir = sys_get_temp_dir().'/wpup-manual-rollback-'.bin2hex(random_bytes(6));
+    mkdir($dir, 0700, true);
+
+    try {
+        $driver = new ManualRollbackDriver;
+        manualRollbackPipeline($driver);
+        $update = manualRollbackUpdate($driver, externalDir: $dir);
+        $local = manualRollbackCopies($update, BackupKind::Files)['local'];
+        // Checked fine; gone by the time the files step runs. The external copy is never used instead.
+        $driver->onMaintenance = static fn () => $local->update(['deleted_at' => now()]);
+
+        Artisan::call('rollback', ['run' => (string) $update->id, '--force' => true, '--wait' => true]);
+
+        $run = manualRollbackRun();
+        $step = $run->steps()->where('name', FilesRollbackStep::NAME)->sole();
+        expect($run->status)->toBe(RunStatus::Failed)
+            ->and($step->error)->toContain('que ha comprovat aquest rollback ja no es pot fer servir')
+            ->toContain('Aquest pas no ha tocat el lloc: el mode manteniment torna a estar com abans')
+            ->and($driver->writeCalls)->not->toContain('restoreFiles')
+            ->and($driver->components['plugin:classic-editor']->version)->toBe('1.7.0')
+            ->and($driver->maintenance)->toBeFalse();
+    } finally {
+        File::deleteDirectory($dir);
+    }
+});
+
+it('puts the maintenance mode back when the external copy it restores fails its checksum while downloading', function (): void {
+    $dir = sys_get_temp_dir().'/wpup-manual-rollback-'.bin2hex(random_bytes(6));
+    mkdir($dir, 0700, true);
+
+    try {
+        $driver = new FakeDriver;
+        manualRollbackPipeline($driver);
+        $update = manualRollbackUpdate($driver, externalDir: $dir);
+        $files = manualRollbackCopies($update, BackupKind::Files);
+        $driver->files["restore-points/{$files['local']->path}"] .= 'alterat';
+        file_put_contents("{$dir}/{$files['external']->path}", 'malmès');
+
+        Artisan::call('rollback', ['run' => (string) $update->id, '--force' => true, '--wait' => true]);
+
+        $run = manualRollbackRun();
+        expect($run->status)->toBe(RunStatus::Failed)
+            ->and($run->steps()->where('name', FilesRollbackStep::NAME)->sole()->error)->toContain("No s'ha restaurat res")
+            ->and($driver->writeCalls)->not->toContain('restoreFiles')
+            ->and($driver->maintenance)->toBeFalse();
+    } finally {
+        File::deleteDirectory($dir);
+    }
+});
+
+it('leaves the maintenance mode on when the site may be half restored', function (): void {
+    $driver = new ManualRollbackDriver;
+    manualRollbackPipeline($driver);
+    $update = manualRollbackUpdate($driver);
+    $driver->failMirror = true;
+
+    Artisan::call('rollback', ['run' => (string) $update->id, '--force' => true, '--wait' => true]);
+
+    $run = manualRollbackRun();
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and($run->steps()->where('name', FilesRollbackStep::NAME)->sole()->error)->toContain('restaurat a mitges')
+        ->and($driver->maintenance)->toBeTrue();
 });

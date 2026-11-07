@@ -7,7 +7,10 @@ namespace App\Domain\Rollback;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Backups\BackupTarget;
 use App\Domain\Backups\FilesBackup;
+use App\Domain\Backups\IntactCopy;
 use App\Domain\Backups\RestoreRefused;
+use App\Domain\Backups\RestoreSelection;
+use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\SiteRestore;
 use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\SiteDriver;
@@ -29,8 +32,10 @@ use Closure;
  * still applied (RollbackSource, ManualRollback), and its restore point has,
  * of the files and of the database, a live, verified and unexpired copy
  * whose destination still holds the registered SHA-256 (SiteRestore::verify,
- * computed from the bytes there). Otherwise the rollback is refused and the
- * site is not touched.
+ * computed from the bytes there; an external copy is hashed once, while the
+ * rollback steps download it, before writing anything). Otherwise the
+ * rollback is refused and the site is not touched. The rollback steps use
+ * exactly the copies it chose (checkedCopy()).
  *
  * Its result says what the archive left out (`pre_restore_excludes`), so the
  * point of the current state (PreRestoreBackupStep) covers everything the
@@ -102,7 +107,7 @@ final readonly class RollbackCheckStep implements ReadOnlyStep
             return StepOutcome::failed("No s'ha pogut comprovar el lloc: {$this->redactor->redact($e->getMessage())} No s'ha tocat el lloc.");
         }
 
-        $summary = "Actualització #{$source->id} reversible; còpies íntegres a la destinació: ".implode(', ', array_map(
+        $summary = "Actualització #{$source->id} reversible; còpies triades: ".implode(', ', array_map(
             static fn (Backup $row): string => "#{$row->id} ".($row->kind === BackupKind::Database ? 'BD' : 'fitxers').' ('.($row->backupTarget->name ?? '?').')',
             $chosen,
         ));
@@ -115,6 +120,38 @@ final readonly class RollbackCheckStep implements ReadOnlyStep
     }
 
     /**
+     * Of $candidates (a step's own choice of copies of the point), the one
+     * this run's check verified, so the rollback restores exactly that copy:
+     * never another one, nor one that expired since. Unchanged when the run
+     * has no check step (the update's own rollback, UZEROWPUP-60).
+     *
+     * @param  non-empty-list<Backup>  $candidates
+     * @return non-empty-list<Backup>
+     *
+     * @throws RollbackRefused when the verified copy is not among them any more (nothing restored)
+     */
+    public static function checkedCopy(StepContext $context, BackupKind $kind, array $candidates): array
+    {
+        $result = $context->resultOf(self::NAME);
+        if ($result === []) {
+            return $candidates;
+        }
+        $id = is_array($result['chosen'] ?? null) ? ($result['chosen'][$kind->value] ?? null) : null;
+        $checked = array_values(array_filter($candidates, static fn (Backup $row): bool => $row->id === $id));
+        if ($checked === []) {
+            throw new RollbackRefused('La còpia '.RestoreSelection::kindLabel($kind).(is_int($id) ? " #{$id}" : '').' que ha comprovat aquest rollback ja no es pot fer servir.');
+        }
+
+        return $checked;
+    }
+
+    /**
+     * The first copy that can be used. One at the site-local store is hashed
+     * on the site now (cheap, nothing transferred). An external one is not
+     * downloaded here: the files and database steps hash it while they
+     * download it, before anything is written to the site, so it is
+     * transferred and verified once.
+     *
      * @param  non-empty-list<Backup>  $candidates
      * @param  list<string>  $warnings
      * @return array{Backup, BackupTarget}
@@ -123,23 +160,20 @@ final readonly class RollbackCheckStep implements ReadOnlyStep
      */
     private function firstIntact(Site $site, AuditActor $actor, array $candidates, array &$warnings): array
     {
-        $failures = [];
-        foreach ($candidates as $row) {
-            try {
-                $target = $this->restore->verify($site, $row, $actor);
-            } catch (RestoreRefused $e) {
-                $failures[] = $e->getMessage();
+        try {
+            return IntactCopy::first($candidates, function (Backup $row) use ($site, $actor, &$warnings): BackupTarget {
+                $target = $this->restore->target($site, $row, $actor);
+                if (! $target instanceof SiteLocalTarget) {
+                    $warnings[] = "La còpia #{$row->id} és a «".($row->backupTarget->name ?? '?')."»: se'n comprovarà el SHA-256 mentre es descarregui, abans d'escriure res al lloc.";
 
-                continue;
-            }
-            if ($failures !== []) {
-                $warnings[] = implode(' ', $failures)." Es fa servir la còpia #{$row->id} de «".($row->backupTarget->name ?? '?').'».';
-            }
+                    return $target;
+                }
 
-            return [$row, $target];
+                return $this->restore->verify($site, $row, $actor);
+            }, $warnings);
+        } catch (RestoreRefused $e) {
+            throw new RollbackRefused($e->getMessage().' Cap còpia '.RestoreSelection::kindLabel($candidates[0]->kind)
+                .' no supera la comprovació d\'integritat: no es fa el rollback.');
         }
-
-        throw new RollbackRefused(implode(' ', $failures).' Cap còpia '.($candidates[0]->kind === BackupKind::Database ? 'de la base de dades' : 'dels fitxers')
-            .' no supera la comprovació d\'integritat: no es fa el rollback.');
     }
 }

@@ -6,6 +6,7 @@ namespace App\Domain\Rollback;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
+use App\Domain\Backups\IntactCopy;
 use App\Domain\Backups\PostRestoreCheckFailed;
 use App\Domain\Backups\RestoreRefused;
 use App\Domain\Backups\RestoreSelection;
@@ -67,6 +68,9 @@ final readonly class FilesRollbackStep implements Step
 {
     public const string NAME = 'rollback-files';
 
+    /** Data of a failure that changed nothing on the site (`restored`: no, unknown or yes). */
+    private const array UNTOUCHED = ['restored' => 'no'];
+
     /**
      * @param  Closure(Site, AuditActor): SiteDriver  $driverFor
      */
@@ -108,38 +112,37 @@ final readonly class FilesRollbackStep implements Step
         // Connecting reveals the site's credential: checked again as whoever launched the run (ADR-0011).
         $actor = $this->authorization->actorFor($context->run, Ability::RunOperations);
         if ($actor === null) {
-            return StepOutcome::failed(RunAuthorization::deniedMessage($context->run));
+            return StepOutcome::failed(RunAuthorization::deniedMessage($context->run), '', self::UNTOUCHED);
         }
 
         try {
             $source = RollbackSource::of($context->run);
         } catch (RollbackRefused $e) {
-            return StepOutcome::failed($e->getMessage());
+            return StepOutcome::failed($e->getMessage(), '', self::UNTOUCHED);
         }
         $site = $source->site;
         if ($site === null) {
-            return StepOutcome::failed("L'execució #{$source->id} no té cap lloc: no hi ha res per restaurar.");
+            return StepOutcome::failed("L'execució #{$source->id} no té cap lloc: no hi ha res per restaurar.", '', self::UNTOUCHED);
         }
         $audit = ['run_id' => $context->run->id, 'source_run_id' => $source->id, 'backup_id' => null, 'restored' => 'no'];
 
         try {
             $driver = ($this->driverFor)($site, $actor);
         } catch (DriverException $e) {
-            return StepOutcome::failed("No s'ha pogut connectar amb el lloc: no s'ha restaurat res. {$this->redactor->redact($e->getMessage())}");
+            return StepOutcome::failed("No s'ha pogut connectar amb el lloc: no s'ha restaurat res. {$this->redactor->redact($e->getMessage())}", '', self::UNTOUCHED);
         }
 
         $warnings = [];
         $maintenance = null;
 
         try {
-            $candidates = $this->candidates($site, $source);
+            $candidates = RollbackCheckStep::checkedCopy($context, BackupKind::Files, $this->candidates($site, $source));
             $maintenance = MaintenanceMode::state($driver);
             if ($maintenance === null) {
                 $warnings[] = "No s'ha pogut saber si el mode manteniment era actiu: s'activarà després de restaurar els fitxers. Revisa'l a mà.";
             }
             $this->restore->purgeTemporaries($driver);
-            $this->changes->started($source);
-            $row = $this->mirror($site, $driver, $candidates, $actor, $audit, $warnings);
+            $row = $this->mirror($site, $source, $driver, $candidates, $actor, $audit, $warnings);
 
             try {
                 $installed = $driver->installedComponents();
@@ -166,7 +169,7 @@ final readonly class FilesRollbackStep implements Step
             $reason = $this->redactor->redact($e->getMessage());
             $this->record($actor, $site, AuditResult::Failure, $audit + ['reason' => $reason]);
 
-            return StepOutcome::failed($reason.$this->done($audit), implode("\n", $warnings));
+            return StepOutcome::failed($reason.$this->done($audit), implode("\n", $warnings), ['restored' => $audit['restored']]);
         } catch (Throwable $e) {
             $this->keepMaintenance($driver, $maintenance, $audit, $context->run->id, $warnings);
             $this->record($actor, $site, AuditResult::Failure, $audit + ['exception' => $e::class]);
@@ -201,41 +204,41 @@ final readonly class FilesRollbackStep implements Step
 
     /**
      * Mirrors the first candidate whose bytes are the registered ones. A copy
-     * refused by its check changed nothing; any other failure may have.
+     * refused by its check changed nothing; any other failure may have. Right
+     * before the first mirror the update is marked as being undone. Any
+     * other exception (a DriverException: the mirror failed) means the site
+     * may be half restored.
      *
      * @param  non-empty-list<Backup>  $candidates
      * @param  array<string, mixed>  $audit
      * @param  list<string>  $warnings
      *
      * @throws RollbackRefused when no copy holds its bytes (nothing restored)
-     * @throws DriverException when the mirror failed (the site may be half restored)
      */
-    private function mirror(Site $site, SiteDriver $driver, array $candidates, AuditActor $actor, array &$audit, array &$warnings): Backup
+    private function mirror(Site $site, Run $source, SiteDriver $driver, array $candidates, AuditActor $actor, array &$audit, array &$warnings): Backup
     {
-        $failures = [];
-        foreach ($candidates as $row) {
-            $audit['backup_id'] = $row->id;
-            $audit['restored'] = 'unknown';
+        try {
+            [$row] = IntactCopy::first($candidates, function (Backup $row) use ($site, $source, $driver, $actor, &$audit): void {
+                $audit['backup_id'] = $row->id;
+                $audit['restored'] = 'unknown';
+                $this->changes->started($source);
 
-            try {
-                $this->restore->restore($site, $driver, $row, $actor);
-            } catch (RestoreRefused|IntegrityCheckFailed $e) {
-                $audit['restored'] = 'no';
-                $failures[] = "Còpia #{$row->id}: {$this->redactor->redact($e->getMessage())}";
+                try {
+                    $this->restore->restore($site, $driver, $row, $actor);
+                } catch (RestoreRefused|IntegrityCheckFailed $e) {
+                    $audit['restored'] = 'no';
 
-                continue;
-            }
-            $audit['restored'] = 'yes';
-            if ($failures !== []) {
-                $warnings[] = implode(' ', $failures)." Es fa servir la còpia #{$row->id} de «".($row->backupTarget->name ?? '?').'».';
-            }
+                    throw $e;
+                }
+            }, $warnings, [IntegrityCheckFailed::class], fn (Backup $row, Throwable $e): string => "Còpia #{$row->id}: {$this->redactor->redact($e->getMessage())}");
+        } catch (RestoreRefused $e) {
+            $audit['backup_id'] = null;
 
-            return $row;
+            throw new RollbackRefused($e->getMessage().' Cap còpia dels fitxers no té el SHA-256 registrat.');
         }
+        $audit['restored'] = 'yes';
 
-        $audit['backup_id'] = null;
-
-        throw new RollbackRefused(implode(' ', $failures).' Cap còpia dels fitxers no té el SHA-256 registrat.');
+        return $row;
     }
 
     /**

@@ -79,6 +79,16 @@ final readonly class RestorePointRetention
     }
 
     /**
+     * Whether the retention holds the points of $run past their expiry until
+     * someone reviews it (RetentionHold::IncidentNotReviewed). A manual
+     * rollback (UZEROWPUP-61) can still use such a point.
+     */
+    public static function heldForReview(Run $run): bool
+    {
+        return $run->reviewed_at === null && self::isIncident($run);
+    }
+
+    /**
      * What a purge would do now, for $sites (every site when null).
      *
      * @param  list<int>|null  $siteIds
@@ -395,7 +405,7 @@ final readonly class RestorePointRetention
             $point->isProtected() => RetentionHold::Protected,
             // A row whose run is gone (or not readable) is treated as unfinished: never guessed.
             $runId !== null && ($run === null || ! $run->status->isTerminal()) => RetentionHold::RunInProgress,
-            $run !== null && $run->reviewed_at === null && self::isIncident($run) => RetentionHold::IncidentNotReviewed,
+            $run !== null && self::heldForReview($run) => RetentionHold::IncidentNotReviewed,
             ($runId !== null && in_array($runId, $context->parentRunIds, true))
                 || in_array($point->directory, $context->neededDirectories, true) => RetentionHold::NeededByRun,
             $point->directory === $newestVerified => RetentionHold::NewestOfActiveSite,

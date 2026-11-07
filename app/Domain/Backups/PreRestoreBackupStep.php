@@ -11,6 +11,7 @@ use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\Step;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
+use App\Domain\Secrets\SecretRedactor;
 use App\Enums\BackupKind;
 use App\Enums\RunType;
 use App\Models\Site;
@@ -42,6 +43,7 @@ final readonly class PreRestoreBackupStep implements Step
         private RestoreMaintenanceStep $maintenance,
         private Closure $driverFor,
         private RunAuthorization $authorization,
+        private SecretRedactor $redactor,
         private int $timeoutSeconds,
         private string $checkStep = RestoreCheckStep::NAME,
     ) {}
@@ -77,21 +79,22 @@ final readonly class PreRestoreBackupStep implements Step
         try {
             $driver = ($this->driverFor)($site, $actor);
         } catch (DriverException $e) {
-            return StepOutcome::failed("No s'ha pogut connectar amb el lloc: no es restaura res. {$e->getMessage()}");
+            return StepOutcome::failed("No s'ha pogut connectar amb el lloc: no es restaura res. {$this->redactor->redact($e->getMessage())}");
         }
 
         try {
             $point = $this->restorePoints->create($site, $driver, $context->run, $actor, $excludes);
         } catch (BackupFailed $e) {
+            $reason = $this->redactor->redact($e->getMessage());
             if (! $withoutPreBackup) {
                 $note = $this->maintenance->restoreState($driver, $context, on: false);
 
-                return StepOutcome::failed(trim("No s'ha pogut fer el punt de restauració de l'estat actual: no es restaura res. {$e->getMessage()} ".($note ?? '')));
+                return StepOutcome::failed(trim("No s'ha pogut fer el punt de restauració de l'estat actual: no es restaura res. {$reason} ".($note ?? '')));
             }
 
             return StepOutcome::succeeded(
-                "Sense punt de l'estat actual (--without-pre-backup): {$e->getMessage()}",
-                $e->getMessage(),
+                "Sense punt de l'estat actual (--without-pre-backup): {$reason}",
+                $reason,
                 ['directory' => null, 'skipped' => true],
             );
         }
