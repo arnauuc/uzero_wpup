@@ -102,7 +102,7 @@ return [
         'allowed_commands' => [
             'list', 'help',
             'site:', 'user:add', 'user:list', 'user:role', 'user:deactivate',
-            'lock:', 'backup:', 'backup-target:', 'agent:', 'client:', 'billing:', 'ssh-key:', 'secrets:', 'staging:', 'run:', 'tool:backup',
+            'lock:', 'backup:', 'backup-target:', 'agent:', 'client:', 'billing:', 'ssh-key:', 'secrets:', 'staging:', 'run:', 'notify:', 'tool:backup',
             'inventory', 'plan', 'backup', 'update', 'verify', 'rollback', 'runs', 'summary', 'report', 'cleanup', 'doctor', 'stats',
         ],
     ],

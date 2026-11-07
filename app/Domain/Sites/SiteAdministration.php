@@ -10,6 +10,7 @@ use App\Domain\Backups\SiteLocalDestination;
 use App\Domain\Planning\ComponentName;
 use App\Enums\AuditResult;
 use App\Enums\HostingPanel;
+use App\Enums\NotificationThreshold;
 use App\Enums\SiteDriverType;
 use App\Enums\UpdateStrategy;
 use App\Models\HostingAccount;
@@ -268,6 +269,14 @@ final readonly class SiteAdministration
             }
             $profile['notification_channels'] = $channels;
         }
+        if ($input->notifyMin !== null) {
+            $min = NotificationThreshold::tryFrom($input->notifyMin);
+            if ($min === null) {
+                $errors[] = 'La severitat mínima dels avisos ha de ser all, warnings o errors.';
+            } else {
+                $profile['notification_min_severity'] = $min->value;
+            }
+        }
 
         if ($input->diffThreshold !== null) {
             if (! is_numeric($input->diffThreshold) || (float) $input->diffThreshold < 0 || (float) $input->diffThreshold > 100) {
@@ -467,7 +476,7 @@ final readonly class SiteAdministration
         return [
             'verify_urls' => [], 'mask_selectors' => [], 'diff_threshold' => '0.50', 'checkout_product' => null,
             'frozen_components' => [], 'excluded_components' => [], 'notification_channels' => [],
-            'include_uploads' => false, 'external_backup' => null, 'maintenance_mode' => null,
+            'notification_min_severity' => NotificationThreshold::All->value, 'include_uploads' => false, 'external_backup' => null, 'maintenance_mode' => null,
         ];
     }
 

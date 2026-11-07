@@ -38,7 +38,8 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         {--checkout-product= : Producte de prova del checkout}
         {--freeze=* : Component congelat: slug, tipus:slug o slug@versió, que s\'hi actualitza fins a aquella versió (repetible)}
         {--exclude=* : Component exclòs (repetible)}
-        {--notify=* : Canal d\'avís: email, telegram, slack (repetible)}
+        {--notify=* : Canal d\'avís: email, telegram, slack (repetible; cap vol dir tots)}
+        {--notify-min= : Severitat mínima dels avisos del lloc: all, warnings o errors}
         {--include-uploads : Inclou uploads a la còpia}
         {--no-include-uploads : Exclou uploads de la còpia}
         {--external-backup= : Còpia externa: plesk, dropbox, plugin, other, none}
@@ -115,6 +116,7 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
             externalBackup: $this->stringOption('external-backup'),
             externalBackupNotes: $this->rawStringOption('external-backup-notes'),
             maintenance: $this->toggle('maintenance', 'no-maintenance'),
+            notifyMin: $this->stringOption('notify-min'),
         );
     }
 
