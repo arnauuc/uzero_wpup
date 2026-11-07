@@ -172,6 +172,18 @@ return [
                 'wp-fastest-cache' => ['command' => 'fastest-cache clear', 'arguments' => ['all']],
             ],
         ],
+        // When an update run may start (ADR-0006, UZEROWPUP-60): only inside the site's
+        // maintenance window (sites.default_window without one of its own), read in
+        // app.timezone, and with at least minimum_minutes of it left (an in-place site takes
+        // 5–10 min; the scheduler, UZEROWPUP-129, will estimate it from the history). A
+        // window shorter than that is refused by site:add/edit/import. A waiting run is
+        // checked again at least every recheck_seconds.
+        'window' => [
+            // Off only in the test suite (phpunit.xml), where runs start at any hour.
+            'enforced' => (bool) env('WPUP_UPDATE_WINDOW_ENFORCED', true),
+            'minimum_minutes' => 15,
+            'recheck_seconds' => 900,
+        ],
     ],
 
     /*

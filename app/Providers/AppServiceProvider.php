@@ -73,6 +73,7 @@ use App\Domain\Planning\UpdatePlanner;
 use App\Domain\Rollback\RevertedChanges;
 use App\Domain\Rollback\RollbackSteps;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
+use App\Domain\Runs\Concurrency\MaintenanceWindowGate;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunAuthorization;
@@ -181,6 +182,17 @@ class AppServiceProvider extends ServiceProvider
             ],
             self::configInt('wpup.concurrency.lease_seconds'),
         ));
+        // Bound (not a singleton): tests change the window settings per test.
+        $this->app->bind(MaintenanceWindowGate::class, static function (): MaintenanceWindowGate {
+            $default = config('wpup.sites.default_window');
+
+            return new MaintenanceWindowGate(
+                is_array($default) ? $default : throw new \UnexpectedValueException('wpup.sites.default_window must be an array.'),
+                self::configString('app.timezone'),
+                self::configInt('wpup.updates.window.minimum_minutes'),
+                config('wpup.updates.window.enforced') !== false,
+            );
+        });
         $this->app->singleton(PipelineResolver::class);
         $this->app->bind(SiteLocalSettings::class, static fn (): SiteLocalSettings => new SiteLocalSettings(
             self::configString('wpup.backups.site_local.root'),

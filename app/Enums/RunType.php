@@ -45,6 +45,17 @@ enum RunType: string
     }
 
     /**
+     * Whether the run may only start inside its site's maintenance window
+     * (ADR-0006): the runs that change a site's code. Inventories, plans and
+     * backups are light and read (or only add) data; a restore or a manual
+     * rollback is an operator's deliberate repair, wanted now.
+     */
+    public function respectsMaintenanceWindow(): bool
+    {
+        return $this === self::Update;
+    }
+
+    /**
      * Whether the run takes the lock of its hosting account (runs.hosting_account_id)
      * without a site: rotating a key must not overlap an update on that account.
      */
