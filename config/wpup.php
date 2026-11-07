@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+use App\Domain\Notifications\Channels\LogChannel;
 
 /*
  * Uzero wpup settings. Every threshold, limit and timeout lives here, never as a
@@ -333,6 +334,25 @@ return [
         'external_backup_notes_max' => 500,
         // site:import refuses larger files (UZEROWPUP-26).
         'import_max_bytes' => 1048576,
+    ],
+
+    /*
+     * Notifications (UZEROWPUP-79). Every notification goes to the log from
+     * `log_min_severity` on (all, warnings, errors), and to the destinations
+     * the operators follow. `channels`: the channel classes
+     * (App\Domain\Notifications\Channels\NotificationChannel); `address` and
+     * `secret` say whether a destination of that channel needs an address and
+     * a token or webhook (kept in the SecretStore). `error_max_length`: the
+     * redacted error kept per failed delivery.
+     */
+    'notifications' => [
+        'log_min_severity' => env('WPUP_NOTIFY_LOG_MIN_SEVERITY', 'all'),
+        'error_max_length' => 500,
+        // Delivery records (notification_deliveries) are purged by the daily cleanup after this.
+        'deliveries_retention_days' => 365,
+        'channels' => [
+            'log' => ['class' => LogChannel::class, 'address' => false, 'secret' => false],
+        ],
     ],
 
     /*

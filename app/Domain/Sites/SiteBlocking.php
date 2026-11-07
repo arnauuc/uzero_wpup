@@ -8,11 +8,12 @@ use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Inventory\PrerequisiteCheck;
 use App\Domain\Inventory\SitePrerequisites;
-use App\Domain\Notifications\SiteBlockNotifier;
+use App\Domain\Notifications\Notifier;
 use App\Enums\AuditResult;
 use App\Enums\PrerequisiteName;
 use App\Enums\SiteBlockSource;
 use App\Models\Site;
+use App\Notifications\SiteBlockedNotification;
 use Carbon\CarbonImmutable;
 use Closure;
 use Illuminate\Support\Facades\DB;
@@ -51,7 +52,7 @@ final readonly class SiteBlocking
         SitePrerequisites::REASON_INCOMPLETE,
     ];
 
-    public function __construct(private AuditLogger $audit, private SiteBlockNotifier $notifier) {}
+    public function __construct(private AuditLogger $audit, private Notifier $notifier) {}
 
     /**
      * @param  list<PrerequisiteCheck>  $checks  must hold one check per prerequisite: anything else
@@ -113,7 +114,7 @@ final readonly class SiteBlocking
                 $previous = $fresh->blocked_reason;
                 $fresh->forceFill(['blocked_reason' => null, 'blocked_at' => null, 'blocked_by' => null])->save();
                 $this->audit->record($actor, 'site.unblocked', AuditResult::Success, 'site', $fresh->id, ['previous_reason' => $previous, 'source' => SiteBlockSource::Prerequisites->value]);
-                $notify = fn () => $this->notifier->siteUnblocked($fresh);
+                $notify = fn () => $this->notifier->notify(new SiteBlockedNotification($fresh, null));
 
                 return new BlockResult(BlockOutcome::Unblocked, null);
             }
@@ -131,7 +132,7 @@ final readonly class SiteBlocking
                 'blocked_by' => SiteBlockSource::Prerequisites,
             ])->save();
             $this->audit->record($actor, 'site.blocked', AuditResult::Success, 'site', $fresh->id, ['reason' => $reason, 'source' => SiteBlockSource::Prerequisites->value]);
-            $notify = fn () => $this->notifier->siteBlocked($fresh, $reason);
+            $notify = fn () => $this->notifier->notify(new SiteBlockedNotification($fresh, $reason));
 
             return new BlockResult(BlockOutcome::Blocked, $reason);
         });

@@ -2,9 +2,13 @@
 
 declare(strict_types=1);
 
+use App\Enums\NotificationDeliveryStatus;
+use App\Enums\NotificationKind;
+use App\Enums\NotificationSeverity;
 use App\Enums\RunStatus;
 use App\Enums\ScheduledWindowStatus;
 use App\Enums\UserRole;
+use App\Models\NotificationDelivery;
 use App\Models\Run;
 use App\Models\ScheduledWindow;
 use App\Models\Site;
@@ -79,12 +83,26 @@ it('refuses a malformed period', function (): void {
     command('summary', ['--since' => 'ahir'])->expectsOutputToContain('--since')->assertFailed();
 });
 
-it('logs the daily summary from the scheduler', function (): void {
+it('notifies the daily summary from the scheduler, through the log channel', function (): void {
     summaryWindow('a-updated', ScheduledWindowStatus::Succeeded, null, ['nothing_to_do' => false, 'updated' => 2]);
-    Log::shouldReceive('info')->once()->withArgs(static fn (string $message, array $context): bool => str_contains($message, 'Resum de les actualitzacions programades')
-        && data_get($context, 'daily_summary.updated.0.site') === 'a-updated');
+    Log::shouldReceive('log')->once()->withArgs(static fn (string $level, string $message, array $context): bool => $level === 'info'
+        && str_contains($message, 'Resum de les actualitzacions programades')
+        && str_contains((string) json_encode($context['lines'] ?? null), 'a-updated'));
 
     command('engine:daily-summary')->expectsOutputToContain('Actualitzats: 1')->assertSuccessful();
+
+    $delivery = NotificationDelivery::query()->sole();
+    expect($delivery->kind)->toBe(NotificationKind::DailySummary)
+        ->and($delivery->severity)->toBe(NotificationSeverity::Info)
+        ->and($delivery->status)->toBe(NotificationDeliveryStatus::Sent);
+});
+
+it('makes the daily summary a warning when a site failed', function (): void {
+    summaryWindow('b-failed', ScheduledWindowStatus::Failed, 'ha petat');
+
+    command('engine:daily-summary')->assertSuccessful();
+
+    expect(NotificationDelivery::query()->sole()->severity)->toBe(NotificationSeverity::Warning);
 });
 
 it('is scheduled every morning at the configured time', function (): void {

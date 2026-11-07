@@ -38,6 +38,7 @@ use App\Domain\Backups\SiteRestore;
 use App\Domain\Cleanup\ArtifactCleanup;
 use App\Domain\Cleanup\CleanupService;
 use App\Domain\Cleanup\CleanupSettings;
+use App\Domain\Cleanup\NotificationDeliveryCleanup;
 use App\Domain\Cleanup\PackageVersionCleanup;
 use App\Domain\Cleanup\RunOutputCleanup;
 use App\Domain\Cleanup\ScreenshotCleanup;
@@ -70,8 +71,10 @@ use App\Domain\Inventory\WpCliReader;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Maintenance\MaintenanceGuard;
 use App\Domain\Maintenance\MaintenanceSteps;
-use App\Domain\Notifications\LogSiteBlockNotifier;
-use App\Domain\Notifications\SiteBlockNotifier;
+use App\Domain\Notifications\ChannelNotifier;
+use App\Domain\Notifications\Channels\NotificationChannel;
+use App\Domain\Notifications\NotificationChannels;
+use App\Domain\Notifications\Notifier;
 use App\Domain\Planning\ChangeAnalyzer;
 use App\Domain\Planning\FutureMinimums;
 use App\Domain\Planning\PackageVersions;
@@ -136,6 +139,7 @@ use App\Domain\Verification\Viewport;
 use App\Domain\Vulnerabilities\NoVulnerabilitySource;
 use App\Domain\Vulnerabilities\VulnerabilitySource;
 use App\Enums\BackupTargetType;
+use App\Enums\NotificationThreshold;
 use App\Enums\RunType;
 use App\Models\BackupTarget as BackupTargetRecord;
 use App\Models\Run;
@@ -147,6 +151,7 @@ use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Contracts\Notifications\Dispatcher as NotificationsDispatcher;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Redis\Connections\PhpRedisConnection;
@@ -249,6 +254,7 @@ class AppServiceProvider extends ServiceProvider
         ));
         $this->app->bind(AutoUpdateBlocking::class, static fn (Application $app): AutoUpdateBlocking => new AutoUpdateBlocking(
             $app->make(AuditLogger::class),
+            $app->make(Notifier::class),
             self::configInt('wpup.scheduler.failures.block_after'),
         ));
         $this->app->bind(GlobalQueue::class, static fn (Application $app): GlobalQueue => new GlobalQueue(
@@ -415,6 +421,7 @@ class AppServiceProvider extends ServiceProvider
             $app->make(ArtifactCleanup::class),
             $app->make(PackageVersionCleanup::class),
             $app->make(ScreenshotCleanup::class),
+            new NotificationDeliveryCleanup($app->make(AuditLogger::class), self::configInt('wpup.notifications.deliveries_retention_days')),
         ], self::configInt('wpup.cleanup.lock_seconds')));
         // The tool's own backup (UZEROWPUP-47, ADR-0009 §3).
         $this->app->bind(ToolBackupSettings::class, static fn (): ToolBackupSettings => new ToolBackupSettings(
@@ -521,8 +528,19 @@ class AppServiceProvider extends ServiceProvider
             );
         });
         $this->app->bind(ExternalBackupStatus::class, static fn (): ExternalBackupStatus => new ExternalBackupStatus(self::configInt('wpup.inventory.external_backups.max_age_days')));
-        // Until the notification channels exist (F5), blocks only reach the log.
-        $this->app->bind(SiteBlockNotifier::class, LogSiteBlockNotifier::class);
+        $this->app->bind(NotificationChannels::class, static function (): NotificationChannels {
+            /** @var array<string, array{class: class-string<NotificationChannel>, address?: bool, secret?: bool}> $channels */
+            $channels = config()->array('wpup.notifications.channels');
+
+            return new NotificationChannels($channels);
+        });
+        $this->app->bind(Notifier::class, static fn (Application $app): Notifier => new ChannelNotifier(
+            $app->make(NotificationsDispatcher::class),
+            $app->make(NotificationChannels::class),
+            $app->make(SecretRedactor::class),
+            NotificationThreshold::from(self::configString('wpup.notifications.log_min_severity')),
+            self::configInt('wpup.notifications.error_max_length'),
+        ));
         $this->app->bind(SiteInventory::class, static fn (Application $app): SiteInventory => new SiteInventory($app->make(HttpProbe::class), $app->make(PendingUpdates::class), $app->make(SiteState::class), $app->make(SitePrerequisites::class), $app->make(ExternalBackups::class), $app->make(PackageVersions::class)));
         // Credential operations queued by the CLI for the workers (ADR-0011), and the inventory.
         $this->app->afterResolving(PipelineResolver::class, static function (PipelineResolver $resolver, Application $app): void {

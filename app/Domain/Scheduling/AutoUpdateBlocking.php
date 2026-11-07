@@ -6,14 +6,15 @@ namespace App\Domain\Scheduling;
 
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
+use App\Domain\Notifications\Notifier;
 use App\Enums\AuditResult;
 use App\Enums\ScheduledWindowStatus;
 use App\Models\Run;
 use App\Models\ScheduledWindow;
 use App\Models\Site;
+use App\Notifications\AutoUpdateBlockedNotification;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 /**
  * ADR-0006 §3: a site whose scheduled update failed in `blockAfter`
@@ -25,12 +26,12 @@ use Illuminate\Support\Facades\Log;
  * after it count). Manual updates are not blocked (blocked_reason is for that).
  *
  * The warning goes on the run that made it (result_summary.warnings), in
- * audit_log (`site.auto_update_blocked`) and in the log; the notification
- * channels come in F5.
+ * audit_log (`site.auto_update_blocked`) and goes out as a notification
+ * (UZEROWPUP-79).
  */
 final readonly class AutoUpdateBlocking
 {
-    public function __construct(private AuditLogger $audit, private int $blockAfter) {}
+    public function __construct(private AuditLogger $audit, private Notifier $notifier, private int $blockAfter) {}
 
     /**
      * Called once the window of a failed run is settled. Returns the reason when it blocked the site.
@@ -75,7 +76,7 @@ final readonly class AutoUpdateBlocking
         if (! $blocked) {
             return null;
         }
-        Log::warning('Site blocked for automatic updates after consecutive failed windows.', ['site' => $site->name, 'run_id' => $run->id]);
+        $this->notifier->notify(new AutoUpdateBlockedNotification($site, $run, $reason));
 
         return $reason;
     }
