@@ -68,7 +68,7 @@ Una estimació aproximada: un lloc in-place tarda 5–10 minuts i un amb staging
 
 ## Accions
 
-1. [ ] UZEROWPUP-129 Planificador: finestres per lloc, cua seqüencial, prioritats, estimació de durada i resum diari
-2. [ ] UZEROWPUP-20 Límits de concurrència: valors per defecte 1 / 1 / 1
+1. [x] UZEROWPUP-129 Planificador: finestres per lloc, cua seqüencial, prioritats, estimació de durada i resum diari
+2. [x] UZEROWPUP-20 Límits de concurrència: valors per defecte 1 / 1 / 1
 3. [ ] UZEROWPUP-100 Staging efímer: s'esborra en acabar cada lloc i es netegen els orfes en començar
 4. [ ] UZEROWPUP-130 Inventari i pla setmanals de tota la flota
