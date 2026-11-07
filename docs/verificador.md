@@ -1,6 +1,6 @@
 # Verificador: protocol amb l'orquestrador
 
-El verificador (`verifier/`) és un worker Node + TypeScript + Playwright que visita les pàgines públiques d'un lloc i en desa les captures i els errors. Aquest document en fixa el contracte amb l'orquestrador (UZEROWPUP-64). L'estabilitat de les captures (UZEROWPUP-65), el diff (UZEROWPUP-68), el flux de compra (UZEROWPUP-69) i on entra al pipeline d'actualització (UZEROWPUP-72) es fan més endavant.
+El verificador (`verifier/`) és un worker Node + TypeScript + Playwright que visita les pàgines públiques d'un lloc i en desa les captures i els errors. Aquest document en fixa el contracte amb l'orquestrador (UZEROWPUP-64). Les captures estables (UZEROWPUP-65) són a la secció «Captures estables». El diff (UZEROWPUP-68), el flux de compra (UZEROWPUP-69) i on entra al pipeline d'actualització (UZEROWPUP-72) es fan més endavant.
 
 ## Invocació: procés, no cua
 
@@ -38,13 +38,34 @@ setsid node verifier/dist/bin.js < entrada.json
   "urls": [{ "path": "/", "profile": "home" }, { "path": "/botiga/", "profile": "category" }],
   "viewports": [{ "name": "desktop", "width": 1440 }, { "name": "mobile", "width": 390 }],
   "masks": [".slider", ".price-live"],
+  "hide_selectors": [".promo-popup"],
+  "capture": { "prepare_ms": 30000, "max_height": 20000 },
   "thresholds": { "max_diff_ratio": 0.01 },
   "output_dir": "/var/lib/wpup/verifier/run-42/verify-baseline",
   "timeouts": { "navigation_ms": 60000, "screenshot_ms": 30000, "total_ms": 1080000 }
 }
 ```
 
-L'esquema és a `verifier/src/contract.ts` (zod, objectes estrictes: cap camp desconegut). Límits: com a màxim 50 URLs, 4 viewports (de 320 a 3840 px d'amplada) i 50 selectors de màscara, i 1 MiB d'entrada. `thresholds` es fa servir a partir del diff (UZEROWPUP-68). Els valors per defecte són a `config/wpup.php` (`verifier`).
+L'esquema és a `verifier/src/contract.ts` (zod, objectes estrictes: cap camp desconegut). Límits: com a màxim 50 URLs, 4 viewports (de 320 a 3840 px d'amplada) 50 selectors de màscara, 50 de `hide_selectors` i 1 MiB d'entrada. `hide_selectors` i `capture` (`prepare_ms`: pressupost de preparació per pàgina, 1–120 s; `max_height`: alçada on es retalla la captura, 1.000–100.000 px) són **opcionals**: afegits compatibles, així que el protocol continua a la versió 1. L'orquestrador els envia des de `config/wpup.php` (`verifier.hide_selectors`, `prepare_ms`, `max_page_height`) només si estan definits. Cada selector de `hide_selectors` es rebutja si podria sortir de la seva regla CSS (claus, `/* */`, `@`, `;`, cometes o parèntesis sense tancar). `thresholds` es fa servir a partir del diff (UZEROWPUP-68). Els valors per defecte són a `config/wpup.php` (`verifier`).
+
+## Captures estables
+
+Dos viewports per defecte, `desktop` (1440 px) i `mobile` (390 px), que l'orquestrador envia a l'entrada (`config/wpup.php`, `verifier.viewports`). Les captures són sempre de pàgina completa (`fullPage`) i la finestra fa 900 px d'alçada. Abans de cada captura (`verifier/src/capture.ts`, `preparePage`):
+
+1. **Xarxa i tipus de lletra:** `networkidle` en carregar, i després, un cop fet el recorregut i les imatges, una **finestra de quietud** pròpia (res en vol i cap petició nova en 500 ms; un segon `networkidle` no serviria, perquè Playwright ja l'ha donat per bo). Les imatges i els tipus de lletra (`document.fonts.ready`) s'esperen en paral·lel. Una pàgina que no arriba mai a estar quieta (polling, analítica) es captura tal com és: no és un error del lloc.
+2. **Moviment aturat:** un CSS injectat porta animacions i transicions al seu estat final (durada ~0, una iteració, sense retard) i amaga el cursor de text; a més, Playwright captura amb `animations: 'disabled'` i `caret: 'hide'`. No s'eliminen les animacions (`animation: none`), perquè el contingut que apareix amb una animació quedaria amagat.
+3. **Bàners de galetes amagats:** una llista de selectors coneguts (Cookiebot, CookieYes, Complianz, GDPR Cookie Consent, Borlabs, OneTrust, Cookie Notice, Moove, Didomi, Usercentrics, Iubenda…; `COOKIE_BANNER_SELECTORS`) més els `hide_selectors`. Cada selector es valida a la pàgina (`querySelector` dins d'un `try/catch`) i té el seu propi `<style>`: un selector invàlid s'ignora amb un avís i no inutilitza els altres. Els selectors de la llista no són amplis (cap `[class*="cookie"]`), perquè podrien amagar el `body`. **Amagar no és emmascarar:** les `masks` pinten un requadre sobre una zona que continua al disseny; els bàners s'eliminen del disseny.
+4. **Bloquejos de desplaçament:** `html` i `body` passen a `overflow: visible`, perquè els bàners solen bloquejar el scroll i, sense això, ni la càrrega mandrosa ni la captura completa funcionarien. No es restaura: la captura es fa amb aquest estat, igual a la línia base i a la comprovació posterior.
+5. **Imatges mandroses:** `loading="eager"` a imatges i iframes, còpia de `data-src`/`data-srcset` (o `data-lazy-*`) quan no hi ha `src`, recorregut fins al final i tornada a dalt (per als carregadors amb `IntersectionObserver`), i espera de les imatges amb límit.
+6. Es torna a dalt de tot i es fa la captura.
+
+**Pàgines infinites:** el recorregut s'atura al final del document, a `max_height` (20.000 px per defecte), a 100 passos o al límit de temps. Si el document fa més d'`max_height`, la captura es **retalla** a aquesta alçada (`clip`) i el resultat porta l'avís `capture cut at N px`, de manera que la línia base i la comprovació posterior són comparables encara que el lloc continuï creixent.
+
+**Temps i errors:** tota la preparació comparteix un únic pressupost per pàgina (`capture.prepare_ms`, 30 s per defecte), retallat al temps que queda fins a `total_ms` menys 1 s reservat per a la captura, amb una sola regla de temps (`timeLeft`) compartida amb `verify.ts`. Cada `page.evaluate` té el seu límit (un script de la pàgina pot bloquejar-la). Qualsevol fallada de la preparació (un bloqueig, una navegació enmig, un selector) **no impedeix la captura**: es converteix en un avís i la pàgina es captura tal com és. Si el context s'ha destruït per una navegació, la preparació es reintenta una vegada. Els avisos van a `warnings` de cada resultat (afegit compatible a la sortida; l'orquestrador encara no els llegeix, ho farà el pipeline, UZEROWPUP-72).
+
+**Content-Security-Policy:** els contextos es creen amb `bypassCSP: true`. Una CSP estricta bloquejaria el CSS neutre que s'hi injecta (animacions, bàners). El verificador només llegeix pàgines i mai envia formularis, de manera que la CSP no és una protecció que necessiti.
+
+**Prova de no regressió:** `verifier/src/capture.test.ts` serveix pàgines locals amb animacions infinites, un tipus de lletra que arriba tard (si falta el fitxer de la lletra, el test falla), una imatge mandrosa, una `data-src` i un bàner que apareix tard. Fa dues captures de la mateixa pàgina en tots dos viewports i exigeix un diff pràcticament zero (< 0,01 % dels píxels), comparat amb un descodificador PNG mínim, sense cap dependència nova (el diff de debò, amb pixelmatch, és UZEROWPUP-68). També cobreix: la pàgina amb bàner igual que sense, una CSP estricta, un selector invàlid, un bloqueig de scroll, un scroll infinit retallat i una pàgina que es penja.
 
 ## Sortida (versió 1)
 
@@ -60,6 +81,7 @@ L'esquema és a `verifier/src/contract.ts` (zod, objectes estrictes: cap camp de
     "resource_errors": [{ "url": "https://botiga.example/x.png", "status": 404, "failure": null }],
     "blocked_requests": [],
     "timings": { "navigation_ms": 830 },
+    "warnings": [],
     "error": null
   }],
   "verifier_errors": [],

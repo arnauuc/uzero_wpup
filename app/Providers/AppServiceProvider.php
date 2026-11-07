@@ -399,6 +399,9 @@ class AppServiceProvider extends ServiceProvider
             array_map(static fn (string $path, mixed $profile): PageTarget => new PageTarget($path, is_string($profile) ? $profile : throw new \UnexpectedValueException('wpup.verifier.urls must map paths to profiles.')),
                 ...self::configMap('wpup.verifier.urls')),
             self::configStrings('wpup.verifier.masks'),
+            self::configStrings('wpup.verifier.hide_selectors'),
+            self::configInt('wpup.verifier.prepare_ms'),
+            self::configInt('wpup.verifier.max_page_height'),
         ));
         $this->app->bind(HostResolver::class, DnsHostResolver::class);
         $this->app->bind(ArtifactFetcher::class, static fn (Application $app): ArtifactFetcher => new ArtifactFetcher(
