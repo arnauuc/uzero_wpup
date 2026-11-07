@@ -34,11 +34,14 @@ use Throwable;
  * uploads it, so staging and production get the same bytes.
  *
  * Idempotent, and never acting on a site that changed since the plan: the
- * installed version is read first. The target ⇒ nothing to do (a resumed
- * step); the plan's current version ⇒ install; anything else (newer, older,
- * removed) ⇒ fail, the run must plan again. Every outcome, also an
- * unexpected error or the step timeout, is one run_changes row (step =
- * update) with the version before and after.
+ * installed version is read first. The target, and this run already recorded
+ * the install as done ⇒ nothing to do (a resumed step); the target WITHOUT
+ * that record ⇒ fail: the worker may have died halfway through the install
+ * (UZEROWPUP-62), and the version header proves nothing about the other files,
+ * so the run rolls back to its restore point; the plan's current version ⇒
+ * install; anything else (newer, older, removed) ⇒ fail, the run must plan
+ * again. Every outcome, also an unexpected error or the step timeout, is one
+ * run_changes row (step = update) with the version before and after.
  */
 final readonly class ComponentUpdateStep implements Step
 {
@@ -117,8 +120,12 @@ final readonly class ComponentUpdateStep implements Step
     {
         $target = $this->change->targetVersion;
         $before = $driver->installedState($this->change->type, $this->change->slug)?->version;
+        if ($before === $target && ! $this->changes->wasUpdated($run, $this->change->type, $this->change->slug)) {
+            // Recorded as from the plan's version: the rollback must put that one back.
+            return $this->fail($run, $this->change->currentVersion, $before, "el lloc ja diu que té la versió {$target}, però aquesta execució no n'havia acabat la instal·lació (interrompuda a mitges?): no es pot saber si els fitxers són sencers, cal revertir.");
+        }
         if ($before === $target) {
-            // A resumed step whose install had finished: nothing is uploaded.
+            // A resumed step whose install had finished and was recorded: nothing is uploaded.
             $this->record($run, $this->change->currentVersion, $target, ChangeResult::Updated, null);
 
             return StepOutcome::succeeded("{$this->label()} ja era a la versió {$target}: no s'ha tocat.", '', $this->data($this->change->currentVersion, $target, true));

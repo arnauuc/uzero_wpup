@@ -19,7 +19,10 @@ use App\Domain\Runs\StepOutcome;
  * If the mode cannot be switched on, the step still succeeds with a warning:
  * the files rollback, always safe, must not be blocked by it, and the
  * database rollback switches it on itself and does not restore anything when
- * it cannot. Idempotent.
+ * it cannot. Idempotent. The run remembers that its rollback wants the mode
+ * on (MaintenanceGuard::ROLLBACK_FLAG), so a files rollback resumed after the
+ * worker died halfway through its mirror, which had removed `.maintenance`,
+ * switches it on again before mirroring (UZEROWPUP-62).
  */
 final readonly class MaintenanceForceOnStep implements Step
 {
@@ -54,6 +57,7 @@ final readonly class MaintenanceForceOnStep implements Step
             // The check before the backup saw it off; unknown now is taken as off, so the rollback ends with it off.
             $this->guard->remember($run, $this->guard->state($driver) === true);
         }
+        $this->guard->markRollback($run);
         $failure = $this->guard->switchTo($driver, true, $run->id);
         if ($failure !== null) {
             return StepOutcome::succeeded("{$failure} La base de dades no es restaurarà si no s'activa.", $failure);

@@ -14,6 +14,7 @@ use App\Domain\Drivers\Exceptions\DriverException;
 use App\Domain\Drivers\Exceptions\IntegrityCheckFailed;
 use App\Domain\Drivers\SiteDriver;
 use App\Domain\Identity\Ability;
+use App\Domain\Maintenance\MaintenanceGuard;
 use App\Domain\Maintenance\MaintenanceMode;
 use App\Domain\Runs\Exceptions\RunException;
 use App\Domain\Runs\RunAuthorization;
@@ -56,7 +57,10 @@ use Throwable;
  * - Maintenance mode: the mirror removes `.maintenance`. If it was on, or its
  *   state could not be told, it is switched on again once the mirror was
  *   attempted, whatever happens, so a shop does not take orders before the
- *   database rollback.
+ *   database rollback. When the run's rollback switched the mode on
+ *   (MaintenanceGuard::ROLLBACK_FLAG) and it is off now, a previous attempt's
+ *   mirror removed it before the worker died: it is switched on again before
+ *   mirroring, so the shop stays closed (UZEROWPUP-62).
  *
  * Every attempt is audited (`rollback.files`; restored: no, unknown or yes).
  */
@@ -133,6 +137,12 @@ final readonly class FilesRollbackStep implements Step
             $maintenance = MaintenanceMode::state($driver);
             if ($maintenance === null) {
                 $warnings[] = "No s'ha pogut saber si el mode manteniment era actiu: s'activarà després de restaurar els fitxers. Revisa'l a mà.";
+            }
+            if ($maintenance === false && MaintenanceGuard::rollbackWantsIt($context->run)) {
+                // Unknown when it fails: switched on again after the mirror, as for any unknown state.
+                $warning = MaintenanceMode::switchTo($driver, true, $this->redactor, $context->run->id);
+                $maintenance = $warning === null ? true : null;
+                $warnings[] = $warning ?? "El mode manteniment del rollback no hi era (un intent anterior es va interrompre a mitja restauració): s'ha tornat a activar.";
             }
             $this->restore->purgeTemporaries($driver);
             $row = $this->mirror($site, $driver, $candidates, $actor, $audit, $warnings);

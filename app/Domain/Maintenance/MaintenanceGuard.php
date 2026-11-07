@@ -28,6 +28,13 @@ final readonly class MaintenanceGuard
     public const string FLAG = 'maintenance_initial';
 
     /**
+     * Set by MaintenanceForceOnStep before it switches the mode on: the run's
+     * rollback wants the shop closed until its last step (UZEROWPUP-62: a
+     * resumed files rollback switches it on again before its mirror).
+     */
+    public const string ROLLBACK_FLAG = 'maintenance_rollback';
+
+    /**
      * @param  Closure(Site, AuditActor): SiteDriver  $driverFor
      */
     public function __construct(
@@ -59,6 +66,17 @@ final readonly class MaintenanceGuard
     public function remember(Run $run, bool $wasActive): void
     {
         $run->update(['flags' => [...$run->flags, self::FLAG => $wasActive]]);
+    }
+
+    public function markRollback(Run $run): void
+    {
+        $run->update(['flags' => [...$run->flags, self::ROLLBACK_FLAG => true]]);
+    }
+
+    /** Whether the run's rollback switched the mode on and wants it on (markRollback). */
+    public static function rollbackWantsIt(Run $run): bool
+    {
+        return ($run->flags[self::ROLLBACK_FLAG] ?? false) === true;
     }
 
     /**

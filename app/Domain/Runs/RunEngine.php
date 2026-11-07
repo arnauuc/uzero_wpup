@@ -17,6 +17,7 @@ use App\Domain\Runs\Exceptions\InvalidTransition;
 use App\Domain\Runs\Exceptions\RunAlreadyClaimed;
 use App\Domain\Runs\Exceptions\RunException;
 use App\Domain\Runs\Exceptions\StepTimedOut;
+use App\Domain\Runs\Exceptions\UnknownStep;
 use App\Domain\Secrets\SecretRedactor;
 use App\Enums\AuditResult;
 use App\Enums\RunStatus;
@@ -47,6 +48,10 @@ use Throwable;
  *   (Pipeline::growsAfter) and when a run resumes. Recorded steps never
  *   change. A pipeline that cannot be resolved again, or that would change
  *   them, fails the step that was about to run, with that step's policy.
+ * - Every time a run is picked up after losing its worker, the engine records
+ *   it on the run (runs.interruptions, RunInterruption) and in audit_log, with
+ *   the step and its decision, so the operator is always told (UZEROWPUP-62).
+ *   A recorded step that the pipeline no longer has fails the run loudly.
  * - Every summary, output, error and result is redacted before it is stored.
  */
 final readonly class RunEngine
@@ -117,6 +122,9 @@ final readonly class RunEngine
                 // stay queued or interrupted in silence. Without its pipeline there
                 // is nothing to undo with: it fails loudly, its restore point kept.
                 if (in_array($run->status, [RunStatus::Queued, RunStatus::Interrupted], true)) {
+                    if ($run->status === RunStatus::Interrupted) {
+                        $this->noteInterruption($run, InterruptionDecision::Fail);
+                    }
                     $this->finish($run, RunStatus::Failed, ['', $run->status === RunStatus::Queued
                         ? $e->getMessage()
                         : "No s'ha pogut reconstruir l'execució per reprendre-la: {$e->getMessage()} Cal revisar el lloc."]);
@@ -126,14 +134,23 @@ final readonly class RunEngine
             }
             $this->begin($run, $pipeline);
 
-            $failure = $run->status === RunStatus::Running
-                ? $this->forward($run, $pipeline, $token, $leases)
-                : $this->recordedFailure($run);
+            try {
+                $failure = $run->status === RunStatus::Running
+                    ? $this->forward($run, $pipeline, $token, $leases)
+                    : $this->recordedFailure($run);
 
-            if ($failure === null) {
-                $this->finish($run, RunStatus::Succeeded);
-            } else {
-                $this->rollback($run, $pipeline, $token, $leases, $failure);
+                if ($failure === null) {
+                    $this->finish($run, RunStatus::Succeeded);
+                } else {
+                    $this->rollback($run, $pipeline, $token, $leases, $failure);
+                }
+            } catch (UnknownStep $e) {
+                // The code changed between the interruption and the resume: retrying
+                // would fail the same way every time, so the run fails now.
+                $run->refresh();
+                if (! $run->status->isTerminal()) {
+                    $this->finish($run, RunStatus::Failed, [$e->step, "El pas «{$e->step}» registrat a l'execució ja no existeix (ha canviat el codi entre la interrupció i la represa?): no es continua. Cal revisar el lloc."]);
+                }
             }
 
             return $run;
@@ -185,8 +202,9 @@ final readonly class RunEngine
             return;
         }
 
-        // Interrupted: put the step that was running back to pending, then
-        // continue in the phase where the run stopped.
+        // Interrupted: tell the operator, put the step that was running back to
+        // pending, then continue in the phase where the run stopped.
+        $this->noteInterruption($run);
         foreach ($this->rows($run) as $row) {
             if ($row->status === RunStepStatus::Running) {
                 $this->stepTransition($row, RunStepStatus::Pending, ['error' => 'Interromput; es torna a executar.']);
@@ -196,7 +214,44 @@ final readonly class RunEngine
         $rollingBack = $this->undoRows($run)->isNotEmpty();
         self::transition($run, $rollingBack ? RunStatus::RollingBack : RunStatus::Running);
         $this->materialize($run, $pipeline);
-        $this->audit->record(AuditActor::system(), 'run.resumed', AuditResult::Success, 'run', $run->id, ['phase' => $run->status->value]);
+    }
+
+    /**
+     * Records that the interrupted run is picked up again: on the run and in
+     * audit_log, with the step it was at and what happens to it. Read before
+     * the interrupted step is put back to pending.
+     */
+    private function noteInterruption(Run $run, ?InterruptionDecision $decision = null): void
+    {
+        $rows = $this->rows($run);
+        $undo = $rows->filter(static fn (RunStep $row): bool => $row->kind !== RunStepKind::Forward);
+        $running = $rows->first(static fn (RunStep $row): bool => $row->status === RunStepStatus::Running);
+        $next = $running ?? ($undo->isNotEmpty() ? $undo : $rows)->first(static fn (RunStep $row): bool => ! $row->status->isFinished());
+        $decision ??= match (true) {
+            $running === null => InterruptionDecision::NextStep,
+            $running->attempts >= $this->settings->maxStepAttempts => InterruptionDecision::GiveUp,
+            default => InterruptionDecision::RetryStep,
+        };
+
+        $interruption = new RunInterruption(
+            CarbonImmutable::now(),
+            ($undo->isNotEmpty() ? RunStatus::RollingBack : RunStatus::Running)->value,
+            $next?->name,
+            $next?->kind,
+            $next->attempts ?? 0,
+            $decision,
+        );
+        // Appended in place: the list is never rewritten.
+        DB::update('UPDATE runs SET interruptions = interruptions || ?::jsonb WHERE id = ?', [json_encode([$interruption->toArray()], JSON_THROW_ON_ERROR), $run->id]);
+
+        $this->audit->record(
+            AuditActor::system(),
+            'run.resumed',
+            in_array($decision, [InterruptionDecision::RetryStep, InterruptionDecision::NextStep], true) ? AuditResult::Success : AuditResult::Failure,
+            'run',
+            $run->id,
+            $interruption->toArray(),
+        );
     }
 
     private function materialize(Run $run, Pipeline $pipeline): void

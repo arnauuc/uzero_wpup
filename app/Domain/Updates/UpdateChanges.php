@@ -42,6 +42,17 @@ final class UpdateChanges
         });
     }
 
+    /**
+     * Whether this run already recorded the component as updated by its update
+     * step: an install that finished and was recorded, not one cut halfway.
+     */
+    public function wasUpdated(Run $run, ComponentType $type, string $slug): bool
+    {
+        return $run->changes()
+            ->where(['step' => self::STEP, 'component_type' => $type->value, 'slug' => self::column($slug), 'result' => ChangeResult::Updated->value])
+            ->exists();
+    }
+
     /** Fits a site-provided value in a varchar(255) column (valid UTF-8, at most 255 bytes). */
     private static function column(string $value): string
     {

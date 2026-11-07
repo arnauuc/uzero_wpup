@@ -8,9 +8,11 @@ use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlan;
 use App\Domain\Rollback\DatabaseRollbackStep;
 use App\Domain\Rollback\FilesRollbackStep;
+use App\Domain\Runs\InterruptionDecision;
 use App\Domain\Runs\OnFailure;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
+use App\Domain\Runs\RunInterruption;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
 use App\Domain\Updates\UpdateChanges;
@@ -18,6 +20,7 @@ use App\Enums\ChangeResult;
 use App\Enums\ComponentType;
 use App\Enums\PhpVersionSource;
 use App\Enums\RunStatus;
+use App\Enums\RunStepKind;
 use App\Enums\RunType;
 use App\Enums\UpdateStrategy;
 use App\Enums\UserRole;
@@ -106,6 +109,26 @@ it('prints what each update did once it is finished', function (): void {
         ->and($output)->toContain('Hi ha 1 comanda nova des de la còpia (#77).')
         ->and($output)->toContain('wpup backup:restore blog --db --accept-data-loss')
         ->and(Run::query()->where('status', RunStatus::RolledBack->value)->count())->toBe(1);
+});
+
+it('warns about every interruption of the run, whatever it ended as', function (): void {
+    $interruption = new RunInterruption(now()->toImmutable(), 'running', 'backup', RunStepKind::Forward, 1, InterruptionDecision::RetryStep);
+    // As the engine records it when a run is picked up again (RunInterruptionTest).
+    app(PipelineResolver::class)->register(RunType::Update, static fn (): Pipeline => new Pipeline([new ScriptedStep('backup', static function (StepContext $c) use ($interruption): StepOutcome {
+        $c->run->forceFill(['interruptions' => [$interruption->toArray()]])->save();
+
+        return StepOutcome::succeeded('còpia');
+    })]));
+
+    Artisan::call('update', ['sites' => ['botiga'], '--wait' => true]);
+    $output = Artisan::output();
+    Artisan::call('update', ['sites' => ['botiga'], '--wait' => true, '--json' => true]);
+    /** @var array{runs: list<array{interruptions: mixed}>} $json */
+    $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($output)->toContain(': succeeded')
+        ->toContain('Execució interrompuda el')->toContain('al pas «backup»: es torna a executar el pas.')
+        ->and($json['runs'][0]['interruptions'])->toBe([$interruption->toArray()]);
 });
 
 it('prints a JSON document per run', function (): void {

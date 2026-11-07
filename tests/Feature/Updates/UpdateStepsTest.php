@@ -173,6 +173,21 @@ it('does nothing when repeated: the installed version is checked first', functio
         ->and(updateRows($run))->toBe([['plugin', 'classic-editor', '1.6.3', '1.6.4', 'updated']]);
 });
 
+it('does not trust a target version this run never finished installing: it fails, to roll back', function (): void {
+    // UZEROWPUP-62: the worker died during the install; the version header may be new and other files old.
+    [$run, $context] = updateRun();
+    $driver = new FakeDriver;
+    $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'classic-editor', '1.6.4'));
+
+    $outcome = classicStep($driver)->run($context);
+
+    expect($outcome->status)->toBe(RunStepStatus::Failed)
+        ->and($outcome->summary)->toContain("aquesta execució no n'havia acabat la instal·lació")
+        ->and($driver->writeCalls)->toBe([])
+        // From the plan's version: the files rollback puts that one back.
+        ->and(updateRows($run))->toBe([['plugin', 'classic-editor', '1.6.3', '1.6.4', 'failed']]);
+});
+
 it('never acts on a site that changed since the plan', function (?string $installed): void {
     [$run, $context] = updateRun();
     $driver = new FakeDriver;

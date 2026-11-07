@@ -6,10 +6,12 @@ namespace App\Console\Commands\Runs;
 
 use App\Console\WpupCommand;
 use App\Domain\Identity\Ability;
+use App\Domain\Runs\RunInterruption;
 use App\Models\Run;
 
 /**
- * Latest runs, newest first.
+ * Latest runs, newest first. A run that was interrupted says so, with the
+ * step and the decision of each interruption (UZEROWPUP-62).
  */
 final class RunsCommand extends WpupCommand
 {
@@ -52,19 +54,27 @@ final class RunsCommand extends WpupCommand
                 'actor' => $run->actor,
                 'queued_at' => $run->queued_at->toIso8601String(),
                 'finished_at' => $run->finished_at?->toIso8601String(),
+                'interruptions' => array_map(static fn (RunInterruption $i): array => $i->toArray(), RunInterruption::of($run)),
             ])->all()]);
 
             return self::SUCCESS;
         }
 
-        $this->table(['#', 'Lloc', 'Tipus', 'Estat', 'Qui', 'Encuada'], $runs->map(static fn (Run $run): array => [
+        $this->table(['#', 'Lloc', 'Tipus', 'Estat', 'Qui', 'Encuada', 'Interrupcions'], $runs->map(static fn (Run $run): array => [
             $run->id,
             $run->targetLabel(),
             $run->type->value,
             $run->status->value,
             $run->actor,
             $run->queued_at->format('Y-m-d H:i'),
+            count(RunInterruption::of($run)) ?: '—',
         ])->all());
+
+        foreach ($runs as $run) {
+            foreach (RunInterruption::of($run) as $interruption) {
+                $this->warn("#{$run->id}: {$interruption->describe()}");
+            }
+        }
 
         return self::SUCCESS;
     }
