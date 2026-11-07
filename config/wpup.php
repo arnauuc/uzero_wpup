@@ -307,6 +307,43 @@ return [
     ],
 
     /*
+     * Scheduled updates (ADR-0006, UZEROWPUP-129). `engine:schedule-updates` runs
+     * every minute: it queues the sites with automatic updates whose window is
+     * open and that were not handled in that occurrence of it, and starts them one
+     * at a time, as `actor` (never with --allow-major or --skip-quarantine). Manual and
+     * scheduled runs share one queue in the order they were queued (GlobalQueue); only
+     * an admin's --now goes ahead. Among the scheduled sites, which one is queued next
+     * follows ADR-0006 §3 (security, deferred, longest without updating, name).
+     * - estimate: a site's duration is the median of its last `history_runs`
+     *   update runs that went past the plan, with the same strategy; without any,
+     *   `default_minutes` of its strategy. A site starts only if that fits in
+     *   what is left of its window (and never with less than
+     *   updates.window.minimum_minutes); otherwise it waits for its next window,
+     *   with priority.
+     * - outlook: a site is skipped without spending any time when the plan of its
+     *   latest inventory (at most `snapshot_max_age_hours` old), recomputed now
+     *   and offline (quarantine and known vulnerabilities as of now, no download),
+     *   has nothing to apply. With an older inventory or none, the run decides
+     *   (its inventory and plan end it at once when there is nothing to do).
+     */
+    'scheduler' => [
+        'actor' => 'sistema (scheduler)',
+        // A tick holds this lock so a manual tick never overlaps the scheduler's.
+        'tick_lock_seconds' => 300,
+        // A run queued longer than this (a lost job) no longer holds the single queue.
+        'queue' => [
+            'stale_queued_hours' => 24,
+        ],
+        'estimate' => [
+            'history_runs' => 5,
+            'default_minutes' => ['in_place' => 10, 'staging_first' => 30],
+        ],
+        'outlook' => [
+            'snapshot_max_age_hours' => 24,
+        ],
+    ],
+
+    /*
      * Run engine (UZEROWPUP-21). A worker holds a claim on the run while it
      * executes it and refreshes it every `heartbeat_seconds`; a run whose claim
      * expired is interrupted and `engine:recover` resumes or rolls it back.

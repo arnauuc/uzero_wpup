@@ -92,6 +92,16 @@ final readonly class ConcurrencyGate
         return true;
     }
 
+    /**
+     * Whether some execution holds a live slot at this level ('global', 'staging'…).
+     */
+    public function occupied(string $level): bool
+    {
+        $count = $this->redis->command('zcount', [self::PREFIX.$level, microtime(true), '+inf']);
+
+        return is_int($count) && $count > 0;
+    }
+
     public function release(SlotLease $lease): void
     {
         foreach ($lease->keys as $key) {

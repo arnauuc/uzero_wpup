@@ -99,12 +99,24 @@ final readonly class MaintenanceWindow
      */
     public function closesAt(CarbonImmutable $moment): ?CarbonImmutable
     {
+        return $this->occurrence($moment)[1] ?? null;
+    }
+
+    /**
+     * Opening and closing of the window open at $moment (the occurrence it
+     * belongs to: the scheduler handles a site once per occurrence); null when
+     * it is closed.
+     *
+     * @return array{CarbonImmutable, CarbonImmutable}|null
+     */
+    public function occurrence(CarbonImmutable $moment): ?array
+    {
         $local = $moment->setTimezone($this->timezone);
         // A window that crosses midnight may have started the day before.
         foreach ([$local->subDay(), $local] as $day) {
             [$opens, $closes] = $this->interval($day);
             if (in_array($day->dayOfWeekIso, $this->days, true) && $moment->greaterThanOrEqualTo($opens) && $moment->lessThan($closes)) {
-                return $closes;
+                return [$opens, $closes];
             }
         }
 

@@ -58,6 +58,23 @@ final readonly class RunLauncher
     }
 
     /**
+     * Creates and audits one queued run of a site WITHOUT handing it to the
+     * engine, so the caller can record it in the same transaction and
+     * dispatch() it after the commit (the scheduler, UZEROWPUP-129).
+     *
+     * @param  array<string, mixed>  $flags
+     */
+    public function prepare(RunType $type, Site $site, AuditActor $actor, array $flags = [], ?UpdateStrategy $strategy = null): Run
+    {
+        return $this->queue($type, $site, null, $actor, $flags, $strategy, null);
+    }
+
+    public function dispatch(Run $run): void
+    {
+        ExecuteRun::dispatch($run->id);
+    }
+
+    /**
      * Creates one queued run and audits it; the caller dispatches it.
      *
      * @param  array<string, mixed>  $flags
