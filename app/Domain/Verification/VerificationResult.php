@@ -1,0 +1,91 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\Verification;
+
+/**
+ * The output document of protocol v1, validated: anything else is a
+ * VerifierFailed, so later steps never see an unchecked shape.
+ */
+final readonly class VerificationResult
+{
+    /** A screenshot is "<viewport>/<n>.png" inside the output directory, nothing else. */
+    private const string SCREENSHOT = '#^[a-z][a-z0-9_-]{0,29}/\d{1,3}\.png$#D';
+
+    /**
+     * @param  list<PageResult>  $pages
+     * @param  list<string>  $verifierErrors
+     */
+    public function __construct(public string $outputDir, public array $pages, public array $verifierErrors) {}
+
+    /**
+     * @throws VerifierFailed
+     */
+    public static function fromProtocol(mixed $data, int $runId, string $outputDir): self
+    {
+        if (! is_array($data) || ($data['version'] ?? null) !== VerificationRequest::PROTOCOL_VERSION) {
+            throw VerifierFailed::unreadable('no és un document de la versió '.VerificationRequest::PROTOCOL_VERSION);
+        }
+        if (($data['run_id'] ?? null) !== $runId) {
+            throw VerifierFailed::unreadable("no correspon a l'execució {$runId}");
+        }
+        if (! is_array($data['results'] ?? null) || ! array_is_list($data['results'])) {
+            throw VerifierFailed::unreadable('falten els resultats');
+        }
+
+        return new self($outputDir, array_map(self::page(...), $data['results']), self::strings($data['verifier_errors'] ?? null, 'verifier_errors'));
+    }
+
+    /** Pages answering 4xx/5xx or not loading at all. */
+    public function httpErrors(): int
+    {
+        return count(array_filter($this->pages, static fn (PageResult $p): bool => $p->httpStatus === null || $p->httpStatus >= 400));
+    }
+
+    public function consoleErrors(): int
+    {
+        return array_sum(array_map(static fn (PageResult $p): int => count($p->consoleErrors), $this->pages));
+    }
+
+    private static function page(mixed $page): PageResult
+    {
+        if (! is_array($page) || ! is_string($page['path'] ?? null) || ! is_string($page['profile'] ?? null) || ! is_string($page['viewport'] ?? null)
+            || ! is_array($page['timings'] ?? null) || ! is_int($page['timings']['navigation_ms'] ?? null)) {
+            throw VerifierFailed::unreadable('un resultat de pàgina no té la forma esperada');
+        }
+        $status = $page['http_status'] ?? null;
+        $screenshot = $page['screenshot'] ?? null;
+        $error = $page['error'] ?? null;
+        if (($status !== null && ! is_int($status)) || ($error !== null && ! is_string($error))
+            || ($screenshot !== null && (! is_string($screenshot) || preg_match(self::SCREENSHOT, $screenshot) !== 1))) {
+            throw VerifierFailed::unreadable("el resultat de «{$page['path']}» no té la forma esperada");
+        }
+        if (! is_array($page['resource_errors'] ?? null) || ! array_is_list($page['resource_errors'])) {
+            throw VerifierFailed::unreadable('falten els errors de recursos');
+        }
+        $resources = array_map(static function (mixed $r): ResourceError {
+            if (! is_array($r) || ! is_string($r['url'] ?? null) || ! (is_int($r['status'] ?? null) || ($r['status'] ?? null) === null)
+                || ! (is_string($r['failure'] ?? null) || ($r['failure'] ?? null) === null)) {
+                throw VerifierFailed::unreadable('un error de recurs no té la forma esperada');
+            }
+
+            return new ResourceError($r['url'], $r['status'] ?? null, $r['failure'] ?? null);
+        }, $page['resource_errors']);
+
+        return new PageResult($page['path'], $page['profile'], $page['viewport'], $status, $screenshot,
+            self::strings($page['console_errors'] ?? null, 'console_errors'), $resources, $page['timings']['navigation_ms'], $error);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function strings(mixed $value, string $field): array
+    {
+        if (! is_array($value) || ! array_is_list($value) || array_filter($value, is_string(...)) !== $value) {
+            throw VerifierFailed::unreadable("«{$field}» no és una llista de textos");
+        }
+
+        return $value;
+    }
+}

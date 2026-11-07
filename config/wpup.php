@@ -227,6 +227,31 @@ return [
     ],
 
     /*
+     * Verifier (UZEROWPUP-64, docs/verificador.md): a Node + Playwright process
+     * started by the run step, with a hard timeout, the JSON input on stdin and
+     * a clean environment (only `path` and `browsers_path`: no credentials, no
+     * database, no key). Its output stays in a private directory per run.
+     */
+    'verifier' => [
+        'command' => [env('WPUP_NODE_BINARY', 'node'), base_path('verifier/dist/bin.js')],
+        'work_dir' => env('WPUP_VERIFIER_DIR', storage_path('app/verifier')),
+        'path' => '/usr/local/bin:/usr/bin:/bin',
+        'browsers_path' => env('PLAYWRIGHT_BROWSERS_PATH'),
+        // The whole process; the verifier itself stops visiting pages at total_ms.
+        'timeout_seconds' => 1200,
+        'step_timeout_seconds' => 1500,
+        'total_ms' => 1_080_000,
+        'navigation_timeout_ms' => 60_000,
+        // result.json larger than this is a verifier failure.
+        'max_result_bytes' => 5 * 1024 * 1024,
+        'max_diff_ratio' => 0.01,
+        'viewports' => ['desktop' => 1440, 'mobile' => 390],
+        // Until the site profiles list their URLs (spec, Verificació): path => profile.
+        'urls' => ['/' => 'home'],
+        'masks' => [],
+    ],
+
+    /*
      * Compatibility, layer 2 (UZEROWPUP-50): every new plugin or theme package
      * goes through PHP_CodeSniffer + PHPCompatibility with testVersion equal to
      * the site's PHP minor. An error blocks that component's update; warnings go
