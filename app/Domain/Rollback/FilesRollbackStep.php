@@ -57,10 +57,13 @@ use Throwable;
  *   loudly. Only then are the applied changes marked reverted (RevertedChanges).
  * - Idempotent: a retried step mirrors the same archive again and checks
  *   again.
- * - Maintenance mode: the mirror removes `.maintenance`. If it was on, or its
- *   state could not be told, it is switched on again once the mirror was
- *   attempted, whatever happens, so a shop does not take orders before the
- *   database rollback.
+ * - Maintenance mode: the mirror never touches `.maintenance` (neither
+ *   deletes it nor restores an archived one, SiteDriver::restoreFiles()), so a
+ *   shop in maintenance stays closed during the mirror, also when the worker
+ *   dies halfway through it (UZEROWPUP-62). If it was on, or its state could
+ *   not be told, it is written again once the mirror was attempted, whatever
+ *   happens (WordPress ignores one older than 10 minutes), so a shop does not
+ *   take orders before the database rollback.
  *
  * Every attempt is audited (`rollback.files`; restored: no, unknown or yes).
  */
@@ -242,8 +245,9 @@ final readonly class FilesRollbackStep implements Step
     }
 
     /**
-     * Once the mirror was attempted (it removes `.maintenance`), the mode is
-     * switched on again if it was on or its state is unknown.
+     * Once the mirror was attempted (it can take longer than the 10 minutes
+     * WordPress honours a `.maintenance` for), the mode is switched on again if
+     * it was on or its state is unknown.
      *
      * @param  array<string, mixed>  $audit
      * @param  list<string>  $warnings

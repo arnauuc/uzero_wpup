@@ -173,6 +173,47 @@ it('does nothing when repeated: the installed version is checked first', functio
         ->and(updateRows($run))->toBe([['plugin', 'classic-editor', '1.6.3', '1.6.4', 'updated']]);
 });
 
+it('does nothing on a first attempt that finds the target version, installed meanwhile outside the tool', function (): void {
+    [$run, $context] = updateRun();
+    $driver = new FakeDriver;
+    $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'classic-editor', '1.6.4'));
+
+    $outcome = classicStep($driver)->run($context);
+
+    expect($outcome->status)->toBe(RunStepStatus::Succeeded)
+        ->and($outcome->data['already_installed'])->toBeTrue()
+        ->and($driver->writeCalls)->toBe([])
+        ->and(updateRows($run))->toBe([['plugin', 'classic-editor', '1.6.3', '1.6.4', 'updated']]);
+});
+
+it('does not trust, on a resumed attempt, a target version this run never finished installing: it fails, to roll back', function (): void {
+    // UZEROWPUP-62: the worker died during the install; the version header may be new and other files old.
+    [$run] = updateRun();
+    $driver = new FakeDriver;
+    $driver->addComponent(new ComponentVersion(ComponentType::Plugin, 'classic-editor', '1.6.4'));
+
+    $outcome = classicStep($driver)->run(new StepContext($run, false, attempt: 2));
+
+    expect($outcome->status)->toBe(RunStepStatus::Failed)
+        ->and($outcome->summary)->toContain("l'intent anterior d'aquest pas es va interrompre abans d'acabar la instal·lació")
+        ->and($driver->writeCalls)->toBe([])
+        // From the plan's version: the files rollback puts that one back.
+        ->and(updateRows($run))->toBe([['plugin', 'classic-editor', '1.6.3', '1.6.4', 'failed']]);
+});
+
+it('does nothing on a resumed attempt whose install this run had recorded as done', function (): void {
+    [$run, $context] = updateRun();
+    $driver = new FakeDriver;
+    $step = classicStep($driver);
+    $step->run($context);
+
+    $outcome = $step->run(new StepContext($run, false, attempt: 2));
+
+    expect($outcome->status)->toBe(RunStepStatus::Succeeded)
+        ->and($outcome->data['already_installed'])->toBeTrue()
+        ->and($driver->uploadedPackages)->toHaveCount(1);
+});
+
 it('never acts on a site that changed since the plan', function (?string $installed): void {
     [$run, $context] = updateRun();
     $driver = new FakeDriver;

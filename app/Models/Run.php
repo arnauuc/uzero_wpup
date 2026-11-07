@@ -29,6 +29,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property RunStatus $status
  * @property array<string, mixed> $flags
  * @property array<string, mixed>|null $result_summary
+ * @property list<array<string, mixed>>|null $interruptions
  * @property CarbonImmutable $queued_at
  * @property CarbonImmutable|null $started_at
  * @property CarbonImmutable|null $finished_at
@@ -57,6 +58,7 @@ class Run extends Model
             'status' => RunStatus::class,
             'flags' => 'array',
             'result_summary' => 'array',
+            'interruptions' => 'array',
             'queued_at' => 'immutable_datetime',
             'started_at' => 'immutable_datetime',
             'finished_at' => 'immutable_datetime',

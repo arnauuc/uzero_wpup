@@ -224,6 +224,9 @@ final class UpdateCommand extends WpupCommand implements ChangesState
         } else {
             $this->error((string) $run->failureReason());
         }
+        foreach ($summary->interruptions as $interruption) {
+            $this->warn($interruption->describe());
+        }
 
         if ($summary->changes !== []) {
             $this->table(['Component', 'Abans', 'Després', 'Resultat'], array_map(static fn (array $c): array => [

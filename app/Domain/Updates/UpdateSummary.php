@@ -8,6 +8,7 @@ use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlan;
 use App\Domain\Rollback\DatabaseRollbackStep;
 use App\Domain\Rollback\FilesRollbackStep;
+use App\Domain\Runs\RunInterruption;
 use App\Enums\ChangeResult;
 use App\Enums\RunStepKind;
 use App\Enums\RunStepStatus;
@@ -20,7 +21,8 @@ use UnexpectedValueException;
 /**
  * What an update run did, for `wpup update` once it is finished (the full
  * report is F5): the plan, the components it updated and, when it rolled
- * itself back, what the rollback restored. Read from the run's own rows.
+ * itself back, what the rollback restored, and every time it was interrupted
+ * (UZEROWPUP-62: the operator is always told). Read from the run's own rows.
  */
 final readonly class UpdateSummary
 {
@@ -28,6 +30,7 @@ final readonly class UpdateSummary
      * @param  list<array{type: string, slug: string, before: ?string, after: ?string, result: string}>  $changes
      * @param  bool|null  $filesRestored  null when there was no rollback
      * @param  DatabaseRollbackState|null  $database  null when there was no rollback
+     * @param  list<RunInterruption>  $interruptions
      */
     public function __construct(
         public Run $run,
@@ -37,6 +40,7 @@ final readonly class UpdateSummary
         public ?DatabaseRollbackState $database,
         public ?string $databaseWarning,
         public ?string $forceCommand,
+        public array $interruptions = [],
     ) {}
 
     public static function of(Run $run): self
@@ -81,6 +85,7 @@ final readonly class UpdateSummary
             },
             is_string($warning) ? $warning : null,
             is_string($force) ? $force : null,
+            RunInterruption::of($run),
         );
     }
 
@@ -116,6 +121,7 @@ final readonly class UpdateSummary
                 'database_warning' => $this->databaseWarning,
                 'force_command' => $this->forceCommand,
             ],
+            'interruptions' => array_map(static fn (RunInterruption $i): array => $i->toArray(), $this->interruptions),
         ];
     }
 }
