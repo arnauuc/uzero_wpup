@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium, type Browser, type Request } from 'playwright';
+import { preparePage } from './capture.js';
 import { LIMITS, PROTOCOL_VERSION, truncate, type PageResult, type VerifierInput, type VerifierOutput } from './contract.js';
 
 /** Height of the window; screenshots are full page whatever it is. */
@@ -13,8 +14,8 @@ const MIN_PAGE_MS = 1000;
  * Visits every URL in every viewport and records what the page did. Every
  * navigation and screenshot is bounded by the time left until total_ms, so
  * the verifier stops by itself, before the orchestrator's hard timeout, and
- * still reports what it did (partial: true). Skeleton (UZEROWPUP-64): stable
- * screenshots, the diff and the checkout flow come later.
+ * still reports what it did (partial: true). Every page is prepared before its
+ * screenshot (capture.ts, UZEROWPUP-65); the diff and the checkout flow come later.
  */
 export async function verify(input: VerifierInput): Promise<VerifierOutput> {
   const deadline = Date.now() + input.timeouts.total_ms;
@@ -106,10 +107,13 @@ async function visit(
     result.timings.navigation_ms = Date.now() - started;
     result.http_status = response?.status() ?? null;
 
+    await preparePage(page, deadline, input.hide_selectors);
     const screenshot = join(viewport.name, `${index}.png`);
     await page.screenshot({
       path: join(input.output_dir, screenshot),
       fullPage: true,
+      animations: 'disabled',
+      caret: 'hide',
       timeout: left(input.timeouts.screenshot_ms),
       mask: input.masks.map((selector) => page.locator(selector)),
     });

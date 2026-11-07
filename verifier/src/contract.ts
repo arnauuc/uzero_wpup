@@ -12,6 +12,7 @@ export const LIMITS = {
   urls: 50,
   viewports: 4,
   masks: 50,
+  hideSelectors: 50,
   consoleErrorsPerPage: 50,
   resourceErrorsPerPage: 100,
   blockedRequestsPerPage: 20,
@@ -48,6 +49,8 @@ export const InputSchema = z.strictObject({
     .min(1)
     .max(LIMITS.viewports),
   masks: z.array(z.string().min(1).max(500)).max(LIMITS.masks),
+  // Optional (additive, protocol stays at 1): CSS selectors of extra elements to hide, on top of the known cookie banners.
+  hide_selectors: z.array(z.string().min(1).max(500)).max(LIMITS.hideSelectors).optional(),
   thresholds: z.strictObject({ max_diff_ratio: z.number().min(0).max(1) }),
   output_dir: z.string().regex(/^\//, 'must be an absolute path').max(1000),
   timeouts: z.strictObject({

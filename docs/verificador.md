@@ -1,6 +1,6 @@
 # Verificador: protocol amb l'orquestrador
 
-El verificador (`verifier/`) és un worker Node + TypeScript + Playwright que visita les pàgines públiques d'un lloc i en desa les captures i els errors. Aquest document en fixa el contracte amb l'orquestrador (UZEROWPUP-64). L'estabilitat de les captures (UZEROWPUP-65), el diff (UZEROWPUP-68), el flux de compra (UZEROWPUP-69) i on entra al pipeline d'actualització (UZEROWPUP-72) es fan més endavant.
+El verificador (`verifier/`) és un worker Node + TypeScript + Playwright que visita les pàgines públiques d'un lloc i en desa les captures i els errors. Aquest document en fixa el contracte amb l'orquestrador (UZEROWPUP-64). Les captures estables (UZEROWPUP-65) són a la secció «Captures estables». El diff (UZEROWPUP-68), el flux de compra (UZEROWPUP-69) i on entra al pipeline d'actualització (UZEROWPUP-72) es fan més endavant.
 
 ## Invocació: procés, no cua
 
@@ -38,13 +38,26 @@ setsid node verifier/dist/bin.js < entrada.json
   "urls": [{ "path": "/", "profile": "home" }, { "path": "/botiga/", "profile": "category" }],
   "viewports": [{ "name": "desktop", "width": 1440 }, { "name": "mobile", "width": 390 }],
   "masks": [".slider", ".price-live"],
+  "hide_selectors": [".promo-popup"],
   "thresholds": { "max_diff_ratio": 0.01 },
   "output_dir": "/var/lib/wpup/verifier/run-42/verify-baseline",
   "timeouts": { "navigation_ms": 60000, "screenshot_ms": 30000, "total_ms": 1080000 }
 }
 ```
 
-L'esquema és a `verifier/src/contract.ts` (zod, objectes estrictes: cap camp desconegut). Límits: com a màxim 50 URLs, 4 viewports (de 320 a 3840 px d'amplada) i 50 selectors de màscara, i 1 MiB d'entrada. `thresholds` es fa servir a partir del diff (UZEROWPUP-68). Els valors per defecte són a `config/wpup.php` (`verifier`).
+L'esquema és a `verifier/src/contract.ts` (zod, objectes estrictes: cap camp desconegut). Límits: com a màxim 50 URLs, 4 viewports (de 320 a 3840 px d'amplada) 50 selectors de màscara, 50 de `hide_selectors` i 1 MiB d'entrada. `hide_selectors` és **opcional**: és un afegit compatible, així que el protocol continua a la versió 1. `thresholds` es fa servir a partir del diff (UZEROWPUP-68). Els valors per defecte són a `config/wpup.php` (`verifier`).
+
+## Captures estables
+
+Dos viewports per defecte, `desktop` (1440 px) i `mobile` (390 px), que l'orquestrador envia a l'entrada (`config/wpup.php`, `verifier.viewports`). Les captures són sempre de pàgina completa (`fullPage`) i la finestra fa 900 px d'alçada. Abans de cada captura (`verifier/src/capture.ts`, `preparePage`):
+
+1. **Xarxa i tipus de lletra:** s'espera `networkidle` i `document.fonts.ready`. Cada espera té el seu límit (5 s per a la xarxa i els tipus de lletra, 8 s per a les imatges), retallat sempre al temps que queda fins a `total_ms`. Una pàgina que no arriba mai a `networkidle` (polling, analítica) es captura tal com és: no és un error del lloc.
+2. **Moviment aturat:** s'injecta un CSS que porta animacions i transicions al seu estat final (durada ~0, una iteració, sense retard) i amaga el cursor de text; a més, Playwright captura amb `animations: 'disabled'` i `caret: 'hide'`. No s'eliminen les animacions (`animation: none`), perquè el contingut que apareix amb una animació quedaria amagat.
+3. **Bàners de galetes amagats:** una llista de selectors coneguts (Cookiebot, CookieYes, Complianz, GDPR Cookie Consent, Borlabs, OneTrust, Cookie Notice, Moove, Didomi, Usercentrics, Iubenda…; `COOKIE_BANNER_SELECTORS`) més els `hide_selectors` de l'entrada, tots amb `display: none`. Hi ha una regla CSS per selector, de manera que un selector invàlid no inutilitza els altres. Els selectors no són amplis (cap `[class*="cookie"]`), perquè podrien amagar el `body`. **Amagar no és emmascarar:** les `masks` pinten un requadre sobre una zona que continua al disseny; els bàners s'eliminen del disseny.
+4. **Imatges mandroses:** es posa `loading="eager"` a les imatges i als iframes, es copia `data-src`/`data-srcset` (o `data-lazy-*`) quan no hi ha `src`, es recorre la pàgina fins al final i es torna a dalt (per als carregadors amb `IntersectionObserver`), i s'espera que les imatges acabin de carregar (amb límit).
+5. Es torna a dalt de tot i es fa la captura.
+
+**Prova de no regressió:** `verifier/src/capture.test.ts` serveix una pàgina local amb animacions infinites, un tipus de lletra que arriba tard, una imatge mandrosa, una `data-src` i un bàner de galetes que apareix tard. Fa dues captures de la mateixa pàgina en tots dos viewports i exigeix un diff pràcticament zero (< 0,01 % dels píxels), comparat amb un descodificador PNG mínim, sense cap dependència nova (el diff de debò, amb pixelmatch, és UZEROWPUP-68). També comprova que la pàgina amb bàner és igual que la pàgina sense i que les imatges mandroses estan carregades.
 
 ## Sortida (versió 1)
 
