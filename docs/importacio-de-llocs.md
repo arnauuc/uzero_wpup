@@ -32,7 +32,8 @@ Els camps són els de `site:add` (vegeu [cli.md](cli.md)). `name` és obligatori
 | `auto_update`, `include_uploads`, `maintenance` | `true`/`false` (també `yes`/`no`, `sí`/`no`, `1`/`0`) |
 | `verify_urls`, `mask`, `diff_threshold` | URLs a verificar, selectors a emmascarar, llindar 0–100 |
 | `checkout_product`, `freeze`, `exclude` | Producte de prova, components congelats i exclosos |
-| `notify` | `email`, `telegram`, `slack` |
+| `notify` | Canals d'avís de `notifications.channels` (`config/wpup.php`); sense cap, tots |
+| `notify_min` | Severitat mínima dels avisos del lloc: `all`, `warnings` o `errors` |
 | `external_backup` | `plesk`, `dropbox`, `plugin`, `other`, `none` |
 | `external_backup_notes` | Notes de la còpia externa (màx. 500 caràcters); cal que el lloc en tingui el tipus declarat |
 | `server` | `name`, `hostname`, `ssh_port`, `panel` (`plesk` o `other`) |
@@ -58,7 +59,7 @@ Una llista de llocs (o una clau `sites:` amb la llista). `window`, `server` i `a
 
 Una fila per lloc, amb capçalera. Les columnes són planes i el nom és el del camp; els camps imbricats del YAML s'hi aplanen:
 
-`name, url, wp_path, php_binary, tags, strategy, window_days, window_start, window_end, auto_update, verify_urls, mask, diff_threshold, checkout_product, freeze, exclude, notify, include_uploads, external_backup, external_backup_notes, maintenance, server, hostname, ssh_port, panel, account, driver`
+`name, url, wp_path, php_binary, tags, strategy, window_days, window_start, window_end, auto_update, verify_urls, mask, diff_threshold, checkout_product, freeze, exclude, notify, notify_min, include_uploads, external_backup, external_backup_notes, maintenance, server, hostname, ssh_port, panel, account, driver`
 
 - **Separador de columnes:** coma; si la capçalera fa servir `;` (Excel en català) es detecta sola. UTF-8, amb o sense BOM.
 - **Separador de llistes dins d'una cel·la:** la barra vertical `|` (p. ex. `/|/cart|/shop`), perquè una URL o un selector CSS pot portar comes i punts i coma.
@@ -73,7 +74,7 @@ Una fila per lloc, amb capçalera. Les columnes són planes i el nom és el del 
 | Camp que es pot esborrar, **buit** (`tags: []`, `~`, cel·la buida) | S'esborra |
 | Qualsevol altre camp, buit | S'ignora |
 
-Es poden esborrar: `tags`, `php_binary`, `window`, `verify_urls`, `mask`, `checkout_product`, `freeze`, `exclude`, `notify`, `external_backup` i `maintenance` (torna al valor per defecte). La finestra s'esborra quan hi són `window_days`, `window_start` i `window_end` (o `window:` al YAML) i tots són buits.
+Es poden esborrar: `tags`, `php_binary`, `window`, `verify_urls`, `mask`, `checkout_product`, `freeze`, `exclude`, `notify`, `notify_min` (torna a `all`), `external_backup` i `maintenance` (torna al valor per defecte). La finestra s'esborra quan hi són `window_days`, `window_start` i `window_end` (o `window:` al YAML) i tots són buits.
 
 `window_days` accepta el mateix que `site:edit --window-days` (`1-5,7`, `dl-dv,dg` o `cada dia`). `auto_update: true` no aixeca mai el bloqueig del planificador d'un lloc que ha fallat en finestres seguides: la importació el deixa bloquejat i ho avisa a la sortida (cal `wpup site:edit <lloc> --auto-update`).
 

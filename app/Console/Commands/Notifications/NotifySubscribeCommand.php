@@ -9,13 +9,12 @@ use App\Console\WpupCommand;
 use App\Domain\Identity\Ability;
 use App\Domain\Notifications\NotificationAdministration;
 use App\Enums\NotificationThreshold;
-use App\Models\User;
 use DomainException;
 
 /**
  * An operator follows a notification destination from a minimum severity on,
  * or stops following it (UZEROWPUP-79). Each operator manages their own;
- * an admin may do it for someone else with --user.
+ * an admin may do it for someone else with --user (NotificationAdministration).
  */
 final class NotifySubscribeCommand extends WpupCommand implements ChangesState
 {
@@ -36,11 +35,6 @@ final class NotifySubscribeCommand extends WpupCommand implements ChangesState
     protected function perform(): int
     {
         $admin = app(NotificationAdministration::class);
-        $username = $this->stringOption('user');
-        if ($username !== null && $username !== $this->operator->unix_username
-            && ! $this->requireAbility(Ability::ManageUsers, ['user' => $username], 'Només un admin pot canviar els avisos d\'un altre operador.')) {
-            return self::FAILURE;
-        }
         $min = NotificationThreshold::tryFrom((string) $this->stringOption('min'));
         if ($min === null) {
             $this->error('La severitat mínima ha de ser all, warnings o errors.');
@@ -49,8 +43,7 @@ final class NotifySubscribeCommand extends WpupCommand implements ChangesState
         }
 
         try {
-            $user = $username === null ? $this->operator : (User::query()->where('unix_username', $username)->first()
-                ?? throw new DomainException("No hi ha cap operador «{$username}»."));
+            $user = $admin->subscriber($this->actor(), $this->operator, $this->stringOption('user'));
             $destination = $admin->destination($this->stringArgument('destination'));
             $remove = $this->option('remove') === true;
 

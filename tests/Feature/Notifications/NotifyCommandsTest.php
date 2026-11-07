@@ -30,6 +30,17 @@ beforeEach(function (): void {
     actingAsOperator('admin1');
 });
 
+/**
+ * @param  array<string, mixed>  $profile
+ */
+function notifySite(array $profile = []): Site
+{
+    $site = Site::factory()->create();
+    SiteProfile::factory()->create(['site_id' => $site->id, ...$profile]);
+
+    return $site;
+}
+
 function revealedNotifySecret(NotificationDestination $destination): string
 {
     return app(SecretStore::class)->reveal((string) $destination->credential_ref, AuditActor::system('tests'), 'test')->reveal();
@@ -51,18 +62,20 @@ it('creates a destination with its secret in the SecretStore and never shows it'
     expect((string) json_encode(AuditLogEntry::query()->get()->toArray()))->not->toContain(NOTIFY_TOKEN);
 });
 
-it('keeps the secret when the new one is left empty, and replaces it otherwise', function (): void {
+it('edits without a terminal and keeps the secret, and asks for a new one only with --rotate-secret', function (): void {
     command('notify:destination', ['name' => 'equip', '--channel' => 'fake', '--address' => 'chat-1'])
         ->expectsQuestion('Token o webhook', NOTIFY_TOKEN)->assertSuccessful();
     $ref = NotificationDestination::query()->sole()->credential_ref;
 
-    command('notify:destination', ['name' => 'equip', '--deactivate' => true])
-        ->expectsQuestion('Token o webhook nou (buit: es manté l\'actual)', '')->assertSuccessful();
+    command('notify:destination', ['name' => 'equip', '--deactivate' => true, '--address' => 'chat-2', '--no-interaction' => true])
+        ->expectsOutputToContain('actualitzada')->assertSuccessful();
     $kept = NotificationDestination::query()->sole();
-    expect($kept->active)->toBeFalse()->and(revealedNotifySecret($kept))->toBe(NOTIFY_TOKEN);
+    expect($kept->active)->toBeFalse()->and($kept->address)->toBe('chat-2')->and(revealedNotifySecret($kept))->toBe(NOTIFY_TOKEN);
 
-    command('notify:destination', ['name' => 'equip'])
-        ->expectsQuestion('Token o webhook nou (buit: es manté l\'actual)', 'nou-token-9999')->assertSuccessful();
+    command('notify:destination', ['name' => 'equip', '--rotate-secret' => true, '--no-interaction' => true])
+        ->expectsOutputToContain('terminal interactiu')->assertFailed();
+    command('notify:destination', ['name' => 'equip', '--rotate-secret' => true])
+        ->expectsQuestion('Token o webhook', 'nou-token-9999')->assertSuccessful();
     $replaced = NotificationDestination::query()->sole();
     expect($replaced->credential_ref)->toBe($ref)->and(revealedNotifySecret($replaced))->toBe('nou-token-9999');
 });
@@ -71,7 +84,7 @@ it('refuses a destination without a TTY, without its secret or with a bad channe
     command('notify:destination', ['name' => 'equip', '--channel' => 'fake', '--address' => 'x', '--no-interaction' => true])
         ->expectsOutputToContain('terminal interactiu')->assertFailed();
     command('notify:destination', ['name' => 'equip', '--channel' => 'fake', '--address' => 'x'])
-        ->expectsQuestion('Token o webhook', '')->expectsOutputToContain('necessita un token')->assertFailed();
+        ->expectsQuestion('Token o webhook', '')->expectsOutputToContain('Cal el token o webhook')->assertFailed();
     command('notify:destination', ['name' => 'equip', '--channel' => 'log'])->expectsOutputToContain('desconegut')->assertFailed();
     command('notify:destination', ['name' => 'equip', '--channel' => 'fake'])->expectsOutputToContain('--address')->assertFailed();
 
@@ -137,4 +150,69 @@ it('sets the minimum severity of a site', function (): void {
     command('site:edit', ['name' => 'botiga', '--notify-min' => 'sovint'])->expectsOutputToContain('severitat mínima')->assertFailed();
 
     expect(SiteProfile::query()->where('site_id', $site->id)->sole()->notification_min_severity)->toBe(NotificationThreshold::Errors);
+});
+
+it('saves and audits nothing when nothing changes', function (): void {
+    NotificationDestination::query()->create(['name' => 'equip', 'channel' => 'fake', 'address' => 'chat-1', 'active' => false]);
+    $updated = NotificationDestination::query()->sole()->updated_at;
+
+    command('notify:destination', ['name' => 'equip', '--deactivate' => true, '--address' => 'chat-1', '--no-interaction' => true])
+        ->expectsOutputToContain('no hi ha canvis')->assertSuccessful();
+
+    expect(AuditLogEntry::query()->where('action', 'notification.destination.set')->exists())->toBeFalse()
+        ->and(NotificationDestination::query()->sole()->updated_at?->toIso8601String())->toBe($updated?->toIso8601String());
+});
+
+it('still lists and deactivates a destination whose channel was removed, but gives it no new secret', function (): void {
+    NotificationDestination::query()->create(['name' => 'vell', 'channel' => 'pigeon', 'address' => 'colom-123456']);
+
+    command('notify:list')->expectsOutputToContain('pigeon')->assertSuccessful();
+    command('notify:destination', ['name' => 'vell', '--deactivate' => true, '--no-interaction' => true])->assertSuccessful();
+    command('notify:destination', ['name' => 'vell', '--rotate-secret' => true])->expectsOutputToContain('desconegut')->assertFailed();
+
+    expect(NotificationDestination::query()->sole()->active)->toBeFalse();
+});
+
+it('says so when no channel can be chosen', function (): void {
+    config(['wpup.notifications.channels' => ['log' => config('wpup.notifications.channels.log')]]);
+
+    command('notify:destination', ['name' => 'equip', '--channel' => 'telegram'])
+        ->expectsOutputToContain('no hi ha cap canal configurat')->assertFailed();
+    command('site:edit', ['name' => notifySite()->name, '--notify' => ['telegram']])
+        ->expectsOutputToContain('no hi ha cap canal configurat')->assertFailed();
+});
+
+it('validates the channels of a site against the configured ones', function (): void {
+    $site = notifySite();
+
+    command('site:edit', ['name' => $site->name, '--notify' => ['sms']])->expectsOutputToContain('opcions: fake')->assertFailed();
+    command('site:edit', ['name' => $site->name, '--notify' => ['fake']])->assertSuccessful();
+
+    expect(SiteProfile::query()->sole()->notification_channels)->toBe(['fake']);
+});
+
+it('reports no changes for an unchanged minimum severity, and clears it', function (): void {
+    $name = notifySite(['notification_min_severity' => NotificationThreshold::Errors])->name;
+
+    command('site:edit', ['name' => $name, '--notify-min' => 'errors'])->expectsOutputToContain('no hi ha canvis')->assertSuccessful();
+    command('site:edit', ['name' => $name, '--notify-min' => 'warnings'])->expectsOutputToContain('warnings')->assertSuccessful();
+    command('site:edit', ['name' => $name, '--clear' => ['notify-min']])->assertSuccessful();
+
+    expect(SiteProfile::query()->sole()->notification_min_severity)->toBe(NotificationThreshold::All);
+});
+
+it('imports the minimum severity of a site and clears it with an empty cell', function (): void {
+    $file = static function (string $csv): string {
+        $path = tempnam(sys_get_temp_dir(), 'wpup-import-').'.csv';
+        file_put_contents($path, $csv);
+
+        return $path;
+    };
+    $csv = "name,url,wp_path,notify_min,server,hostname,account\n"
+        .'botiga-m,https://botiga-m.example.test,/var/www/m,errors,srv-m,srv-m.example.test,botiga_m'."\n";
+    command('site:import', ['file' => $file($csv), '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->where('name', 'botiga-m')->sole()->profile?->notification_min_severity)->toBe(NotificationThreshold::Errors);
+
+    command('site:import', ['file' => $file("name,notify_min\nbotiga-m,\n"), '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->where('name', 'botiga-m')->sole()->profile?->notification_min_severity)->toBe(NotificationThreshold::All);
 });

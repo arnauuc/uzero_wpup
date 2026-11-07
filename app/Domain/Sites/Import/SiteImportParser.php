@@ -29,7 +29,7 @@ final class SiteImportParser
     /** Flat column names, also the CSV header. */
     public const COLUMNS = [
         'name', 'url', 'wp_path', 'php_binary', 'tags', 'strategy', 'window_days', 'window_start', 'window_end',
-        'auto_update', 'verify_urls', 'mask', 'diff_threshold', 'checkout_product', 'freeze', 'exclude', 'notify',
+        'auto_update', 'verify_urls', 'mask', 'diff_threshold', 'checkout_product', 'freeze', 'exclude', 'notify', 'notify_min',
         'include_uploads', 'external_backup', 'external_backup_notes', 'maintenance', 'server', 'hostname', 'ssh_port', 'panel', 'account', 'driver',
     ];
 
@@ -45,7 +45,7 @@ final class SiteImportParser
         'tags' => 'tags', 'verify_urls' => 'verify_urls', 'mask' => 'mask_selectors', 'freeze' => 'frozen_components',
         'exclude' => 'excluded_components', 'notify' => 'notification_channels', 'php_binary' => 'php_binary',
         'checkout_product' => 'checkout_product', 'external_backup' => 'external_backup',
-        'maintenance' => 'maintenance_mode',
+        'maintenance' => 'maintenance_mode', 'notify_min' => 'notification_min_severity',
     ];
 
     private const SECRET_KEY = '/pass|pwd|secret|token|key|private|credential|auth/i';
@@ -260,6 +260,7 @@ final class SiteImportParser
             externalBackup: $this->text($record, 'external_backup', $local),
             externalBackupNotes: $this->text($record, 'external_backup_notes', $local),
             maintenance: $this->bool($record, 'maintenance', $local),
+            notifyMin: $this->text($record, 'notify_min', $local),
         );
 
         foreach ($local as $message) {

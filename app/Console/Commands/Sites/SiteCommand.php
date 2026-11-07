@@ -38,7 +38,7 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         {--checkout-product= : Producte de prova del checkout}
         {--freeze=* : Component congelat: slug, tipus:slug o slug@versió, que s\'hi actualitza fins a aquella versió (repetible)}
         {--exclude=* : Component exclòs (repetible)}
-        {--notify=* : Canal d\'avís: email, telegram, slack (repetible; cap vol dir tots)}
+        {--notify=* : Canal d\'avís de wpup.notifications.channels (repetible; cap vol dir tots)}
         {--notify-min= : Severitat mínima dels avisos del lloc: all, warnings o errors}
         {--include-uploads : Inclou uploads a la còpia}
         {--no-include-uploads : Exclou uploads de la còpia}
@@ -46,7 +46,7 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         {--external-backup-notes= : Notes de la còpia externa (màx. 500 caràcters; cal haver-ne declarat el tipus; buides, les esborra)}
         {--maintenance : Activa el mode manteniment durant l\'actualització}
         {--no-maintenance : No activis el mode manteniment durant l\'actualització}
-        {--clear=* : Camp a esborrar: tag, php-binary, window, verify-url, mask, checkout-product, freeze, exclude, notify, external-backup, maintenance}';
+        {--clear=* : Camp a esborrar: tag, php-binary, window, verify-url, mask, checkout-product, freeze, exclude, notify, notify-min, external-backup, maintenance}';
 
     /** CLI names accepted by --clear mapped to the canonical field names. */
     private const CLEAR_MAP = [
@@ -61,6 +61,7 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         'notify' => 'notification_channels',
         'external-backup' => 'external_backup',
         'maintenance' => 'maintenance_mode',
+        'notify-min' => 'notification_min_severity',
     ];
 
     protected function ability(): Ability

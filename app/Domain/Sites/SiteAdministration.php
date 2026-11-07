@@ -7,6 +7,7 @@ namespace App\Domain\Sites;
 use App\Domain\Audit\AuditActor;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Backups\SiteLocalDestination;
+use App\Domain\Notifications\NotificationChannels;
 use App\Domain\Planning\ComponentName;
 use App\Enums\AuditResult;
 use App\Enums\HostingPanel;
@@ -34,7 +35,7 @@ final readonly class SiteAdministration
     public const CLEARABLE = [
         'tags', 'php_binary', 'maintenance_window', 'checkout_product', 'verify_urls', 'mask_selectors',
         'frozen_components', 'excluded_components', 'notification_channels', 'external_backup',
-        'maintenance_mode',
+        'maintenance_mode', 'notification_min_severity',
     ];
 
     private const SITE_NAME = '/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/';
@@ -47,7 +48,7 @@ final readonly class SiteAdministration
 
     private const SYSTEM_USER = '/^[a-z_][a-z0-9_.-]{0,31}$/';
 
-    public function __construct(private AuditLogger $audit, private SiteLocalDestination $siteLocal) {}
+    public function __construct(private AuditLogger $audit, private SiteLocalDestination $siteLocal, private NotificationChannels $channels) {}
 
     /**
      * @return array<string, mixed> Flat summary of what is (or, in dry-run, would be) stored.
@@ -263,9 +264,10 @@ final readonly class SiteAdministration
         }
         $channels = $this->list($input->notify, 'notification_channels', $clears, $errors);
         if ($channels !== null) {
-            $allowed = $this->configList('notification_channels');
-            foreach (array_diff($channels, $allowed) as $channel) {
-                $errors[] = "Canal d'avís desconegut «{$channel}» (opcions: ".implode(', ', $allowed).').';
+            foreach ($channels as $channel) {
+                if (! in_array($channel, $this->channels->configurable(), true)) {
+                    $errors[] = $this->channels->unknownMessage($channel);
+                }
             }
             $profile['notification_channels'] = $channels;
         }
@@ -276,6 +278,10 @@ final readonly class SiteAdministration
             } else {
                 $profile['notification_min_severity'] = $min->value;
             }
+        }
+        if ($clears('notification_min_severity')) {
+            $this->conflict($input->notifyMin, 'notification_min_severity', $errors);
+            $profile['notification_min_severity'] = NotificationThreshold::All->value;
         }
 
         if ($input->diffThreshold !== null) {
@@ -493,7 +499,8 @@ final readonly class SiteAdministration
 
     private function comparable(mixed $value): mixed
     {
-        if ($value instanceof UpdateStrategy) {
+        // Enum casts (strategy, notification_min_severity) compare and show as their value.
+        if ($value instanceof \BackedEnum) {
             return $value->value;
         }
         if ($value instanceof \DateTimeInterface) {

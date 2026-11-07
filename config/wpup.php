@@ -322,7 +322,6 @@ return [
      */
     'sites' => [
         'default_window' => ['days' => [1, 2, 3, 4, 5, 6, 7], 'start' => '01:00', 'end' => '06:00'],
-        'notification_channels' => ['email', 'telegram', 'slack'],
         'external_backup_types' => ['plesk', 'dropbox', 'plugin', 'other', 'none'],
         'external_backup_notes_max' => 500,
         // site:import refuses larger files (UZEROWPUP-26).
@@ -343,6 +342,9 @@ return [
         'error_max_length' => 500,
         // Delivery records (notification_deliveries) are purged by the daily cleanup after this.
         'deliveries_retention_days' => 365,
+        // Limits of a destination (notify:destination).
+        'destination_name_max_length' => 64,
+        'address_max_length' => 500,
         'channels' => [
             'log' => ['class' => LogChannel::class, 'address' => false, 'secret' => false],
         ],

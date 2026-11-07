@@ -12,7 +12,9 @@ use DomainException;
 /**
  * Creates or updates a destination of a notification channel (UZEROWPUP-79).
  * Admin and CLI only (ADR-0008). The token or webhook is typed without echo,
- * never given as an argument (history and `ps`), and goes to the SecretStore.
+ * never given as an argument (history and `ps`), and goes to the SecretStore:
+ * it is asked for a new destination of a channel that needs one, or with
+ * --rotate-secret. Any other edit works without a terminal.
  */
 final class NotifyDestinationCommand extends CredentialCommand
 {
@@ -22,6 +24,7 @@ final class NotifyDestinationCommand extends CredentialCommand
         {--address= : Adreça que no és secreta: correu, xat, canal…}
         {--activate : Torna a enviar-hi avisos}
         {--deactivate : Deixa d\'enviar-hi avisos}
+        {--rotate-secret : Demana un token o webhook nou}
         '.self::DRY_RUN;
 
     protected $description = 'Crea o actualitza una destinació d\'avisos (el token o webhook s\'escriu sense eco)';
@@ -29,43 +32,46 @@ final class NotifyDestinationCommand extends CredentialCommand
     protected function perform(): int
     {
         $admin = app(NotificationAdministration::class);
-        $name = trim($this->stringArgument('name'));
-        $address = $this->stringOption('address');
+        if ($this->option('activate') === true && $this->option('deactivate') === true) {
+            $this->error('--activate i --deactivate no es poden combinar.');
+
+            return self::FAILURE;
+        }
         $active = $this->option('activate') === true ? true : ($this->option('deactivate') === true ? false : null);
 
         try {
-            if ($this->option('activate') === true && $this->option('deactivate') === true) {
-                throw new DomainException('--activate i --deactivate no es poden combinar.');
-            }
-            $existing = $admin->checkDestination($name, $this->stringOption('channel'), $address);
+            $plan = $admin->plan(trim($this->stringArgument('name')), $this->stringOption('channel'), $this->stringOption('address'), $active, $this->option('rotate-secret') === true);
         } catch (DomainException $e) {
             $this->error($e->getMessage());
 
             return self::FAILURE;
         }
-        $channel = $existing->channel ?? (string) $this->stringOption('channel');
-        $asksSecret = $admin->needsSecret($channel);
 
+        if ($plan->changesNothing()) {
+            $this->info("Destinació «{$plan->name}»: no hi ha canvis.");
+
+            return self::SUCCESS;
+        }
         if ($this->isDryRun()) {
-            $this->info(($existing === null ? "[dry-run] Es crearia la destinació «{$name}» del canal {$channel}" : "[dry-run] S'actualitzaria la destinació «{$name}» ({$channel})")
-                .($asksSecret ? '; es demanaria el token o webhook sense eco.' : '.'));
+            $this->info(($plan->creates() ? "[dry-run] Es crearia la destinació «{$plan->name}» del canal {$plan->channel}" : "[dry-run] S'actualitzaria la destinació «{$plan->name}» ({$plan->channel})")
+                .($plan->needsSecret ? '; es demanaria el token o webhook sense eco.' : '.'));
 
             return self::SUCCESS;
         }
 
         $secret = null;
-        if ($asksSecret) {
+        if ($plan->needsSecret) {
             if (! $this->input->isInteractive()) {
                 $this->error('Cal un terminal interactiu per escriure el token o webhook sense eco.');
 
                 return self::FAILURE;
             }
-            $typed = $this->secret($existing === null ? 'Token o webhook' : 'Token o webhook nou (buit: es manté l\'actual)');
-            $secret = is_string($typed) && trim($typed) !== '' ? new Secret(trim($typed)) : null;
+            $typed = $this->secret('Token o webhook');
+            $secret = new Secret(is_string($typed) ? trim($typed) : '');
         }
 
         try {
-            $destination = $admin->setDestination($this->actor(), $name, $channel, $address, $secret, $active);
+            $destination = $admin->apply($this->actor(), $plan, $secret);
         } catch (DomainException $e) {
             $this->error($e->getMessage());
 
@@ -74,8 +80,8 @@ final class NotifyDestinationCommand extends CredentialCommand
             $secret?->wipe();
         }
 
-        $this->info(($existing === null ? "Destinació «{$destination->label()}» creada" : "Destinació «{$destination->label()}» actualitzada")
-            .($secret !== null ? '; el token o webhook s\'ha desat xifrat.' : '.'));
+        $this->info(($plan->creates() ? "Destinació «{$destination->label()}» creada" : "Destinació «{$destination->label()}» actualitzada")
+            .($plan->needsSecret ? '; el token o webhook s\'ha desat xifrat.' : '.'));
 
         return self::SUCCESS;
     }
