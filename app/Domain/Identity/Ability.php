@@ -34,6 +34,9 @@ enum Ability: string
     /** Apply the data retention table now (`wpup cleanup`, ADR-0009): destroys data. */
     case RunCleanup = 'run-cleanup';
 
+    /** `update --now` (ADR-0006): start outside the global queue and the site's window, audited. */
+    case SkipQueue = 'skip-queue';
+
     public function allows(User $user): bool
     {
         if (! $user->active) {
@@ -41,7 +44,7 @@ enum Ability: string
         }
 
         return match ($this) {
-            self::ManageSites, self::ManageCredentials, self::RunCleanup, self::ManageUsers, self::OverrideVersionPolicy => $user->role === UserRole::Admin,
+            self::ManageSites, self::ManageCredentials, self::RunCleanup, self::ManageUsers, self::OverrideVersionPolicy, self::SkipQueue => $user->role === UserRole::Admin,
             self::RunOperations, self::ViewReports => true,
         };
     }

@@ -27,6 +27,7 @@ use App\Domain\Backups\PreRestoreBackupStep;
 use App\Domain\Backups\RestoreCheckStep;
 use App\Domain\Backups\RestoreMaintenanceStep;
 use App\Domain\Backups\RestorePointGate;
+use App\Domain\Backups\RestorePointGateStep;
 use App\Domain\Backups\RestorePointService;
 use App\Domain\Backups\RestoreSelection;
 use App\Domain\Backups\RestoreStep;
@@ -111,6 +112,7 @@ use App\Domain\ToolBackup\ToolBackupService;
 use App\Domain\ToolBackup\ToolBackupSettings;
 use App\Domain\ToolBackup\ToolBackupStep;
 use App\Domain\ToolBackup\ToolDatabase;
+use App\Domain\Updates\InPlaceUpdatePipeline;
 use App\Domain\Updates\PageCacheCommand;
 use App\Domain\Updates\PostUpdateSettings;
 use App\Domain\Updates\SmokeCheckSettings;
@@ -517,33 +519,25 @@ class AppServiceProvider extends ServiceProvider
                     self::configInt('wpup.inventory.step_timeout_seconds'),
                     readOnlySite: true,
                 ),
-                new PlanStep(
-                    $app->make(UpdatePlanner::class),
-                    $app->make(RunAuthorization::class),
-                    self::configInt('wpup.planning.step_timeout_seconds'),
-                    self::configInt('wpup.planning.verified_php_max_age_seconds'),
-                    // Static analysis of the new packages (UZEROWPUP-50). The site is only reached,
-                    // as whoever launched the run, to read the package URL of premium updates.
-                    static function (Run $run, ?string $webPhp) use ($app): ChangeAnalyzer {
-                        return new PackageCompatibilityAnalyzer(
-                            $run->id,
-                            $webPhp,
-                            // One driver for the whole plan (see MemoizedDriver).
-                            (new MemoizedDriver(static function () use ($app, $run): SiteDriver {
-                                $actor = $app->make(RunAuthorization::class)->actorFor($run, Ability::RunOperations)
-                                    ?? throw new ArtifactException(RunAuthorization::deniedMessage($run));
-                                $site = $run->site ?? throw new ArtifactException("L'execució no té cap lloc.");
-
-                                return $app->make(DriverFactory::class)->forSite($site, $actor);
-                            }))(...),
-                            $app->make(PackageArtifacts::class),
-                            $app->make(StaticCompatibility::class),
-                            $app->make(CompatSettings::class),
-                            $app->make(SecretRedactor::class),
-                        );
-                    },
-                ),
+                self::planStep($app),
             ]));
+            // `wpup update` (UZEROWPUP-60): the pipeline grows from the plan its own run stored.
+            $resolver->register(RunType::Update, static fn (Run $run): Pipeline => $app->make(InPlaceUpdatePipeline::class)->for($run));
+        });
+        $this->app->bind(InPlaceUpdatePipeline::class, static function (Application $app): InPlaceUpdatePipeline {
+            $driverFor = static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor);
+
+            return new InPlaceUpdatePipeline(
+                // The update's inventory probes the web's PHP and blocks the site if a prerequisite fails.
+                new InventoryStep($app->make(SiteInventory::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.inventory.step_timeout_seconds'), $app->make(SiteBlocking::class)),
+                self::planStep($app),
+                new BackupStep($app->make(RestorePointService::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.step_timeout_seconds')),
+                new RestorePointGateStep($app->make(RestorePointGate::class), self::configInt('wpup.updates.restore_point_gate_timeout_seconds')),
+                $app->make(UpdateSteps::class),
+                $app->make(SmokeCheckSteps::class),
+                $app->make(MaintenanceSteps::class),
+                $app->make(RollbackSteps::class),
+            );
         });
         // The update steps of a plan (UZEROWPUP-54); the update run that uses them is UZEROWPUP-60.
         // Its step timeout must cover the slowest applyUpdate() of the SSH driver (checked there).
@@ -768,6 +762,39 @@ class AppServiceProvider extends ServiceProvider
             DatabaseRollbackStep::NAME => OnFailure::Stop,
             RollbackMaintenanceRestoreStep::NAME => OnFailure::Stop,
         ]);
+    }
+
+    /**
+     * The plan step, shared by the plan and the update pipelines.
+     */
+    private static function planStep(Application $app): PlanStep
+    {
+        return new PlanStep(
+            $app->make(UpdatePlanner::class),
+            $app->make(RunAuthorization::class),
+            self::configInt('wpup.planning.step_timeout_seconds'),
+            self::configInt('wpup.planning.verified_php_max_age_seconds'),
+            // Static analysis of the new packages (UZEROWPUP-50). The site is only reached,
+            // as whoever launched the run, to read the package URL of premium updates.
+            static function (Run $run, ?string $webPhp) use ($app): ChangeAnalyzer {
+                return new PackageCompatibilityAnalyzer(
+                    $run->id,
+                    $webPhp,
+                    // One driver for the whole plan (see MemoizedDriver).
+                    (new MemoizedDriver(static function () use ($app, $run): SiteDriver {
+                        $actor = $app->make(RunAuthorization::class)->actorFor($run, Ability::RunOperations)
+                            ?? throw new ArtifactException(RunAuthorization::deniedMessage($run));
+                        $site = $run->site ?? throw new ArtifactException("L'execució no té cap lloc.");
+
+                        return $app->make(DriverFactory::class)->forSite($site, $actor);
+                    }))(...),
+                    $app->make(PackageArtifacts::class),
+                    $app->make(StaticCompatibility::class),
+                    $app->make(CompatSettings::class),
+                    $app->make(SecretRedactor::class),
+                );
+            },
+        );
     }
 
     private static function stringOrNull(mixed $value): ?string

@@ -27,6 +27,18 @@ final readonly class MaintenanceSteps
 {
     public function __construct(private MaintenanceGuard $guard, private int $stepTimeoutSeconds) {}
 
+    /** Read-only, before the backup: a site already in maintenance is not updated (UZEROWPUP-60). */
+    public function check(): MaintenanceCheckStep
+    {
+        return new MaintenanceCheckStep($this->guard, $this->stepTimeoutSeconds);
+    }
+
+    /** First step of the update's own rollback: the mode on, whatever the profile (UZEROWPUP-60). */
+    public function forceOn(): MaintenanceForceOnStep
+    {
+        return new MaintenanceForceOnStep($this->guard, $this->stepTimeoutSeconds);
+    }
+
     public function on(): MaintenanceOnStep
     {
         return new MaintenanceOnStep($this->guard, $this->stepTimeoutSeconds);

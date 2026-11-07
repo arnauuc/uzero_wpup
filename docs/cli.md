@@ -176,6 +176,30 @@ Totes tres queden a l'auditoria: `--allow-major` i `--skip-quarantine` com a `pl
 
 **Components congelats, exclosos i sense llicència.** Cada cas s'omet amb el seu motiu: «component exclòs», «component congelat» i «sense llicència». Un component congelat es pot fixar a una versió amb `--freeze=slug@versió` (o `tipus:slug@versió`, p. ex. `--freeze=akismet@5.3`): s'hi pot actualitzar si la versió que s'ofereix és com a molt aquesta; si l'oferta és superior, s'omet amb «congelat a 5.3: la versió oferta (6.0) el supera i no s'instal·len versions intermèdies» (l'eina només coneix l'última versió oferta). Una correcció de vulnerabilitat dins del límit sí que s'aplica, amb les regles d'excepció de seguretat. Un número de versió només admet xifres i punts (fins a 4 parts) i els noms van en minúscules. Sense `@versió`, no s'actualitza mai. Si hi ha diverses entrades del mateix component, val la versió més baixa; una versió il·legible el congela del tot. `--exclude` no admet versió.
 
+## `update`: actualització in-place (UZEROWPUP-60)
+
+`wpup update [llocs…|--tag=…|--all]` encua una execució d'actualització per lloc. Cada execució fa, en ordre:
+
+1. Inventari fresc (amb el probe del PHP del web; bloqueja el lloc si falla un prerequisit) i pla, amb la mateixa política de versions i la mateixa anàlisi estàtica que `wpup plan`.
+2. Si no hi ha res a aplicar (tot al dia, omès, congelat o bloquejat; les traduccions encara no s'apliquen), l'execució acaba aquí i el lloc només s'ha llegit.
+3. Si el lloc ja és en mode manteniment (o no es pot saber), no s'actualitza: l'execució falla en aquest pas, sense còpia i sense tocar res.
+4. Punt de restauració verificat (volcat amb la marca de comandes i arxiu del codi, amb SHA-256), posició del log de PHP del web (línia base de la comprovació mínima) i comprovació que el punt existeix just abans del primer canvi (regla 3).
+5. Mode manteniment, si el perfil el demana (UZEROWPUP-53). Si no es pot activar, l'execució falla sense tocar res més.
+6. Actualitzacions en l'ordre del pla (core → WooCommerce → connectors → temes) amb els paquets que la mateixa execució ha descarregat i analitzat, i després la post-actualització (`wp core update-db`, `wp wc update`, memòria cau).
+7. Fi del manteniment i comprovació mínima de capa 3 (UZEROWPUP-56): la portada respon i no hi ha fatals nous al log de PHP. El verificador complet contra la línia base arriba a F4. Al final, el mode manteniment queda com estava abans de l'execució; si no s'hi pot deixar, l'execució falla sense desfer l'actualització verificada.
+8. Si falla qualsevol pas des de la primera actualització fins a la comprovació, l'execució es reverteix sola, amb passos propis (`desfent …` a `--follow`): primer activa el mode manteniment, **sempre**, encara que el perfil no el demani (una botiga no es reverteix mai oberta); després, els fitxers i, la base de dades **només** si no hi ha escriptures noves a comandes ni usuaris des de la còpia (regla 4). Si n'hi ha, avisa amb les comandes afectades i la comanda per forçar-ho a mà. El mode manteniment es manté durant tot el rollback i, en acabar, queda com estava; si un pas del rollback falla, el lloc es queda en manteniment perquè el revisi un operador. L'execució acaba `rolled_back` i el punt de restauració queda protegit fins que algú la revisa (`run:ack`).
+
+| Opció | Què fa |
+| --- | --- |
+| `--strategy=in-place` | Sobreescriu l'estratègia del lloc. Un lloc amb l'estratègia `staging_first` no s'actualitza si no s'indica explícitament; `--strategy=staging` es refusa fins a F7 |
+| `--allow-major`, `--skip-quarantine`, `--include` | Com a `plan`: només `admin`, auditades, desades a `runs.flags` i aplicades pel pla de la mateixa execució |
+| `--now` | Només `admin`, auditat (`update.now`). Comença ara: se salta la cua global i la finestra de manteniment, mai els locks del lloc, del compte ni del servidor |
+| `--dry-run` | És el pla dels llocs que s'actualitzarien (la mateixa selecció, el mateix filtre d'estratègia i la mateixa comprovació de `--now`): encua execucions `plan` amb les mateixes opcions i no toca res |
+
+**Finestra de manteniment** (ADR-0006). Una actualització només comença dins de la finestra del lloc (`site:edit --window-*`, o `sites.default_window`, cada dia de 01:00 a 06:00, a l'hora d'`app.timezone`, Europe/Madrid) i si en queden com a mínim `updates.window.minimum_minutes` (15). `site:add`, `site:edit` i `site:import` refusen una finestra més curta, i una execució amb una finestra així (p. ex. la per defecte mal configurada) falla amb el motiu en lloc d'esperar per sempre. La nit que s'avança l'hora, una hora de la finestra que no existeix és la mateixa una hora més tard (02:30 ⇒ 03:30). Si no, la comanda avisa de quan començarà i l'execució espera a la cua (es torna a mirar cada `updates.window.recheck_seconds`). La finestra només limita l'inici: una execució interrompuda es reprèn o es reverteix a qualsevol hora. L'estimació de durada per lloc a partir de l'històric, l'ordre de prioritat de la cua i les execucions automàtiques són del planificador (UZEROWPUP-129).
+
+Amb `--wait` o `--follow`, imprimeix per lloc el resultat, els components actualitzats i, si s'ha revertit, què ha restaurat el rollback; amb `--json`, un document amb `runs[].plan`, `runs[].changes` i `runs[].rollback` (`files_restored`, i `database`: `restored`, `not_restored` —comandes noves—, `failed` —estat desconegut, cal revisar-la— o `not_reached`).
+
 ## Retenció dels punts de restauració (ADR-0009)
 
 Un punt de restauració d'una actualització correcta es conserva 7 dies, i cada lloc en té com a màxim 2 (`backups.retention_days` i `backups.max_per_site` a `config/wpup.php`). Fer-ne un de tercer esborra el més antic que no estigui retingut. La mateixa retenció s'aplica a la còpia externa.

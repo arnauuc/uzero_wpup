@@ -113,7 +113,7 @@ it('follows the steps and prints JSON for scripts', function (): void {
 });
 
 it('fails a run whose type has no pipeline instead of leaving it queued', function (): void {
-    $run = Run::factory()->create();
+    $run = Run::factory()->create(['type' => RunType::Verify]);
 
     expect(fn () => app(RunEngine::class)->execute($run))->toThrow(RunException::class)
         ->and($run->fresh()?->status)->toBe(RunStatus::Failed);

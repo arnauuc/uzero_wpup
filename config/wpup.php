@@ -184,6 +184,9 @@ return [
             'minimum_minutes' => 15,
             'recheck_seconds' => 900,
         ],
+        // The check that the run's own restore point is verified, right before the
+        // first change to the site (AGENTS.md rule 3).
+        'restore_point_gate_timeout_seconds' => 60,
     ],
 
     /*
