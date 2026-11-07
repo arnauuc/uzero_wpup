@@ -84,16 +84,18 @@ function withUpdateCrash(Closure $prepare, Closure $test): void
  */
 function runUpdateWorker(Run $run, string $state, string $artifacts): bool
 {
-    $process = proc_open([PHP_BINARY, base_path('tests/Process/update-worker.php'), (string) $run->id, $state, $artifacts], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    // The worker writes to a file, not a pipe: a full pipe could never block it.
+    $log = "{$state}.log";
+    $process = proc_open([PHP_BINARY, base_path('tests/Process/update-worker.php'), (string) $run->id, $state, $artifacts], [1 => ['file', $log, 'w'], 2 => ['file', $log, 'a']], $pipes);
     if (! is_resource($process)) {
         throw new RuntimeException('Cannot start the worker.');
     }
-    $output = stream_get_contents($pipes[1]).stream_get_contents($pipes[2]);
     do {
         $status = proc_get_status($process);
         usleep(10_000);
     } while ($status['running']);
     proc_close($process);
+    $output = (string) @file_get_contents($log);
 
     $killed = $status['signaled'] && $status['termsig'] === SIGKILL;
     if (! $killed && $status['exitcode'] !== 0) {
@@ -172,7 +174,7 @@ it('rolls back a component left half-updated by the dead worker', function (): v
         // The theme says 4.6.1 but its install never finished: not trusted, the run reverts.
         expect($run->status)->toBe(RunStatus::RolledBack, (string) $run->failureReason())
             ->and($run->result_summary['failed_step'] ?? null)->toBe('update:theme:storefront')
-            ->and($run->failureReason())->toContain("no n'havia acabat la instal·lació")
+            ->and($run->failureReason())->toContain("es va interrompre abans d'acabar la instal·lació")
             ->and(recordedInterruptions($run))->toBe([['running', 'update:theme:storefront', 'forward', 1, 'retry_step']])
             ->and(siteVersions($site()))->toBe(['1.6.3', '4.6.0'])
             // The shop stays closed during the rollback, and opens again at the end.
@@ -206,8 +208,8 @@ it('finishes a rollback whose worker was killed halfway through the files mirror
             ->and($run->result_summary['failed_step'] ?? null)->toBe('update:theme:storefront')
             ->and(recordedInterruptions($run))->toBe([['rolling_back', FilesRollbackStep::NAME, 'recovery', 1, 'retry_step']])
             ->and(siteVersions($site()))->toBe(['1.6.3', '4.6.0'])
-            // The dead mirror had removed `.maintenance`: the retried one closes the shop again first.
-            ->and($site()->maintenanceAtRestore)->toBe(['files on', 'database on'])
+            // The mirror keeps `.maintenance`: closed during the dead mirror, the retried one and the database.
+            ->and($site()->maintenanceAtRestore)->toBe(['files on', 'files on', 'database on'])
             ->and($site()->maintenance)->toBeFalse();
     });
 });

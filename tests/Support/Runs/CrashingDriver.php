@@ -22,8 +22,9 @@ use Tests\Support\FakeDriver;
  *
  * Crash points: "archiveFiles" (the database dump made, the code archive just
  * written), "applyUpdate:<slug>" (the new version's header in place, the rest
- * of the files not), "restoreFiles" (the mirror started: `.maintenance` gone,
- * the old files not back yet) and "smoke" (the smoke check's first request).
+ * of the files not), "restoreFiles" (the mirror started, the old files not
+ * back yet; `.maintenance` is kept, as SiteDriver::restoreFiles() promises)
+ * and "smoke" (the smoke check's first request).
  */
 final class CrashingDriver extends FakeDriver
 {
@@ -35,7 +36,7 @@ final class CrashingDriver extends FakeDriver
     /** An update of this slug fails, so the run rolls back. */
     public ?string $failOn = null;
 
-    /** @var list<string> the maintenance mode as each restore starts ("files on", "database off"…), the interrupted one left out */
+    /** @var list<string> the maintenance mode as each restore starts ("files on", "database off"…) */
     public array $maintenanceAtRestore = [];
 
     private string $stateFile = '';
@@ -102,12 +103,9 @@ final class CrashingDriver extends FakeDriver
 
     public function restoreFiles(RemoteFile $archive): void
     {
-        if ($this->crashAt === 'restoreFiles' && ! in_array('restoreFiles', $this->crashed, true)) {
-            // The mirror removes `.maintenance` first.
-            $this->maintenance = false;
-            $this->crash('restoreFiles');
-        }
+        // The interrupted mirror is recorded too: the shop must be closed from its start.
         $this->maintenanceAtRestore[] = 'files '.($this->maintenance ? 'on' : 'off');
+        $this->crash('restoreFiles');
         parent::restoreFiles($archive);
     }
 
