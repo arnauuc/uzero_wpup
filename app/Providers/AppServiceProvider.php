@@ -34,6 +34,12 @@ use App\Domain\Backups\ShopWritesReader;
 use App\Domain\Backups\SiteLocalSettings;
 use App\Domain\Backups\SiteLocalTarget;
 use App\Domain\Backups\SiteRestore;
+use App\Domain\Cleanup\ArtifactCleanup;
+use App\Domain\Cleanup\CleanupService;
+use App\Domain\Cleanup\CleanupSettings;
+use App\Domain\Cleanup\PackageVersionCleanup;
+use App\Domain\Cleanup\RunOutputCleanup;
+use App\Domain\Cleanup\ScreenshotCleanup;
 use App\Domain\Compatibility\CompatSettings;
 use App\Domain\Compatibility\MemoizedDriver;
 use App\Domain\Compatibility\PackageCompatibilityAnalyzer;
@@ -286,6 +292,20 @@ class AppServiceProvider extends ServiceProvider
             $app->make(PackageUrlGuard::class),
             $app->make(ArtifactSettings::class),
         ));
+        // Daily cleanup (UZEROWPUP-134, ADR-0009 §4).
+        $this->app->bind(CleanupSettings::class, static fn (): CleanupSettings => new CleanupSettings(
+            self::configInt('wpup.cleanup.run_output_days'),
+            self::configInt('wpup.cleanup.run_output_failed_days'),
+            self::configInt('wpup.cleanup.screenshots_days'),
+            self::configInt('wpup.cleanup.screenshots_flagged_days'),
+            self::configInt('wpup.cleanup.chunk_size'),
+        ));
+        $this->app->bind(CleanupService::class, static fn (Application $app): CleanupService => new CleanupService([
+            $app->make(RunOutputCleanup::class),
+            $app->make(ArtifactCleanup::class),
+            $app->make(PackageVersionCleanup::class),
+            $app->make(ScreenshotCleanup::class),
+        ], self::configInt('wpup.cleanup.lock_seconds')));
         // The tool's own backup (UZEROWPUP-47, ADR-0009 §3).
         $this->app->bind(ToolBackupSettings::class, static fn (): ToolBackupSettings => new ToolBackupSettings(
             self::configStrings('wpup.tool_backup.age_recipients'),

@@ -124,7 +124,7 @@ it('runs every step in order, records it and hands results forward', function ()
         ->and($first->output)->toBe("core 6.8\n")
         ->and($first->timeout_seconds)->toBe(30)
         ->and($run->steps()->where('name', 'plan')->value('timeout_seconds'))->toBe(45)
-        ->and(AuditLogEntry::query()->where('object_type', 'run')->where('object_id', (string) $run->id)->pluck('action')->all())
+        ->and(AuditLogEntry::query()->where('object_type', 'run')->where('object_id', (string) $run->id)->orderBy('id')->pluck('action')->all())
         ->toBe(['run.started', 'run.finished'])
         ->and(app(RunClaim::class)->isClaimed($run->id))->toBeFalse()
         ->and(app(SiteLockManager::class)->holder(LockLevel::Site, (int) $run->site_id))->toBeNull();
@@ -334,7 +334,7 @@ it('stops when it loses its claim, and recovery resumes the run', function (): v
     expect($run->status)->toBe(RunStatus::Succeeded)
         ->and($journal)->toBe(['a', 'b', 'b'])
         ->and($b->attempts)->toBe(2)
-        ->and(AuditLogEntry::query()->where('object_id', (string) $run->id)->pluck('action')->all())
+        ->and(AuditLogEntry::query()->where('object_id', (string) $run->id)->orderBy('id')->pluck('action')->all())
         ->toBe(['run.started', 'run.interrupted', 'run.resumed', 'run.finished']);
 })->skip(! StepTicker::supported(), 'needs pcntl');
 

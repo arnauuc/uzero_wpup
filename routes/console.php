@@ -27,6 +27,12 @@ Schedule::command('engine:prune-restore-points')
     ->dailyAt(config()->string('wpup.backups.prune_time'))
     ->withoutOverlapping();
 
+// Retention table of ADR-0009 §4 (UZEROWPUP-134): step output, artifacts, package
+// versions and screenshots; after the restore points purge, which artifacts wait for.
+Schedule::command('engine:cleanup')
+    ->dailyAt(config()->string('wpup.cleanup.time'))
+    ->withoutOverlapping();
+
 // The tool's own backup (ADR-0009 §3, UZEROWPUP-47): queued for the workers,
 // which hold the KEK private key the Dropbox credential needs; not awaited.
 // Non-interactive: the retention it applies needs no confirmation here (the
