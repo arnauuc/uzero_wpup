@@ -515,6 +515,29 @@ return [
     ],
 
     /*
+     * Daily cleanup (ADR-0009 §4, UZEROWPUP-134): `wpup cleanup` and the scheduled
+     * `engine:cleanup`. The ADR values are floors (90, 365, 30 and 180 days):
+     * a lower value is refused. Artifacts (wpup.artifacts.min_retention_days),
+     * restore points (wpup.backups) and package versions (wpup.planning) keep
+     * their own settings. audit_log is never purged.
+     */
+    'cleanup' => [
+        // After the purge of restore points (backups.prune_time): artifacts depend on it.
+        'time' => env('WPUP_CLEANUP_TIME', '06:45'),
+        // Full step output (run_steps.output) of correct runs, and of failed or reverted ones.
+        'run_output_days' => 90,
+        'run_output_failed_days' => 365,
+        // Screenshots (F4, ScreenshotCleanup): without differences, and with a warning or an error.
+        // Those of each site's last run are always kept.
+        'screenshots_days' => 30,
+        'screenshots_flagged_days' => 180,
+        // Rows handled per query when emptying step output.
+        'chunk_size' => 500,
+        // Lock shared by `wpup cleanup` and `engine:cleanup` (seconds, longer than any cleanup).
+        'lock_seconds' => 3600,
+    ],
+
+    /*
      * Package artifacts (UZEROWPUP-49): every package is downloaded by the tool
      * server, kept per run with its SHA-256 and installed from there, so staging
      * and production get the same bytes. Private directory (0700, files 0600).
