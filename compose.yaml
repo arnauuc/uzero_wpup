@@ -102,7 +102,7 @@ services:
     ipc: host
     volumes:
       - .:/app
-    # Idle for now: the real protocol arrives in F4.
+    # Idle: verifier tests run here (make verifier). Protocol: docs/verificador.md.
     command: sleep infinity
 
 volumes:
