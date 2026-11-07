@@ -21,6 +21,8 @@ final readonly class SmokeCheckSettings
 
     /**
      * @param  list<string>  $fatalPatterns  PCRE patterns; a new log line matching any is a fatal
+     * @param  list<string>  $warningPatterns  same for warnings (a new one only warns, UZEROWPUP-71)
+     * @param  list<string>  $noticePatterns  same for notices and deprecations (only counted)
      *
      * @throws InvalidArgumentException when a fatal pattern is not a valid regular expression
      */
@@ -36,6 +38,9 @@ final readonly class SmokeCheckSettings
         public int $reportedLines,
         public int $lineMaxChars,
         public array $fatalPatterns,
+        public array $warningPatterns,
+        public array $noticePatterns,
+        public int $maxGroups,
     ) {
         if ($httpAttempts < 1 || $httpAttemptPauseSeconds < 0) {
             throw new InvalidArgumentException('wpup.smoke_check.http_attempts ha de ser com a mínim 1 i http_attempt_pause_seconds no pot ser negatiu.');
@@ -43,10 +48,15 @@ final readonly class SmokeCheckSettings
         if ($fatalPatterns === []) {
             throw new InvalidArgumentException('wpup.smoke_check.fatal_patterns no pot ser buit: cap fatal es detectaria.');
         }
-        foreach ($fatalPatterns as $pattern) {
-            // preg_match() returns false (and warns) on a broken pattern.
-            if (@preg_match($pattern, '') === false) {
-                throw new InvalidArgumentException("wpup.smoke_check.fatal_patterns conté una expressió regular no vàlida: {$pattern}");
+        if ($warningPatterns === [] || $noticePatterns === [] || $maxGroups < 1) {
+            throw new InvalidArgumentException('wpup.smoke_check.warning_patterns i notice_patterns no poden ser buits i max_groups ha de ser com a mínim 1.');
+        }
+        foreach (['fatal_patterns' => $fatalPatterns, 'warning_patterns' => $warningPatterns, 'notice_patterns' => $noticePatterns] as $key => $patterns) {
+            foreach ($patterns as $pattern) {
+                // preg_match() returns false (and warns) on a broken pattern.
+                if (@preg_match($pattern, '') === false) {
+                    throw new InvalidArgumentException("wpup.smoke_check.{$key} conté una expressió regular no vàlida: {$pattern}");
+                }
             }
         }
     }

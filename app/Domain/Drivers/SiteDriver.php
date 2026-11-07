@@ -246,26 +246,42 @@ interface SiteDriver
     public function phpLogCursor(?string $webLogPath = null): LogCursor;
 
     /**
-     * Candidate fatal lines (UZEROWPUP-56) of the WHOLE region written since
-     * $cursor, filtered on the site's side, so a log that grew past any read
-     * cap is not cut: at most $maxLines are returned (LogScan::$capped says
-     * if there were more). A rotated log is read from its start, and from the
-     * rotated sibling too, from the old offset, as far as it can be found.
+     * Candidate fatal and warning lines (UZEROWPUP-56, 71) of the WHOLE region
+     * written since $cursor, read ONCE on the site's side and sorted there, so a
+     * log that grew past any read cap is not cut and a flood of one kind cannot
+     * push out another: at most $maxFatals fatals and $maxWarnings warnings (the
+     * first ones) are returned, LogScan says which kind was cut, and notices and
+     * deprecations are only counted. A rotated log is read from its start, and
+     * from the rotated sibling too, from the old offset, as far as it can be found.
      *
      * @throws DriverException
      */
-    public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan;
+    public function phpLogScanSince(LogCursor $cursor, int $maxFatals, int $maxWarnings): LogScan;
 
     /**
-     * Candidate fatal lines in the $windowBytes before $cursor (what was
-     * already in the log before the update), at most $maxLines: the most
-     * recent ones when there are more.
-     *
-     * @return list<string>
+     * The same for the $windowBytes before $cursor (what was already in the log
+     * before the update), keeping the MOST RECENT lines when there are more.
      *
      * @throws DriverException
      */
-    public function phpLogFatalsBefore(LogCursor $cursor, int $windowBytes, int $maxLines): array;
+    public function phpLogScanBefore(LogCursor $cursor, int $windowBytes, int $maxFatals, int $maxWarnings): LogScan;
+
+    /**
+     * Where WordPress writes its debug log: WP_DEBUG_LOG when it is a path, else
+     * WP_CONTENT_DIR/debug.log, read from the site (constants only, plugins and
+     * themes are not loaded). Null when it cannot be resolved to an absolute path.
+     *
+     * @throws DriverException
+     */
+    public function debugLogPath(): ?string;
+
+    /**
+     * A cursor at the end of the log at $path, or null when no such file exists
+     * (a cheap check; unlike phpLogCursor() it never falls back to another log).
+     *
+     * @throws DriverException including when the file exists but is not readable
+     */
+    public function existingLogCursor(string $path): ?LogCursor;
 
     /**
      * Lines appended to the PHP error log since $cursor (bounded by $maxBytes).
