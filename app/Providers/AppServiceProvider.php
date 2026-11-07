@@ -130,6 +130,9 @@ use App\Domain\Updates\SmokeCheckSettings;
 use App\Domain\Updates\SmokeCheckSteps;
 use App\Domain\Updates\UpdateChanges;
 use App\Domain\Updates\UpdateSteps;
+use App\Domain\Verification\PageTarget;
+use App\Domain\Verification\VerifierSettings;
+use App\Domain\Verification\Viewport;
 use App\Domain\Vulnerabilities\NoVulnerabilitySource;
 use App\Domain\Vulnerabilities\VulnerabilitySource;
 use App\Enums\BackupTargetType;
@@ -365,6 +368,29 @@ class AppServiceProvider extends ServiceProvider
             self::configInt('wpup.artifacts.max_unpacked_bytes'),
             self::configInt('wpup.static_analysis.step_budget_seconds'),
             self::configInt('wpup.static_analysis.min_remaining_seconds'),
+        ));
+        $this->app->bind(VerifierSettings::class, static fn (): VerifierSettings => new VerifierSettings(
+            self::configString('wpup.verifier.node_binary'),
+            self::configString('wpup.verifier.script'),
+            self::configString('wpup.verifier.setsid_binary'),
+            self::configString('wpup.verifier.work_dir'),
+            self::configString('wpup.verifier.path'),
+            self::stringOrNull(config('wpup.verifier.browsers_path')),
+            self::configInt('wpup.verifier.total_ms'),
+            self::configInt('wpup.verifier.navigation_timeout_ms'),
+            self::configInt('wpup.verifier.screenshot_timeout_ms'),
+            self::configInt('wpup.verifier.timeout_seconds'),
+            self::configInt('wpup.verifier.stop_grace_seconds'),
+            self::configInt('wpup.verifier.step_timeout_seconds'),
+            self::configInt('wpup.verifier.max_result_bytes'),
+            self::configInt('wpup.verifier.max_stdout_bytes'),
+            self::configInt('wpup.verifier.max_stderr_bytes'),
+            self::configFloat('wpup.verifier.max_diff_ratio'),
+            array_map(static fn (string $name, mixed $width): Viewport => new Viewport($name, is_int($width) ? $width : throw new \UnexpectedValueException('wpup.verifier.viewports must map names to widths.')),
+                ...self::configMap('wpup.verifier.viewports')),
+            array_map(static fn (string $path, mixed $profile): PageTarget => new PageTarget($path, is_string($profile) ? $profile : throw new \UnexpectedValueException('wpup.verifier.urls must map paths to profiles.')),
+                ...self::configMap('wpup.verifier.urls')),
+            self::configStrings('wpup.verifier.masks'),
         ));
         $this->app->bind(HostResolver::class, DnsHostResolver::class);
         $this->app->bind(ArtifactFetcher::class, static fn (Application $app): ArtifactFetcher => new ArtifactFetcher(
@@ -904,6 +930,23 @@ class AppServiceProvider extends ServiceProvider
         }
 
         return $commands;
+    }
+
+    /**
+     * A non-empty map with string keys, as [keys, values] for array_map.
+     *
+     * @return array{list<string>, list<mixed>}
+     */
+    private static function configMap(string $key): array
+    {
+        $value = config($key);
+        $keys = is_array($value) ? array_keys($value) : [];
+        $strings = array_values(array_filter($keys, is_string(...)));
+        if (! is_array($value) || $value === [] || $strings !== $keys) {
+            throw new \UnexpectedValueException($key.' must be a non-empty map with string keys.');
+        }
+
+        return [$strings, array_values($value)];
     }
 
     private static function configInt(string $key): int
