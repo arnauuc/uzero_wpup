@@ -11,7 +11,8 @@
   mask: [.cookie-banner]
   diff_threshold: 1.5
   freeze: [woocommerce-subscriptions]
-  notify: [email]
+  # notify: [email]  (canals de wpup.notifications.channels; sense, tots)
+  notify_min: warnings
   include_uploads: false
   server: { name: plesk-exemple, hostname: plesk-exemple.example.test, ssh_port: 22, panel: plesk }
   account: { system_user: botiga_exemple, driver: ssh }

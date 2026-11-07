@@ -9,6 +9,7 @@ use App\Models\HostingAccount;
 use App\Models\HostingServer;
 use App\Models\Site;
 use App\Models\User;
+use Tests\Support\FakeNotificationChannel;
 
 beforeEach(function (): void {
     User::factory()->create(['unix_username' => 'admin1', 'role' => UserRole::Admin]);
@@ -34,6 +35,7 @@ function addParams(array $extra = []): array
 }
 
 it('creates a site with server, account and profile, and audits it', function (): void {
+    FakeNotificationChannel::install();
     command('site:add', addParams([
         '--tag' => ['woo', 'nit'],
         '--strategy' => 'staging_first',
@@ -43,7 +45,7 @@ it('creates a site with server, account and profile, and audits it', function ()
         '--mask' => ['.banner'],
         '--diff-threshold' => '1.5',
         '--freeze' => ['woocommerce-subscriptions'],
-        '--notify' => ['email'],
+        '--notify' => [FakeNotificationChannel::NAME],
         '--no-include-uploads' => true,
     ]))->expectsOutputToContain('donat d\'alta')->assertSuccessful();
 

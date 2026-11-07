@@ -58,6 +58,7 @@ use App\Domain\Identity\Ability;
 use App\Domain\Identity\CliCommandGate;
 use App\Domain\Identity\OperatorResolver;
 use App\Domain\Identity\ProcessIdentity;
+use App\Domain\Identity\UserAdministration;
 use App\Domain\Inventory\ExternalBackups;
 use App\Domain\Inventory\ExternalBackupStatus;
 use App\Domain\Inventory\HttpProbe;
@@ -73,6 +74,7 @@ use App\Domain\Maintenance\MaintenanceGuard;
 use App\Domain\Maintenance\MaintenanceSteps;
 use App\Domain\Notifications\ChannelNotifier;
 use App\Domain\Notifications\Channels\NotificationChannel;
+use App\Domain\Notifications\NotificationAdministration;
 use App\Domain\Notifications\NotificationChannels;
 use App\Domain\Notifications\Notifier;
 use App\Domain\Planning\ChangeAnalyzer;
@@ -534,6 +536,14 @@ class AppServiceProvider extends ServiceProvider
 
             return new NotificationChannels($channels);
         });
+        $this->app->bind(NotificationAdministration::class, static fn (Application $app): NotificationAdministration => new NotificationAdministration(
+            $app->make(NotificationChannels::class),
+            $app->make(SecretStore::class),
+            $app->make(AuditLogger::class),
+            $app->make(UserAdministration::class),
+            self::configInt('wpup.notifications.destination_name_max_length'),
+            self::configInt('wpup.notifications.address_max_length'),
+        ));
         $this->app->bind(Notifier::class, static fn (Application $app): Notifier => new ChannelNotifier(
             $app->make(NotificationsDispatcher::class),
             $app->make(NotificationChannels::class),

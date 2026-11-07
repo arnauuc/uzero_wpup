@@ -46,5 +46,7 @@ final readonly class SiteInput
         public ?string $externalBackupNotes = null,
         /** Maintenance mode around the update (UZEROWPUP-53) */
         public ?bool $maintenance = null,
+        /** Minimum severity of the site's notifications: all, warnings, errors (UZEROWPUP-79) */
+        public ?string $notifyMin = null,
     ) {}
 }

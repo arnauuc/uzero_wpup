@@ -71,7 +71,8 @@ wpup site:edit botiga-a --window="dl-dv 10:00-13:00" --auto-update
 | `--auto-update` / `--no-auto-update` | Actualització automàtica dins de la finestra (desactivada per defecte). `--auto-update` també aixeca el bloqueig del planificador després de fallades (vegeu [Actualitzacions programades](#actualitzacions-programades-adr-0006-uzerowpup-129)) |
 | `--verify-url=*`, `--mask=*`, `--diff-threshold` | URLs a verificar (camí relatiu o del mateix domini), selectors a emmascarar, llindar 0–100 |
 | `--checkout-product`, `--freeze=*`, `--exclude=*` | Producte de prova, components congelats i exclosos |
-| `--notify=*` | Canals d'avís: `email`, `telegram`, `slack` |
+| `--notify=*` | Canals d'avís del lloc, d'entre els de `notifications.channels` (`config/wpup.php`). Sense cap, tots els que segueixin els operadors (vegeu [Avisos](#avisos-uzerowpup-79)) |
+| `--notify-min` | Severitat mínima dels avisos del lloc: `all` (per defecte), `warnings` o `errors`; `--clear=notify-min` torna a `all` |
 | `--include-uploads` / `--no-include-uploads` | Inclou o exclou `uploads` de la còpia (ADR-0009) |
 | `--external-backup`, `--external-backup-notes` | Còpia externa declarada: `plesk`, `dropbox`, `plugin`, `other` o `none`, i notes (màx. 500 caràcters). Les notes necessiten un tipus ja declarat o indicat alhora. Només `admin` |
 | `--maintenance` / `--no-maintenance` | Mode manteniment durant l'actualització (vegeu sota); `--clear=maintenance` torna al valor per defecte de `config/wpup.php` (`updates.maintenance.default`, activat) |
@@ -329,3 +330,15 @@ sudo -u wpup wpup rollback 12 --follow
 | `secrets:rekey` | Torna a xifrar totes les claus de dades amb la KEK vigent. És idempotent. Vegeu [runbooks/rotacio-kek.md](runbooks/rotacio-kek.md) |
 
 Totes tenen `--dry-run` (el de `backup-target:dropbox` no contacta amb Dropbox) i queden a l'auditoria. La clau privada no surt mai a la sortida, als logs ni al disc.
+
+## Avisos (UZEROWPUP-79)
+
+Cada avís té una severitat: el final d'una execució (informació si és correcta, avís si té avisos o interrupcions o s'ha revertit, error si ha fallat), una interrupció (avís; error si no es pot continuar), un lloc bloquejat o desbloquejat, un lloc bloquejat per a l'actualització automàtica i el resum diari. Tots van al log de l'eina (`notifications.log_min_severity` de `config/wpup.php`) i a les destinacions que segueixen els operadors, si la severitat arriba a la mínima de l'operador i, per als avisos d'un lloc, a la del lloc (`--notify-min`) i el canal és un dels del lloc (`--notify`). Cada enviament queda a `notification_deliveries` (destinació emmascarada i error redactat, sense el contingut), i els d'una execució formen part del seu informe; la neteja diària els esborra passats `notifications.deliveries_retention_days` (365 dies). Un canal que falla no atura mai l'execució.
+
+| Comanda | Qui | Què fa |
+| --- | --- | --- |
+| `notify:destination <nom> --channel=<canal> [--address=…]` | `admin` | Crea o actualitza una destinació. Si el canal necessita token o webhook, el demana sense eco en crear-la o amb `--rotate-secret` (cal terminal interactiu, mai com a argument) i el desa al `SecretStore`; la resta de canvis (`--address`, `--activate` / `--deactivate`) no en demanen. Una destinació d'un canal retirat de la configuració es pot llistar i desactivar, i no rep avisos (queden com a `skipped`). Mai pel web |
+| `notify:subscribe <destinació> [--min=all\|warnings\|errors] [--remove]` | tothom | Segueix una destinació amb la severitat mínima, o en deixa de seguir. `--user=<usuari>` per a un altre operador, només `admin` |
+| `notify:list [--json]` | tothom | Destinacions (adreça emmascarada, mai el secret) i qui les segueix |
+
+Els canals concrets (correu, Telegram, Slack) s'hi afegeixen com una classe i una entrada a `notifications.channels`.
