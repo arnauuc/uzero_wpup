@@ -5,21 +5,27 @@ declare(strict_types=1);
 namespace App\Domain\Scheduling;
 
 use App\Domain\Audit\AuditActor;
+use App\Domain\Audit\AuditLogger;
 use App\Domain\Locks\LockLevel;
 use App\Domain\Locks\SiteLockManager;
+use App\Domain\Planning\PlannedChange;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Concurrency\GlobalQueue;
 use App\Domain\Runs\Concurrency\MaintenanceWindowGate;
 use App\Domain\Runs\RunLauncher;
+use App\Domain\Updates\UpdateSummary;
+use App\Enums\AuditResult;
 use App\Enums\RunStatus;
 use App\Enums\RunType;
 use App\Enums\ScheduledWindowStatus;
 use App\Enums\SiteBlockSource;
+use App\Enums\SkipReason;
 use App\Enums\UpdateStrategy;
 use App\Models\Run;
 use App\Models\ScheduledWindow;
 use App\Models\Site;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -29,7 +35,9 @@ use Throwable;
  * The continuous scheduler of ADR-0006 (UZEROWPUP-129), one tick a minute:
  *
  * 1. Settles the windows whose run finished (succeeded, failed or rolled back).
- *    A window is never tried again: a site that failed waits for its next one.
+ *    A window is never tried again: a site that failed waits for its next one,
+ *    and after consecutive failed windows it is blocked for automatic updates
+ *    (AutoUpdateBlocking).
  * 2. Closes the queued windows that closed before their turn: deferred to the
  *    site's next window, with priority.
  * 3. Queues every active site with automatic updates whose window is open and
@@ -49,7 +57,10 @@ use Throwable;
  *    next tick. Sites with nothing applicable (UpdateOutlooks, offline, once
  *    per window) are skipped without spending any time; a site whose estimated
  *    duration (UpdateDurationEstimator) does not fit in what is left of its
- *    window waits for its next one, with priority.
+ *    window waits for its next one, with priority. Before a site starts, the
+ *    orphaned stagings are cleaned and the tool server's free disk and memory
+ *    checked (ResourceCheck): short of either, nothing starts and the
+ *    operators are warned (at most every warn_every_minutes).
  *
  * The runs are queued as `sistema (scheduler)` with the site's strategy and
  * the version policy of ADR-0005: never --allow-major nor --skip-quarantine.
@@ -67,8 +78,13 @@ final readonly class UpdateScheduler
         private UpdateOutlooks $outlooks,
         private UpdateDurationEstimator $estimator,
         private RunLauncher $launcher,
+        private AutoUpdateBlocking $blocking,
+        private ResourceCheck $resources,
+        private OrphanStagingCleaner $stagings,
+        private AuditLogger $audit,
         private string $actor,
         private int $minimumMinutes,
+        private int $warnEveryMinutes,
     ) {}
 
     /**
@@ -101,8 +117,17 @@ final readonly class UpdateScheduler
                 RunStatus::Failed, RunStatus::RolledBack => [ScheduledWindowStatus::Failed, $run->failureReason()],
                 default => [ScheduledWindowStatus::Cancelled, "L'execució ha acabat com a {$run->status->value}."],
             };
-            $this->close($entry, $status, $reason, ['run_status' => $run->status->value], $dryRun);
+            $this->close($entry, $status, $reason, ['run_status' => $run->status->value, ...self::outcome($run)], $dryRun);
             $decisions[] = new SchedulerDecision(SchedulerAction::Settled, $entry->site?->name, $status->label().($reason === null ? '' : ": {$reason}"), $run->id);
+
+            $site = $entry->site;
+            if ($status === ScheduledWindowStatus::Failed && $site !== null && ! $dryRun) {
+                $blocked = $this->blocking->afterFailure($site, $run, AuditActor::system($this->actor));
+                if ($blocked !== null) {
+                    $entry->forceFill(['details' => [...$entry->details, 'auto_update_blocked' => true]])->save();
+                    $decisions[] = new SchedulerDecision(SchedulerAction::Blocked, $site->name, $blocked, $run->id);
+                }
+            }
         }
     }
 
@@ -231,6 +256,10 @@ final readonly class UpdateScheduler
         usort($candidates, static fn (array $a, array $b): int => [! $a['outlook']->security, ! $a['entry']->priority, $last[$a['site']->id] ?? 0, $a['site']->name]
             <=> [! $b['outlook']->security, ! $b['entry']->priority, $last[$b['site']->id] ?? 0, $b['site']->name]);
 
+        if ($candidates !== [] && $this->halted($dryRun, $decisions)) {
+            return;
+        }
+
         foreach ($candidates as ['entry' => $entry, 'site' => $site, 'outlook' => $outlook]) {
             try {
                 if ($this->start($entry, $site, $outlook, $now, $dryRun, $decisions)) {
@@ -259,6 +288,7 @@ final readonly class UpdateScheduler
         $cancel = match (true) {
             ! $site->active => 'El lloc està desactivat.',
             ! $site->auto_update => "S'ha desactivat l'actualització automàtica del lloc.",
+            $site->auto_update_blocked_at !== null => "Bloquejat per a l'actualització automàtica: {$site->auto_update_blocked_reason}",
             default => $this->windowChanged($entry, $site, $now, $dryRun),
         };
         if ($cancel !== null) {
@@ -371,6 +401,57 @@ final readonly class UpdateScheduler
     }
 
     /**
+     * Before a site starts: cleans the orphaned stagings, then checks the free
+     * resources. True (and warns, throttled) when nothing may start.
+     *
+     * @param  list<SchedulerDecision>  $decisions
+     */
+    private function halted(bool $dryRun, array &$decisions): bool
+    {
+        if (! $dryRun) {
+            try {
+                foreach ($this->stagings->clean() as $cleaned) {
+                    Log::warning('The scheduler cleaned an orphaned staging.', ['staging' => $cleaned]);
+                }
+            } catch (Throwable $e) {
+                // The resource check below still protects the next site.
+                Log::error('The scheduler could not clean the orphaned stagings.', ['error' => $e->getMessage()]);
+            }
+        }
+
+        $shortages = $this->resources->shortages();
+        if ($shortages === []) {
+            return false;
+        }
+        $reason = implode(' ', $shortages)." No es comença cap lloc fins que se n'alliberi.";
+        $decisions[] = new SchedulerDecision(SchedulerAction::Halted, null, $reason);
+        // Once per period, not every minute.
+        if (! $dryRun && Cache::add('wpup:scheduler:halted-warned', true, $this->warnEveryMinutes * 60)) {
+            Log::warning('The scheduler stopped: the tool server is short of resources.', ['shortages' => $shortages]);
+            $this->audit->record(AuditActor::system($this->actor), 'scheduler.halted', AuditResult::Failure, 'scheduler', null, ['shortages' => $shortages]);
+        }
+
+        return true;
+    }
+
+    /**
+     * What the finished run did, for the daily summary: whether it had nothing to
+     * apply, how many components it updated and the majors left for staging.
+     *
+     * @return array{nothing_to_do: bool, updated: int, majors: list<string>}
+     */
+    private static function outcome(Run $run): array
+    {
+        $summary = UpdateSummary::of($run);
+        $majors = array_values(array_map(
+            static fn (PlannedChange $c): string => "{$c->type->value}:{$c->slug} {$c->currentVersion}→{$c->targetVersion}",
+            array_filter($summary->plan->changes ?? [], static fn (PlannedChange $c): bool => $c->reason === SkipReason::MajorRequiresStaging),
+        ));
+
+        return ['nothing_to_do' => $summary->nothingToDo(), 'updated' => $summary->updatedCount(), 'majors' => $majors];
+    }
+
+    /**
      * Why nothing may be queued now (a run holds or waits for the single queue); null when idle.
      */
     private function busy(CarbonImmutable $now): ?string
@@ -433,7 +514,7 @@ final readonly class UpdateScheduler
      */
     private function eligibleSites(): iterable
     {
-        return Site::query()->where('active', true)->where('auto_update', true)->orderBy('name')->get();
+        return Site::query()->where('active', true)->where('auto_update', true)->whereNull('auto_update_blocked_at')->orderBy('name')->get();
     }
 
     /**

@@ -202,6 +202,11 @@ final readonly class SiteAdministration
         }
         if ($input->autoUpdate !== null) {
             $site['auto_update'] = $input->autoUpdate;
+            // Turning them on is the operator's review that lifts the scheduler's block (ADR-0006 §3).
+            if ($input->autoUpdate) {
+                $site['auto_update_blocked_at'] = null;
+                $site['auto_update_blocked_reason'] = null;
+            }
         }
         if ($input->active !== null) {
             $site['active'] = $input->active;
@@ -476,6 +481,9 @@ final readonly class SiteAdministration
     {
         if ($value instanceof UpdateStrategy) {
             return $value->value;
+        }
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format(DATE_ATOM);
         }
         if (is_array($value) && ! array_is_list($value)) {
             ksort($value);

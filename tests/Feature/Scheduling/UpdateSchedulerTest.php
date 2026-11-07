@@ -44,6 +44,9 @@ beforeEach(function (): void {
         'wpup.scheduler.estimate.default_minutes' => ['in_place' => 10, 'staging_first' => 30],
         'wpup.scheduler.outlook.snapshot_max_age_hours' => 24,
         'wpup.planning.quarantine_days' => 0,
+        // The tool server's resources have their own tests (SchedulerSafeguardsTest).
+        'wpup.scheduler.resources.min_free_disk_mb' => 0,
+        'wpup.scheduler.resources.min_free_memory_mb' => 0,
     ]);
     // The fixtures (history, inventories) are dated from here.
     schedAt('2026-11-02 00:00');

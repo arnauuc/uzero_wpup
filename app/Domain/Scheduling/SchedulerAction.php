@@ -17,6 +17,10 @@ enum SchedulerAction: string
     case Settled = 'settled';
     /** Another update is running or waiting to start: nothing starts now. */
     case Waiting = 'waiting';
+    /** The tool server is short of disk or memory: nothing starts. */
+    case Halted = 'halted';
+    /** Failed windows in a row: blocked for automatic updates. */
+    case Blocked = 'blocked';
 
     public function label(): string
     {
@@ -28,6 +32,8 @@ enum SchedulerAction: string
             self::Cancelled => 'cancel·lat',
             self::Settled => 'resultat de la finestra',
             self::Waiting => 'en espera',
+            self::Halted => 'planificador aturat',
+            self::Blocked => "bloquejat per a l'actualització automàtica",
         };
     }
 }
