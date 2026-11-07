@@ -233,6 +233,8 @@ final readonly class UpdateScheduler
         $pending = ScheduledWindow::query()->with('site')
             ->where('status', ScheduledWindowStatus::Pending->value)
             ->where('closes_at', '>', self::bind($now))
+            // Reviewed (and skipped) in queue order: decisions must not depend on the row order Postgres returns.
+            ->orderBy('id')
             ->get()->all();
         if ($dryRun) {
             array_push($pending, ...$queued);
