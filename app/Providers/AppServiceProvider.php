@@ -38,6 +38,7 @@ use App\Domain\Backups\SiteRestore;
 use App\Domain\Cleanup\ArtifactCleanup;
 use App\Domain\Cleanup\CleanupService;
 use App\Domain\Cleanup\CleanupSettings;
+use App\Domain\Cleanup\NotificationDeliveryCleanup;
 use App\Domain\Cleanup\PackageVersionCleanup;
 use App\Domain\Cleanup\RunOutputCleanup;
 use App\Domain\Cleanup\ScreenshotCleanup;
@@ -417,6 +418,7 @@ class AppServiceProvider extends ServiceProvider
             $app->make(ArtifactCleanup::class),
             $app->make(PackageVersionCleanup::class),
             $app->make(ScreenshotCleanup::class),
+            new NotificationDeliveryCleanup($app->make(AuditLogger::class), self::configInt('wpup.notifications.deliveries_retention_days')),
         ], self::configInt('wpup.cleanup.lock_seconds')));
         // The tool's own backup (UZEROWPUP-47, ADR-0009 §3).
         $this->app->bind(ToolBackupSettings::class, static fn (): ToolBackupSettings => new ToolBackupSettings(
@@ -531,6 +533,7 @@ class AppServiceProvider extends ServiceProvider
         });
         $this->app->bind(Notifier::class, static fn (Application $app): Notifier => new ChannelNotifier(
             $app->make(NotificationsDispatcher::class),
+            $app->make(NotificationChannels::class),
             $app->make(SecretRedactor::class),
             NotificationThreshold::from(self::configString('wpup.notifications.log_min_severity')),
             self::configInt('wpup.notifications.error_max_length'),

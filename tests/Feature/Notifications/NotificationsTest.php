@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use App\Domain\Audit\AuditActor;
+use App\Domain\Cleanup\CleanupResult;
+use App\Domain\Cleanup\CleanupService;
 use App\Domain\Notifications\Notifier;
 use App\Domain\Runs\InterruptionDecision;
 use App\Domain\Runs\Pipeline;
@@ -29,8 +31,10 @@ use App\Models\ScheduledWindow;
 use App\Models\Site;
 use App\Models\SiteProfile;
 use App\Models\User;
+use App\Notifications\RunFinishedNotification;
 use App\Notifications\RunInterruptedNotification;
 use App\Notifications\SiteBlockedNotification;
+use Carbon\CarbonImmutable;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
@@ -184,14 +188,21 @@ it('records a failing channel and goes on with the other destinations', function
         ->and(NotificationDelivery::query()->where('channel', 'log')->sole()->status)->toBe(NotificationDeliveryStatus::Sent);
 });
 
-it('records an unknown channel as a failed delivery', function (): void {
+it('skips a destination whose channel is no longer configured, with a warning', function (): void {
     $gone = notifyDestination('vell');
     $gone->forceFill(['channel' => 'pigeon'])->save();
     follow($gone);
+    $logged = [];
+    Log::listen(static function (MessageLogged $event) use (&$logged): void {
+        $logged[] = $event->level.' '.$event->message;
+    });
 
     app(Notifier::class)->notify(blockedNotice(Site::factory()->create()));
 
-    expect(NotificationDelivery::query()->where('channel', 'pigeon')->sole()->error)->toContain('desconegut');
+    $row = NotificationDelivery::query()->where('channel', 'pigeon')->sole();
+    expect($row->status)->toBe(NotificationDeliveryStatus::Skipped)
+        ->and($row->error)->toContain('no està configurat')
+        ->and($logged)->toContain('warning Notification destination skipped: its channel is not configured.');
 });
 
 it('never stores nor logs the secret of a channel', function (): void {
@@ -301,4 +312,33 @@ it('limits the log channel to its minimum severity', function (): void {
     app(Notifier::class)->notify(blockedNotice(Site::factory()->create()));
 
     expect(NotificationDelivery::query()->count())->toBe(0);
+});
+
+it('makes a successful run with warnings in its steps a warning', function (): void {
+    follow(notifyDestination('equip'), NotificationThreshold::Warnings);
+    app(PipelineResolver::class)->register(RunType::Update, static fn (): Pipeline => new Pipeline([
+        new ScriptedStep('smoke_check', static fn (): StepOutcome => StepOutcome::succeeded('ok', '', ['warnings' => ['2 warning(s) nou(s) de PHP al log']])),
+    ]));
+
+    $run = app(RunEngine::class)->execute(Run::factory()->create());
+
+    expect($run->status)->toBe(RunStatus::Succeeded)
+        ->and(fakeChannel()->sent)->toHaveCount(1)
+        ->and(fakeChannel()->sent[0]['severity'])->toBe('warning')
+        ->and((new RunFinishedNotification($run))->lines())->toContain('Avís: 2 warning(s) nou(s) de PHP al log');
+});
+
+it('purges the delivery records after their retention, and not before', function (): void {
+    config(['wpup.notifications.deliveries_retention_days' => 30]);
+    app(Notifier::class)->notify(blockedNotice(Site::factory()->create()));
+    $old = NotificationDelivery::query()->sole();
+    $old->forceFill(['created_at' => now()->subDays(31)])->save();
+    app(Notifier::class)->notify(blockedNotice(Site::factory()->create()));
+
+    $result = collect(app(CleanupService::class)->run(AuditActor::system('tests'), CarbonImmutable::now(), false))
+        ->first(static fn (CleanupResult $r): bool => $r->task === 'notification_deliveries');
+
+    expect($result?->count)->toBe(1)
+        ->and(NotificationDelivery::query()->count())->toBe(1)
+        ->and(NotificationDelivery::query()->whereKey($old->id)->exists())->toBeFalse();
 });

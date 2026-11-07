@@ -11,4 +11,6 @@ enum NotificationDeliveryStatus: string
 {
     case Sent = 'sent';
     case Failed = 'failed';
+    /** The destination's channel is no longer configured: nothing was tried. */
+    case Skipped = 'skipped';
 }

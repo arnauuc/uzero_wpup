@@ -341,6 +341,8 @@ return [
     'notifications' => [
         'log_min_severity' => env('WPUP_NOTIFY_LOG_MIN_SEVERITY', 'all'),
         'error_max_length' => 500,
+        // Delivery records (notification_deliveries) are purged by the daily cleanup after this.
+        'deliveries_retention_days' => 365,
         'channels' => [
             'log' => ['class' => LogChannel::class, 'address' => false, 'secret' => false],
         ],

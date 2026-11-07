@@ -29,12 +29,15 @@ use Throwable;
  *   the notification once.
  *
  * Each delivery is a row in notification_deliveries (masked destination,
- * redacted error); a run's rows are part of its report. Nothing here throws.
+ * redacted error); a run's rows are part of its report. A destination whose
+ * channel is no longer configured is skipped (a `skipped` row and a warning
+ * in the log), not tried. Nothing here throws.
  */
 final readonly class ChannelNotifier implements Notifier
 {
     public function __construct(
         private Dispatcher $sender,
+        private NotificationChannels $channels,
         private SecretRedactor $redactor,
         private NotificationThreshold $logThreshold,
         private int $errorMaxLength,
@@ -51,6 +54,13 @@ final readonly class ChannelNotifier implements Notifier
         }
 
         foreach ($destinations as $destination) {
+            if (! $this->channels->has($destination->channel)) {
+                // A channel removed from the configuration: the destination stays, nothing is tried.
+                Log::warning('Notification destination skipped: its channel is not configured.', ['channel' => $destination->channel, 'destination' => $destination->name]);
+                $this->record($notification, $destination, NotificationDeliveryStatus::Skipped, "El canal «{$destination->channel}» no està configurat: no s'ha enviat.");
+
+                continue;
+            }
             $error = null;
             try {
                 $this->sender->sendNow($destination, $notification);
@@ -58,7 +68,7 @@ final readonly class ChannelNotifier implements Notifier
                 $error = mb_substr($this->redactor->redact($e->getMessage()), 0, $this->errorMaxLength);
                 Log::warning('Notification delivery failed.', ['kind' => $notification->kind()->value, 'channel' => $destination->channel, 'destination' => $destination->name, 'error' => $error]);
             }
-            $this->record($notification, $destination, $error);
+            $this->record($notification, $destination, $error === null ? NotificationDeliveryStatus::Sent : NotificationDeliveryStatus::Failed, $error);
         }
     }
 
@@ -93,7 +103,7 @@ final readonly class ChannelNotifier implements Notifier
         return [...$destinations, ...array_values($followed)];
     }
 
-    private function record(WpupNotification $notification, NotificationDestination $destination, ?string $error): void
+    private function record(WpupNotification $notification, NotificationDestination $destination, NotificationDeliveryStatus $status, ?string $error): void
     {
         try {
             NotificationDelivery::query()->create([
@@ -104,7 +114,7 @@ final readonly class ChannelNotifier implements Notifier
                 'notification_destination_id' => $destination->exists ? $destination->id : null,
                 'channel' => $destination->channel,
                 'destination' => $this->redactor->redact($destination->label()),
-                'status' => $error === null ? NotificationDeliveryStatus::Sent : NotificationDeliveryStatus::Failed,
+                'status' => $status,
                 'error' => $error,
             ]);
         } catch (Throwable $e) {
