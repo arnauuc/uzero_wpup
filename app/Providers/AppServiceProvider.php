@@ -76,6 +76,8 @@ use App\Domain\Planning\FutureMinimums;
 use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
+use App\Domain\Rollback\DatabaseRollbackStep;
+use App\Domain\Rollback\FilesRollbackStep;
 use App\Domain\Rollback\ManualRollback;
 use App\Domain\Rollback\RevertedChanges;
 use App\Domain\Rollback\RollbackCheckStep;
@@ -84,6 +86,7 @@ use App\Domain\Rollback\RollbackSteps;
 use App\Domain\Rollback\UntouchedFailureMaintenance;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Concurrency\MaintenanceWindowGate;
+use App\Domain\Runs\OnFailure;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunAuthorization;
@@ -759,6 +762,11 @@ class AppServiceProvider extends ServiceProvider
             $untouched($rollback->files()),
             $untouched($rollback->database()),
             new RollbackMaintenanceRestoreStep($maintenance, $driverFor, $app->make(RunAuthorization::class), $app->make(SecretRedactor::class), $maintenanceTimeout),
+        ], onFailure: [
+            // Nothing to compensate once the site may be touched: the run fails and keeps what it did.
+            FilesRollbackStep::NAME => OnFailure::Stop,
+            DatabaseRollbackStep::NAME => OnFailure::Stop,
+            RollbackMaintenanceRestoreStep::NAME => OnFailure::Stop,
         ]);
     }
 
