@@ -30,6 +30,9 @@ use Throwable;
  * with an explicit warning. Reads only, so it also runs under --dry-run; it is
  * idempotent as long as no update has started (it always runs before them).
  *
+ * UZEROWPUP-71: when the site has a wp-content/debug.log apart from that log,
+ * its position and fatals are saved too (key "debug").
+ *
  * An unreadable log is not an error here: the baseline is stored as "no log"
  * and the smoke check will warn and keep its HTTP check.
  */
@@ -74,7 +77,7 @@ final readonly class PhpLogBaselineStep implements ReadOnlyStep
             return StepOutcome::failed("L'execució no té cap lloc.");
         }
 
-        $none = ['path' => null, 'offset' => 0, 'file_id' => null, 'web_verified' => false, 'signatures' => []];
+        $none = ['path' => null, 'offset' => 0, 'file_id' => null, 'web_verified' => false, 'signatures' => [], 'debug' => null];
         $warnings = [];
         try {
             $driver = ($this->driverFor)($site, $actor);
@@ -88,8 +91,14 @@ final readonly class PhpLogBaselineStep implements ReadOnlyStep
                 $warnings[] = 'camí del log no verificat pel web (es fa servir el que veu la línia de comandes)';
             }
             $signatures = [];
+            $debug = null;
             try {
                 $signatures = $this->scanner->signatures($driver->phpLogFatalsBefore($cursor, $this->settings->signatureWindowBytes, $this->settings->maxCandidateLines));
+                $debugCursor = $driver->phpLogCursor(rtrim($site->wp_path, '/').'/wp-content/debug.log');
+                if ($debugCursor->path !== null && str_ends_with($debugCursor->path, '/wp-content/debug.log') && $debugCursor->path !== $cursor->path) {
+                    $signatures = array_values(array_unique([...$signatures, ...$this->scanner->signatures($driver->phpLogFatalsBefore($debugCursor, $this->settings->signatureWindowBytes, $this->settings->maxCandidateLines))]));
+                    $debug = ['path' => $debugCursor->path, 'offset' => $debugCursor->offset, 'file_id' => $debugCursor->fileId];
+                }
             } catch (StepTimedOut $e) {
                 throw $e;
             } catch (Throwable $e) {
@@ -108,9 +117,9 @@ final readonly class PhpLogBaselineStep implements ReadOnlyStep
         $warned = $warnings === [] ? '' : ' AVÍS: '.implode('; ', $warnings).'.';
 
         return StepOutcome::succeeded(
-            "Log de PHP «{$cursor->path}» desat a la posició {$cursor->offset}, amb ".count($signatures).' fatal(s) anterior(s).'.$warned,
+            "Log de PHP «{$cursor->path}» desat a la posició {$cursor->offset}, amb ".count($signatures).' fatal(s) anterior(s)'.($debug === null ? '' : ' i el debug.log').'.'.$warned,
             '',
-            ['path' => $cursor->path, 'offset' => $cursor->offset, 'file_id' => $cursor->fileId, 'web_verified' => $verified, 'signatures' => $signatures],
+            ['path' => $cursor->path, 'offset' => $cursor->offset, 'file_id' => $cursor->fileId, 'web_verified' => $verified, 'signatures' => $signatures, 'debug' => $debug],
         );
     }
 

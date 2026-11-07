@@ -332,6 +332,24 @@ final class SiteDriverContract
                 expect($driver->phpLogFatalsSince($cursor, 1)->lines)->toHaveCount(1);
             });
 
+            it('finds the warning, notice and deprecation lines of the new log region, and never the fatals', function () use ($factory): void {
+                $driver = $factory();
+                $cursor = $driver->phpLogCursor();
+                $token = bin2hex(random_bytes(4));
+                $driver->wp(['eval', 'error_log("PHP Warning:  wpup-contract-warn-'.$token.'");']);
+                $driver->wp(['eval', 'error_log("PHP Deprecated:  wpup-contract-depr-'.$token.'");']);
+                $driver->wp(['eval', 'error_log("PHP Fatal error:  wpup-contract-fatal-'.$token.'");']);
+
+                $scan = $driver->phpLogWarningsSince($cursor, 50);
+                $found = implode("\n", $scan->lines);
+
+                expect($found)->toContain("wpup-contract-warn-{$token}")
+                    ->and($found)->toContain("wpup-contract-depr-{$token}")
+                    ->and($found)->not->toContain('wpup-contract-fatal')
+                    ->and($scan->capped)->toBeFalse()
+                    ->and($driver->phpLogWarningsSince($cursor, 1)->lines)->toHaveCount(1);
+            });
+
             it('keeps the most recent fatals before the cursor when there are more than the cap', function () use ($factory): void {
                 $driver = $factory();
                 $token = bin2hex(random_bytes(4));

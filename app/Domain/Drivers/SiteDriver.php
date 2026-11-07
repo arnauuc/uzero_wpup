@@ -257,6 +257,15 @@ interface SiteDriver
     public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan;
 
     /**
+     * Like phpLogFatalsSince() but for the warning, notice and deprecation
+     * lines (UZEROWPUP-71). The caller classifies them with its own patterns;
+     * fatals are never in it, so a flood of warnings cannot push them out.
+     *
+     * @throws DriverException
+     */
+    public function phpLogWarningsSince(LogCursor $cursor, int $maxLines): LogScan;
+
+    /**
      * Candidate fatal lines in the $windowBytes before $cursor (what was
      * already in the log before the update), at most $maxLines: the most
      * recent ones when there are more.

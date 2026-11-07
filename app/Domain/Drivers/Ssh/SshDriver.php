@@ -49,6 +49,8 @@ final class SshDriver implements SiteDriver
     /** Cheap remote prefilter for fatal lines; callers classify what it returns. */
     private const string LOG_PREFILTER = 'PHP (Fatal error|Parse error):';
 
+    private const string LOG_WARNING_PREFILTER = 'PHP (Warning|Notice|Deprecated|Strict Standards):';
+
     /** A log line can be a whole stack trace: only this much of each candidate is kept. */
     private const int LOG_LINE_BYTES = 2000;
 
@@ -522,6 +524,16 @@ final class SshDriver implements SiteDriver
 
     public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan
     {
+        return $this->logLinesSince($cursor, $maxLines, self::LOG_PREFILTER);
+    }
+
+    public function phpLogWarningsSince(LogCursor $cursor, int $maxLines): LogScan
+    {
+        return $this->logLinesSince($cursor, $maxLines, self::LOG_WARNING_PREFILTER);
+    }
+
+    private function logLinesSince(LogCursor $cursor, int $maxLines, string $prefilter): LogScan
+    {
         $log = $cursor->path;
         if ($log === null) {
             return new LogScan;
@@ -538,7 +550,7 @@ final class SshDriver implements SiteDriver
             $sibling = $this->usableLogPath($log.'.1');
             if ($sibling !== null && $cursor->offset > 0) {
                 try {
-                    $lines = $this->fatalLines($sibling, $cursor->offset, $maxLines + 1);
+                    $lines = $this->fatalLines($sibling, $cursor->offset, $maxLines + 1, prefilter: $prefilter);
                     $siblingRead = true;
                 } catch (DriverException) {
                     $lines = [];
@@ -548,7 +560,7 @@ final class SshDriver implements SiteDriver
         $offset = $rotated ? 0 : $cursor->offset;
         if ($size > $offset) {
             // An error here must never look like "no fatal lines".
-            $lines = [...$lines, ...$this->fatalLines($log, $offset, $maxLines + 1)];
+            $lines = [...$lines, ...$this->fatalLines($log, $offset, $maxLines + 1, prefilter: $prefilter)];
         }
 
         return new LogScan(array_slice($lines, 0, $maxLines), count($lines) > $maxLines, $rotated, $siblingRead);
@@ -574,9 +586,9 @@ final class SshDriver implements SiteDriver
      *
      * @throws DriverException
      */
-    private function fatalLines(string $path, int $from, int $maxLines, ?int $length = null, bool $newest = false): array
+    private function fatalLines(string $path, int $from, int $maxLines, ?int $length = null, bool $newest = false, string $prefilter = self::LOG_PREFILTER): array
     {
-        $result = $this->exec(LogGrepResult::command('tail -c +'.($from + 1).' '.escapeshellarg($path), self::LOG_PREFILTER, $maxLines, self::LOG_LINE_BYTES, $length, $newest));
+        $result = $this->exec(LogGrepResult::command('tail -c +'.($from + 1).' '.escapeshellarg($path), $prefilter, $maxLines, self::LOG_LINE_BYTES, $length, $newest));
 
         return LogGrepResult::parse($result->stdout, $result->stderr)->lines;
     }

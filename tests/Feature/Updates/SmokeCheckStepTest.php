@@ -337,7 +337,7 @@ it('declares the baseline read only and the check not', function (): void {
 });
 
 it('refuses a step timeout below the worst case', function (): void {
-    $settings = new SmokeCheckSettings(600, 30, 5, 3, 0, true, 200, 1024, 5, 300, app(SmokeCheckSettings::class)->fatalPatterns);
+    $settings = new SmokeCheckSettings(1200, 30, 5, 3, 0, true, 200, 1024, 5, 300, app(SmokeCheckSettings::class)->fatalPatterns, app(SmokeCheckSettings::class)->warningPatterns, app(SmokeCheckSettings::class)->noticePatterns, 20);
 
     expect(fn () => smokeSteps(new FakeDriver, $settings))->toThrow(InvalidArgumentException::class, 'pitjor cas');
     expect(smokeSteps(new FakeDriver, $settings, 15, 5))->toBeInstanceOf(SmokeCheckSteps::class);
@@ -405,4 +405,94 @@ describe('with a real server', function (): void {
 
         expect($outcome->status)->toBe(RunStepStatus::Failed)->and($outcome->summary)->toContain('HTTP 503');
     });
+});
+
+const SMOKE_WARNING = '[06-Nov-2026 10:00:00 UTC] PHP Warning:  Undefined variable $x in /p/x.php on line 7';
+
+it('warns, but does not fail, on a new PHP warning, grouping the repeats and only counting notices', function (): void {
+    $driver = new FakeDriver;
+    Http::fake(['shop.test/*' => Http::response('ok', 200)]);
+
+    $outcome = smokeSteps($driver)->check()->run(smokeContext($driver, [
+        SMOKE_WARNING,
+        '[06-Nov-2026 10:00:09 UTC] PHP Warning:  Undefined variable $x in /p/x.php on line 7',
+        '[06-Nov-2026 10:00:10 UTC] PHP Warning:  Undefined variable $y in /p/x.php on line 8',
+        '[06-Nov-2026 10:00:11 UTC] PHP Notice:  Undefined index: a in /p/y.php on line 2',
+        '[06-Nov-2026 10:00:12 UTC] PHP Deprecated:  Function foo() is deprecated in /p/y.php on line 3',
+    ]));
+
+    expect($outcome->status)->toBe(RunStepStatus::Succeeded)
+        ->and($outcome->summary)->toContain('AVÍS')->toContain('3 warning(s) nou(s)')->toContain('2 missatge(s) diferent(s)')
+        ->and($outcome->data['php_warnings'])->toBe(3)
+        ->and($outcome->data['php_notices'])->toBe(2)
+        ->and($outcome->data['warning_groups'])->toHaveCount(2)
+        ->and(data_get($outcome->data, 'warning_groups.0'))->toMatchArray(['level' => 'warning', 'count' => 2, 'first_seen' => '06-Nov-2026 10:00:00 UTC', 'last_seen' => '06-Nov-2026 10:00:09 UTC'])
+        ->and($outcome->output)->toContain('×2 [');
+});
+
+it('keeps failing on a fatal when there are warnings too, and groups the repeated fatal', function (): void {
+    $driver = new FakeDriver;
+    Http::fake(['shop.test/*' => Http::response('ok', 200)]);
+
+    $outcome = smokeSteps($driver)->check()->run(smokeContext($driver, [SMOKE_WARNING, SMOKE_FATAL, SMOKE_FATAL]));
+
+    expect($outcome->status)->toBe(RunStepStatus::Failed)
+        ->and($outcome->data['fatals'])->toBe(2)
+        ->and($outcome->data['fatal_groups'])->toHaveCount(1)
+        ->and(data_get($outcome->data, 'fatal_groups.0.count'))->toBe(2)
+        ->and($outcome->data['php_warnings'])->toBe(1);
+});
+
+it('does not warn about a clean log, nor about warnings written before the baseline', function (): void {
+    $driver = new FakeDriver;
+    $driver->phpLog = [SMOKE_WARNING];
+    Http::fake(['shop.test/*' => Http::response('ok', 200)]);
+
+    $outcome = smokeSteps($driver)->check()->run(smokeContext($driver));
+
+    expect($outcome->summary)->not->toContain('warning(s)')
+        ->and($outcome->data['php_warnings'])->toBe(0)
+        ->and($outcome->data['warning_groups'])->toBe([]);
+});
+
+it('also classifies the new lines of wp-content/debug.log, apart from the web log', function (): void {
+    $driver = new FakeDriver;
+    $driver->debugLog = ['[05-Nov-2026 09:00:00 UTC] PHP Fatal error:  Uncaught Error: old in /old.php:1'];
+    Http::fake(['shop.test/*' => Http::response('ok', 200)]);
+
+    $context = smokeContext($driver);
+    $driver->debugLog[] = SMOKE_WARNING;
+    $driver->debugLog[] = '[06-Nov-2026 10:00:00 UTC] PHP Fatal error:  Uncaught Error: old in /old.php:1';
+    $outcome = smokeSteps($driver)->check()->run($context);
+
+    expect(data_get($context->resultOf(PhpLogBaselineStep::NAME), 'debug.path'))->toEndWith('/wp-content/debug.log')
+        ->and($context->resultOf(PhpLogBaselineStep::NAME)['signatures'])->toHaveCount(1)
+        ->and($outcome->status)->toBe(RunStepStatus::Succeeded)
+        ->and($outcome->data['repeated_fatals'])->toBe(1)
+        ->and($outcome->data['php_warnings'])->toBe(1);
+});
+
+it('has no debug entry in the baseline when the site has no debug.log', function (): void {
+    $driver = new FakeDriver;
+
+    $context = smokeContext($driver);
+
+    expect($context->resultOf(PhpLogBaselineStep::NAME)['debug'])->toBeNull();
+});
+
+it('notes a warnings read that fails without failing the step or hiding the fatals', function (): void {
+    $driver = new class extends FakeDriver
+    {
+        public function phpLogWarningsSince(LogCursor $cursor, int $maxLines): LogScan
+        {
+            throw new DriverException('grep failed');
+        }
+    };
+    Http::fake(['shop.test/*' => Http::response('ok', 200)]);
+
+    $outcome = smokeSteps($driver)->check()->run(smokeContext($driver, [SMOKE_FATAL]));
+
+    expect($outcome->status)->toBe(RunStepStatus::Failed)
+        ->and($outcome->data['fatals'])->toBe(1)
+        ->and($outcome->summary)->toContain('no s\'ha pogut llegir el log');
 });
