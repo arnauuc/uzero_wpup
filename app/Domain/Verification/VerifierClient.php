@@ -6,24 +6,28 @@ namespace App\Domain\Verification;
 
 use App\Domain\Secrets\SecretRedactor;
 use App\Support\PrivateDirectory;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
-use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 
 /**
- * Runs the verifier (docs/verificador.md): a child process with an argument
- * array, a hard timeout, the input on stdin and a clean environment, so the
- * verifier never sees the database, the keys or any credential of the
- * worker. It writes result.json into the private output directory (0700).
+ * Runs the verifier (docs/verificador.md): `setsid node bin.js`, an argument
+ * array, with the input on stdin and a clean environment, so the verifier
+ * never sees the database, the keys or any credential of the worker. It writes
+ * result.json into the private output directory (0700).
+ *
+ * The verifier leads its own process group: on the hard timeout (or too much
+ * output) the whole group gets SIGTERM, then SIGKILL after a grace period,
+ * so no browser is left behind. Output is drained and cleared on every poll:
+ * stdout is kept up to its cap, stderr is only counted (never stored).
  */
 final readonly class VerifierClient
 {
     public const string RESULT_FILE = 'result.json';
 
-    /** stdout carries at most one JSON error line; more is cut. */
-    private const int MAX_STDOUT_BYTES = 65536;
-
     private const int EXIT_INVALID_INPUT = 2;
+
+    private const int POLL_MICROSECONDS = 100_000;
 
     public function __construct(private VerifierSettings $settings, private SecretRedactor $redactor) {}
 
@@ -32,28 +36,23 @@ final readonly class VerifierClient
      */
     public function verify(VerificationRequest $request, string $outputDir): VerificationResult
     {
+        $this->assertInstalled();
         try {
             PrivateDirectory::ensure($outputDir);
-        } catch (RuntimeException) {
-            throw VerifierFailed::unreadable("no s'ha pogut preparar el directori de sortida");
+        } catch (RuntimeException $e) {
+            $reason = $this->redactor->redact($e->getMessage());
+            Log::error('Verifier output directory unavailable.', ['reason' => $reason]);
+
+            throw VerifierFailed::workDir($reason, $e);
         }
         $result = $outputDir.'/'.self::RESULT_FILE;
         // Idempotent: a result left by an interrupted attempt is never read as this one's.
         @unlink($result);
 
         $input = json_encode($request->toProtocol($outputDir), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-        $process = new Process($this->settings->command, $outputDir, $this->environment($outputDir), $input, $this->settings->timeoutSeconds);
-        $stdout = '';
-        try {
-            $process->run(static function (string $type, string $buffer) use (&$stdout): void {
-                // stderr may hold a stack trace or page content: it is never read.
-                if ($type === Process::OUT && strlen($stdout) < self::MAX_STDOUT_BYTES) {
-                    $stdout .= substr($buffer, 0, self::MAX_STDOUT_BYTES - strlen($stdout));
-                }
-            });
-        } catch (ProcessTimedOutException) {
-            throw VerifierFailed::timeout($this->settings->timeoutSeconds);
-        }
+        $command = [$this->settings->setsidBinary, $this->settings->nodeBinary, $this->settings->script];
+        $process = new Process($command, $outputDir, $this->environment($outputDir), $input, null);
+        $stdout = $this->supervise($process);
 
         $exit = $process->getExitCode();
         if ($exit !== 0) {
@@ -91,7 +90,82 @@ final readonly class VerifierClient
         return $allowed + array_fill_keys($inherited, false);
     }
 
-    /** The verifier's own error line: code, message and the failing fields, redacted. */
+    /**
+     * Runs the process to its end, or stops it: hard timeout, or a stream over its cap.
+     *
+     * @return string stdout, up to its cap
+     *
+     * @throws VerifierFailed
+     */
+    private function supervise(Process $process): string
+    {
+        $process->start();
+        $deadline = microtime(true) + $this->settings->timeoutSeconds;
+        $stdout = '';
+        $stderrBytes = 0;
+        do {
+            $running = $process->isRunning();
+            $chunk = $process->getIncrementalOutput();
+            $stderrBytes += strlen($process->getIncrementalErrorOutput());
+            $process->clearOutput()->clearErrorOutput();
+            if (strlen($stdout) + strlen($chunk) > $this->settings->maxStdoutBytes) {
+                $this->stop($process);
+                throw VerifierFailed::outputTooLarge('stdout', $this->settings->maxStdoutBytes);
+            }
+            $stdout .= $chunk;
+            if ($stderrBytes > $this->settings->maxStderrBytes) {
+                $this->stop($process);
+                throw VerifierFailed::outputTooLarge('stderr', $this->settings->maxStderrBytes);
+            }
+            if ($running && microtime(true) >= $deadline) {
+                $this->stop($process);
+                throw VerifierFailed::timeout($this->settings->timeoutSeconds);
+            }
+            if ($running) {
+                usleep(self::POLL_MICROSECONDS);
+            }
+        } while ($running);
+
+        return $stdout;
+    }
+
+    /** SIGTERM to the whole group, a grace period, then SIGKILL to the group. */
+    private function stop(Process $process): void
+    {
+        $group = $process->getPid();
+        if ($group !== null) {
+            @posix_kill(-$group, SIGTERM);
+            $until = microtime(true) + $this->settings->stopGraceSeconds;
+            while ($process->isRunning() && microtime(true) < $until) {
+                $process->clearOutput()->clearErrorOutput();
+                usleep(self::POLL_MICROSECONDS);
+            }
+            // Also the children that outlived the leader (the browser).
+            @posix_kill(-$group, SIGKILL);
+        }
+        $process->stop(0);
+    }
+
+    /**
+     * @throws VerifierFailed
+     */
+    private function assertInstalled(): void
+    {
+        if (! is_executable($this->settings->setsidBinary)) {
+            throw VerifierFailed::notInstalled("no es troba «{$this->settings->setsidBinary}»");
+        }
+        $node = $this->settings->nodeBinary;
+        $found = str_contains($node, '/') ? is_executable($node)
+            : array_filter(explode(':', $this->settings->path), static fn (string $dir): bool => is_executable("{$dir}/{$node}")) !== [];
+        if (! $found) {
+            throw VerifierFailed::notInstalled("no es troba Node («{$node}»)");
+        }
+        if (! is_file($this->settings->script)) {
+            throw VerifierFailed::notInstalled('falta '.basename(dirname($this->settings->script)).'/'.basename($this->settings->script).' (cal `npm ci && npm run build` a verifier/)');
+        }
+    }
+
+    /** The verifier's own error line: code, message and the failing fields; redacted first, then cut. */
     private function errorDetail(string $stdout): string
     {
         $line = json_decode(trim(strtok($stdout, "\n") ?: ''), true);
@@ -101,6 +175,6 @@ final readonly class VerifierClient
         }
         $issues = is_array($error['issues'] ?? null) ? array_slice(array_filter($error['issues'], is_string(...)), 0, 5) : [];
 
-        return $this->redactor->redact(mb_substr($error['message'].($issues === [] ? '' : ' ('.implode(', ', $issues).')'), 0, 500));
+        return mb_substr($this->redactor->redact($error['message'].($issues === [] ? '' : ' ('.implode(', ', $issues).')')), 0, 500);
     }
 }

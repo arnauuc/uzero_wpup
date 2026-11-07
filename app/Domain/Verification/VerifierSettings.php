@@ -12,33 +12,40 @@ use InvalidArgumentException;
 final readonly class VerifierSettings
 {
     /**
-     * @param  list<string>  $command  argument array, never a shell string
      * @param  list<Viewport>  $viewports
      * @param  list<PageTarget>  $urls
      * @param  list<string>  $masks  CSS selectors hidden in the screenshots
      */
     public function __construct(
-        public array $command,
+        public string $nodeBinary,
+        public string $script,
+        public string $setsidBinary,
         public string $workDir,
         public string $path,
         public ?string $browsersPath,
-        public int $timeoutSeconds,
-        public int $stepTimeoutSeconds,
         public int $totalMs,
         public int $navigationTimeoutMs,
+        public int $screenshotTimeoutMs,
+        public int $timeoutSeconds,
+        public int $stopGraceSeconds,
+        public int $stepTimeoutSeconds,
         public int $maxResultBytes,
+        public int $maxStdoutBytes,
+        public int $maxStderrBytes,
         public float $maxDiffRatio,
         public array $viewports,
         public array $urls,
         public array $masks,
     ) {
-        if ($command === [] || $workDir === '' || $path === '' || $viewports === [] || $urls === []
-            || min($timeoutSeconds, $stepTimeoutSeconds, $totalMs, $navigationTimeoutMs, $maxResultBytes) <= 0) {
-            throw new InvalidArgumentException('wpup.verifier: command, paths, viewports, urls, limits and timeouts must be set and positive.');
+        if ($nodeBinary === '' || $script === '' || $setsidBinary === '' || $workDir === '' || $path === '' || $viewports === [] || $urls === []
+            || min($totalMs, $navigationTimeoutMs, $screenshotTimeoutMs, $timeoutSeconds, $stopGraceSeconds, $stepTimeoutSeconds, $maxResultBytes, $maxStdoutBytes, $maxStderrBytes) <= 0) {
+            throw new InvalidArgumentException('wpup.verifier: binaries, paths, viewports, urls, limits and timeouts must be set and positive.');
         }
-        // The verifier stops by itself first; the process timeout is the hard stop, inside the step's.
-        if ($totalMs >= $timeoutSeconds * 1000 || $timeoutSeconds >= $stepTimeoutSeconds) {
-            throw new InvalidArgumentException('wpup.verifier: total_ms < timeout_seconds < step_timeout_seconds.');
+        // The last page may start just before total_ms and take its navigation and its
+        // screenshot: the verifier still ends before the hard stop, and the hard stop
+        // (with its grace) inside the step.
+        if ($totalMs + $navigationTimeoutMs + $screenshotTimeoutMs >= $timeoutSeconds * 1000 || $timeoutSeconds + $stopGraceSeconds >= $stepTimeoutSeconds) {
+            throw new InvalidArgumentException('wpup.verifier: total_ms + navigation_timeout_ms + screenshot_timeout_ms < timeout_seconds, and timeout_seconds + stop_grace_seconds < step_timeout_seconds.');
         }
     }
 }

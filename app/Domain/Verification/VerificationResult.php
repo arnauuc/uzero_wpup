@@ -16,8 +16,9 @@ final readonly class VerificationResult
     /**
      * @param  list<PageResult>  $pages
      * @param  list<string>  $verifierErrors
+     * @param  bool  $partial  the verifier ran out of time before visiting every url × viewport
      */
-    public function __construct(public string $outputDir, public array $pages, public array $verifierErrors) {}
+    public function __construct(public string $outputDir, public array $pages, public array $verifierErrors, public bool $partial) {}
 
     /**
      * @throws VerifierFailed
@@ -30,17 +31,28 @@ final readonly class VerificationResult
         if (($data['run_id'] ?? null) !== $runId) {
             throw VerifierFailed::unreadable("no correspon a l'execució {$runId}");
         }
-        if (! is_array($data['results'] ?? null) || ! array_is_list($data['results'])) {
-            throw VerifierFailed::unreadable('falten els resultats');
+        if (! is_array($data['results'] ?? null) || ! array_is_list($data['results']) || ! is_bool($data['partial'] ?? null)) {
+            throw VerifierFailed::unreadable('falten els resultats o la marca de resultat parcial');
         }
 
-        return new self($outputDir, array_map(self::page(...), $data['results']), self::strings($data['verifier_errors'] ?? null, 'verifier_errors'));
+        return new self($outputDir, array_map(self::page(...), $data['results']), self::strings($data['verifier_errors'] ?? null, 'verifier_errors'), $data['partial']);
     }
 
     /** Pages answering 4xx/5xx or not loading at all. */
     public function httpErrors(): int
     {
         return count(array_filter($this->pages, static fn (PageResult $p): bool => $p->httpStatus === null || $p->httpStatus >= 400));
+    }
+
+    /**
+     * Anything worth a warning: partial, verifier errors, or a page with an HTTP
+     * error, console or resource errors, or that did not load. Decides how long
+     * the screenshots are kept (ADR-0009).
+     */
+    public function hasWarnings(): bool
+    {
+        return $this->partial || $this->verifierErrors !== [] || $this->httpErrors() > 0 || array_filter($this->pages,
+            static fn (PageResult $p): bool => $p->error !== null || $p->consoleErrors !== [] || $p->resourceErrors !== []) !== [];
     }
 
     public function consoleErrors(): int
@@ -74,7 +86,8 @@ final readonly class VerificationResult
         }, $page['resource_errors']);
 
         return new PageResult($page['path'], $page['profile'], $page['viewport'], $status, $screenshot,
-            self::strings($page['console_errors'] ?? null, 'console_errors'), $resources, $page['timings']['navigation_ms'], $error);
+            self::strings($page['console_errors'] ?? null, 'console_errors'), $resources,
+            self::strings($page['blocked_requests'] ?? null, 'blocked_requests'), $page['timings']['navigation_ms'], $error);
     }
 
     /**

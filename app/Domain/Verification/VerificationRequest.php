@@ -26,13 +26,14 @@ final readonly class VerificationRequest
         public array $masks,
         public float $maxDiffRatio,
         public int $navigationTimeoutMs,
+        public int $screenshotTimeoutMs,
         public int $totalMs,
     ) {}
 
     public static function withDefaults(int $runId, string $siteName, string $baseUrl, VerifierSettings $settings): self
     {
         return new self($runId, $siteName, $baseUrl, $settings->urls, $settings->viewports, $settings->masks,
-            $settings->maxDiffRatio, $settings->navigationTimeoutMs, $settings->totalMs);
+            $settings->maxDiffRatio, $settings->navigationTimeoutMs, $settings->screenshotTimeoutMs, $settings->totalMs);
     }
 
     /**
@@ -51,7 +52,7 @@ final readonly class VerificationRequest
             'masks' => $this->masks,
             'thresholds' => ['max_diff_ratio' => $this->maxDiffRatio],
             'output_dir' => $outputDir,
-            'timeouts' => ['navigation_ms' => $this->navigationTimeoutMs, 'total_ms' => $this->totalMs],
+            'timeouts' => ['navigation_ms' => $this->navigationTimeoutMs, 'screenshot_ms' => $this->screenshotTimeoutMs, 'total_ms' => $this->totalMs],
         ];
     }
 }

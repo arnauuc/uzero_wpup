@@ -13,6 +13,7 @@ final readonly class PageResult
     /**
      * @param  list<string>  $consoleErrors
      * @param  list<ResourceError>  $resourceErrors
+     * @param  list<string>  $blockedRequests  blocked on purpose by the verifier (checkout): not errors
      */
     public function __construct(
         public string $path,
@@ -22,6 +23,7 @@ final readonly class PageResult
         public ?string $screenshot,
         public array $consoleErrors,
         public array $resourceErrors,
+        public array $blockedRequests,
         public int $navigationMs,
         public ?string $error,
     ) {}

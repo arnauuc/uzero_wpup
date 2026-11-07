@@ -233,17 +233,28 @@ return [
      * database, no key). Its output stays in a private directory per run.
      */
     'verifier' => [
-        'command' => [env('WPUP_NODE_BINARY', 'node'), base_path('verifier/dist/bin.js')],
+        // Run as `setsid <node_binary> <script>`: its own process group, stopped as a whole.
+        'node_binary' => env('WPUP_NODE_BINARY', 'node'),
+        'script' => base_path('verifier/dist/bin.js'),
+        'setsid_binary' => '/usr/bin/setsid',
         'work_dir' => env('WPUP_VERIFIER_DIR', storage_path('app/verifier')),
         'path' => '/usr/local/bin:/usr/bin:/bin',
         'browsers_path' => env('PLAYWRIGHT_BROWSERS_PATH'),
-        // The whole process; the verifier itself stops visiting pages at total_ms.
-        'timeout_seconds' => 1200,
-        'step_timeout_seconds' => 1500,
+        // Nested: navigation and screenshot are cut to what is left of total_ms, and
+        // total_ms + navigation + screenshot must fit in timeout_seconds (the hard stop:
+        // SIGTERM to the group, stop_grace_seconds, SIGKILL), which with the grace must
+        // fit in step_timeout_seconds.
         'total_ms' => 1_080_000,
         'navigation_timeout_ms' => 60_000,
-        // result.json larger than this is a verifier failure.
+        'screenshot_timeout_ms' => 30_000,
+        'timeout_seconds' => 1200,
+        'stop_grace_seconds' => 10,
+        'step_timeout_seconds' => 1500,
+        // More than this is a verifier failure: result.json, and stdout/stderr (the
+        // process is stopped when one exceeds its cap; stderr is never stored).
         'max_result_bytes' => 5 * 1024 * 1024,
+        'max_stdout_bytes' => 64 * 1024,
+        'max_stderr_bytes' => 1024 * 1024,
         'max_diff_ratio' => 0.01,
         'viewports' => ['desktop' => 1440, 'mobile' => 390],
         // Until the site profiles list their URLs (spec, Verificació): path => profile.
