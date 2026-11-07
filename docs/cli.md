@@ -59,14 +59,16 @@ wpup site:add botiga-a --url=https://botiga-a.example --wp-path=/var/www/vhosts/
     --tag=woo --strategy=staging_first --window-days=1-5 --window-start=01:00 --window-end=05:00
 wpup site:edit botiga-a --verify-url=/ --verify-url=/cart --diff-threshold=1.5 --notify=email
 wpup site:edit botiga-a --clear=mask --deactivate
+wpup site:edit botiga-a --window="dl-dv 10:00-13:00" --auto-update
 ```
 
 | Opció | Camp |
 | --- | --- |
 | `--url`, `--wp-path`, `--php-binary` | URL (http/https), camí absolut de WordPress i del PHP |
 | `--tag=*`, `--strategy` | Etiquetes; `in_place` o `staging_first` |
-| `--window-days` (`1-5,7`, 1 = dilluns), `--window-start`, `--window-end` | Finestra de manteniment (HH:MM); sense finestra, la per defecte de `config/wpup.php` |
-| `--auto-update` / `--no-auto-update` | Actualització automàtica |
+| `--window="dies HH:MM-HH:MM"` | Finestra de manteniment sencera: `"dl-dv 10:00-13:00"`, `"cada dia 01:00-06:00"`, `"ds,dg 23:00-02:00"` (si el final no és posterior a l'inici, travessa la mitjanit i és del dia en què comença). No es combina amb les tres opcions següents |
+| `--window-days` (`1-5,7` o `dl-dv,dg`; 1 o `dl` = dilluns, 7 o `dg` = diumenge; `cada dia`), `--window-start`, `--window-end` | Finestra de manteniment per parts (HH:MM, hores de dues xifres); sense finestra, la per defecte de `config/wpup.php` (cada dia de 01:00 a 06:00). Un rang de noms pot passar del diumenge (`dv-dl`); un rang numèric no (`5-1` és de dilluns a divendres, com sempre) |
+| `--auto-update` / `--no-auto-update` | Actualització automàtica dins de la finestra (desactivada per defecte). `--auto-update` també aixeca el bloqueig del planificador després de fallades (vegeu [Actualitzacions programades](#actualitzacions-programades-adr-0006-uzerowpup-129)) |
 | `--verify-url=*`, `--mask=*`, `--diff-threshold` | URLs a verificar (camí relatiu o del mateix domini), selectors a emmascarar, llindar 0–100 |
 | `--checkout-product`, `--freeze=*`, `--exclude=*` | Producte de prova, components congelats i exclosos |
 | `--notify=*` | Canals d'avís: `email`, `telegram`, `slack` |
@@ -139,6 +141,22 @@ La primera vegada instal·la el WP-CLI fixat de l'eina a `~/.wpup` del compte, f
 
 En el moment de fixar-la es torna a llegir la clau i es compara amb l'empremta confirmada. Un operador no pot fixar-la. Amb `--dry-run`, només mostra què es fixaria. Una host key que ja està fixada no es canvia mai des d'aquí: si el servidor la canvia, totes les connexions fallen fins que un admin ho investiga. La fixació queda a l'auditoria (`host_key.pin`).
 
+## Actualitzacions programades (ADR-0006, UZEROWPUP-129)
+
+El scheduler executa `engine:schedule-updates` cada minut (no és accessible des de `wpup`; `php artisan engine:schedule-updates --dry-run` mostra què faria sense escriure res). Només hi entren els llocs actius amb `--auto-update`, i cada lloc es tracta **un cop per finestra**: una finestra s'identifica pel lloc i la data local en què s'obre, de manera que ni editar-la ni el canvi d'hora en fan una segona (si una edició la deixa tancada, la de la cua es cancel·la i s'espera a la següent). Un lloc amb el run de la finestra anterior encara pendent no s'encua de nou fins que acaba.
+
+- **Una sola actualització alhora.** El planificador només encua el lloc següent quan no hi ha cap execució que ocupi o esperi la plaça global (actualitzacions, inventaris, plans, còpies…). Les execucions manuals i les programades comparteixen la cua per ordre d'encuada; un `--now` d'un admin passa davant. Un lloc amb el lock ocupat (o el del seu compte) espera al torn següent.
+- **Ordre entre llocs programats:** actualització de seguretat pendent (vulnerabilitat coneguda o core `x.y.z`), després els ajornats de la seva finestra anterior, després els que fa més temps que no s'actualitzen correctament i, per últim, per nom.
+- **Llocs sense res aplicable:** s'ometen sense gastar temps. El planificador refà, un cop per finestra i sense sortir de la base de dades de l'eina, el pla de l'últim inventari si té menys de `scheduler.outlook.snapshot_max_age_hours` (24 h): sense anàlisi estàtica, sense descarregar res i sense tocar el lloc. Amb un inventari més vell decideix l'execució, que acaba just després del pla si no hi ha res a fer.
+- **Durada estimada:** la mediana de les últimes `scheduler.estimate.history_runs` (5) actualitzacions del lloc amb la mateixa estratègia que van passar del pla; sense històric, `scheduler.estimate.default_minutes` (10 min in-place, 30 amb staging). Si no hi cap en el que queda de la finestra (i mai amb menys de `updates.window.minimum_minutes`), el lloc passa a la seva finestra següent, amb prioritat.
+- **Abans de cada lloc:** es netegen els stagings orfes (arriben a F7) i es comproven el disc lliure (`scheduler.resources.disk_path`, mínim `min_free_disk_mb`) i la memòria disponible (`min_free_memory_mb`) del servidor de l'eina. Si en falta, no comença res i s'avisa al log i a `audit_log` (`scheduler.halted`) com a molt un cop cada `warn_every_minutes`.
+- **Fallades:** un lloc que falla o es reverteix no es torna a provar dins de la mateixa finestra. Després de `scheduler.failures.block_after` (2) finestres seguides fallides queda **bloquejat per a l'actualització automàtica** (les manuals no): l'avís queda a l'execució (`wpup runs`), a `audit_log` (`site.auto_update_blocked`) i al log. Només un `wpup site:edit <lloc> --auto-update` d'un admin l'aixeca (`site.auto_update_unblocked`), i aleshores només compten les fallades posteriors. `site:import` no l'aixeca mai: l'avisa a la sortida.
+- Les execucions són de `sistema (scheduler)`, amb l'estratègia del lloc (els llocs `staging_first` s'ometen fins a F7) i la política de versions de l'ADR-0005: mai amb `--allow-major` ni `--skip-quarantine`.
+
+## `summary`
+
+`wpup summary [--since=24h|7d] [--json]` (permís de veure informes): resum de les actualitzacions programades del període, el mateix que `engine:daily-summary` deixa al log cada dia a `scheduler.daily_summary.time` (07:00) per a les últimes 24 hores. Mostra els llocs actualitzats, els omesos amb el motiu (també els que l'execució ha trobat sense res a aplicar), els que han fallat o s'han revertit, els bloquejats per a l'actualització automàtica, els pendents per a la seva finestra següent, els que encara són en curs i els majors que esperen staging. Els canals d'avís arriben a F5.
+
 ## `site:import`
 
 Només `admin`. Importa llocs en bloc des d'un CSV o YAML: tot o res, idempotent i amb `--dry-run`. Esquema, exemples i regles a [importacio-de-llocs.md](importacio-de-llocs.md).
@@ -196,7 +214,7 @@ Totes tres queden a l'auditoria: `--allow-major` i `--skip-quarantine` com a `pl
 | `--now` | Només `admin`, auditat (`update.now`). Comença ara: se salta la cua global i la finestra de manteniment, mai els locks del lloc, del compte ni del servidor |
 | `--dry-run` | És el pla dels llocs que s'actualitzarien (la mateixa selecció, el mateix filtre d'estratègia i la mateixa comprovació de `--now`): encua execucions `plan` amb les mateixes opcions i no toca res |
 
-**Finestra de manteniment** (ADR-0006). Una actualització només comença dins de la finestra del lloc (`site:edit --window-*`, o `sites.default_window`, cada dia de 01:00 a 06:00, a l'hora d'`app.timezone`, Europe/Madrid) i si en queden com a mínim `updates.window.minimum_minutes` (15). `site:add`, `site:edit` i `site:import` refusen una finestra més curta, i una execució amb una finestra així (p. ex. la per defecte mal configurada) falla amb el motiu en lloc d'esperar per sempre. La nit que s'avança l'hora, una hora de la finestra que no existeix és la mateixa una hora més tard (02:30 ⇒ 03:30). Si no, la comanda avisa de quan començarà i l'execució espera a la cua (es torna a mirar cada `updates.window.recheck_seconds`). La finestra només limita l'inici: una execució interrompuda es reprèn o es reverteix a qualsevol hora. L'estimació de durada per lloc a partir de l'històric, l'ordre de prioritat de la cua i les execucions automàtiques són del planificador (UZEROWPUP-129).
+**Finestra de manteniment** (ADR-0006). Una actualització només comença dins de la finestra del lloc (`site:edit --window-*`, o `sites.default_window`, cada dia de 01:00 a 06:00, a l'hora d'`app.timezone`, Europe/Madrid) i si en queden com a mínim `updates.window.minimum_minutes` (15). `site:add`, `site:edit` i `site:import` refusen una finestra més curta, i una execució amb una finestra així (p. ex. la per defecte mal configurada) falla amb el motiu en lloc d'esperar per sempre. La nit que s'avança l'hora, una hora de la finestra que no existeix és la mateixa una hora més tard (02:30 ⇒ 03:30). Si no, la comanda avisa de quan començarà i l'execució espera a la cua (es torna a mirar cada `updates.window.recheck_seconds`). La finestra només limita l'inici: una execució interrompuda es reprèn o es reverteix a qualsevol hora. Les execucions manuals i les programades comparteixen aquesta cua per ordre d'encuada; només `--now` passa davant. Les execucions automàtiques, l'ordre entre llocs programats i l'estimació de durada són del planificador (vegeu sota).
 
 Amb `--wait` o `--follow`, imprimeix per lloc el resultat, els components actualitzats i, si s'ha revertit, què ha restaurat el rollback; amb `--json`, un document amb `runs[].plan`, `runs[].changes` i `runs[].rollback` (`files_restored`, i `database`: `restored`, `not_restored` —comandes noves—, `failed` —estat desconegut, cal revisar-la— o `not_reached`).
 

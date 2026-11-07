@@ -75,4 +75,6 @@ Una fila per lloc, amb capçalera. Les columnes són planes i el nom és el del 
 
 Es poden esborrar: `tags`, `php_binary`, `window`, `verify_urls`, `mask`, `checkout_product`, `freeze`, `exclude`, `notify`, `external_backup` i `maintenance` (torna al valor per defecte). La finestra s'esborra quan hi són `window_days`, `window_start` i `window_end` (o `window:` al YAML) i tots són buits.
 
+`window_days` accepta el mateix que `site:edit --window-days` (`1-5,7`, `dl-dv,dg` o `cada dia`). `auto_update: true` no aixeca mai el bloqueig del planificador d'un lloc que ha fallat en finestres seguides: la importació el deixa bloquejat i ho avisa a la sortida (cal `wpup site:edit <lloc> --auto-update`).
+
 **Compte amb el CSV:** una columna present amb la cel·la buida **esborra** el camp dels llocs existents. Si no vols tocar una columna, treu-la del fitxer. En un lloc nou, els buits no fan res.

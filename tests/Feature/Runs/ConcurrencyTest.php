@@ -48,7 +48,8 @@ function siteOnServer(?Site $sibling = null): Site
 
 it('runs one update at a time across the whole fleet by default', function (): void {
     $gate = gate();
-    $busy = Run::factory()->create(['site_id' => siteOnServer()->id]);
+    // A run that holds the slot is running (a queued one ahead would keep its turn: GlobalQueue).
+    $busy = Run::factory()->create(['site_id' => siteOnServer()->id, 'status' => RunStatus::Running]);
     $waiting = Run::factory()->create(['site_id' => siteOnServer()->id]);
     $held = $gate->acquire($busy, 'worker-1');
 

@@ -13,5 +13,7 @@ final readonly class SiteImportOutcome
         public string $name,
         public ImportAction $action,
         public array $fields,
+        /** Why the scheduler blocked the site for automatic updates; the import never lifts it. */
+        public ?string $autoUpdateBlocked = null,
     ) {}
 }

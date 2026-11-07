@@ -102,7 +102,7 @@ return [
             'list', 'help',
             'site:', 'user:add', 'user:list', 'user:role', 'user:deactivate',
             'lock:', 'backup:', 'backup-target:', 'agent:', 'client:', 'billing:', 'ssh-key:', 'secrets:', 'staging:', 'run:', 'tool:backup',
-            'inventory', 'plan', 'backup', 'update', 'verify', 'rollback', 'runs', 'report', 'cleanup', 'doctor', 'stats',
+            'inventory', 'plan', 'backup', 'update', 'verify', 'rollback', 'runs', 'summary', 'report', 'cleanup', 'doctor', 'stats',
         ],
     ],
 
@@ -340,6 +340,62 @@ return [
         'staging' => (int) env('WPUP_CONCURRENCY_STAGING', 1),
         'lease_seconds' => 60,
         'retry_seconds' => 30,
+    ],
+
+    /*
+     * Scheduled updates (ADR-0006, UZEROWPUP-129). `engine:schedule-updates` runs
+     * every minute: it queues the sites with automatic updates whose window is
+     * open and that were not handled in that occurrence of it, and starts them one
+     * at a time, as `actor` (never with --allow-major or --skip-quarantine). Manual and
+     * scheduled runs share one queue in the order they were queued (GlobalQueue); only
+     * an admin's --now goes ahead. Among the scheduled sites, which one is queued next
+     * follows ADR-0006 §3 (security, deferred, longest without updating, name).
+     * - estimate: a site's duration is the median of its last `history_runs`
+     *   update runs that went past the plan, with the same strategy; without any,
+     *   `default_minutes` of its strategy. A site starts only if that fits in
+     *   what is left of its window (and never with less than
+     *   updates.window.minimum_minutes); otherwise it waits for its next window,
+     *   with priority.
+     * - outlook: a site is skipped without spending any time when the plan of its
+     *   latest inventory (at most `snapshot_max_age_hours` old), recomputed now
+     *   and offline (quarantine and known vulnerabilities as of now, no download),
+     *   has nothing to apply. With an older inventory or none, the run decides
+     *   (its inventory and plan end it at once when there is nothing to do).
+     */
+    'scheduler' => [
+        'actor' => 'sistema (scheduler)',
+        // A tick holds this lock so a manual tick never overlaps the scheduler's.
+        'tick_lock_seconds' => 300,
+        // A run queued longer than this (a lost job) no longer holds the single queue.
+        'queue' => [
+            'stale_queued_hours' => 24,
+        ],
+        'estimate' => [
+            'history_runs' => 5,
+            'default_minutes' => ['in_place' => 10, 'staging_first' => 30],
+        ],
+        'outlook' => [
+            'snapshot_max_age_hours' => 24,
+        ],
+        // After this many consecutive failed windows (succeeded ones reset the count) the
+        // site is blocked for automatic updates until an operator turns them on again.
+        'failures' => [
+            'block_after' => 2,
+        ],
+        // Free space (on `disk_path`, the tool's storage) and available memory of the tool's
+        // server checked before each site: below either, nothing starts and the operators are
+        // warned (logged and audited at most every warn_every_minutes).
+        'resources' => [
+            'disk_path' => env('WPUP_SCHEDULER_DISK_PATH', storage_path()),
+            'min_free_disk_mb' => (int) env('WPUP_SCHEDULER_MIN_FREE_DISK_MB', 10240),
+            'min_free_memory_mb' => (int) env('WPUP_SCHEDULER_MIN_FREE_MEMORY_MB', 2048),
+            'warn_every_minutes' => 60,
+        ],
+        // The daily summary of the last `hours` (engine:daily-summary; `wpup summary` on demand).
+        'daily_summary' => [
+            'time' => '07:00',
+            'hours' => 24,
+        ],
     ],
 
     /*

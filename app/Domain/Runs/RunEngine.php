@@ -10,6 +10,7 @@ use App\Domain\Locks\LockedException;
 use App\Domain\Locks\SiteLockManager;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Concurrency\ConcurrencyLimitReached;
+use App\Domain\Runs\Concurrency\GlobalQueue;
 use App\Domain\Runs\Concurrency\MaintenanceWindowGate;
 use App\Domain\Runs\Concurrency\OutsideMaintenanceWindow;
 use App\Domain\Runs\Exceptions\ClaimLost;
@@ -53,6 +54,8 @@ use Throwable;
  *   the step and its decision, so the operator is always told (UZEROWPUP-62).
  *   A recorded step that the pipeline no longer has fails the run loudly.
  * - Every summary, output, error and result is redacted before it is stored.
+ * - A queued run that takes the global slot waits for the ones queued before
+ *   it that may start (GlobalQueue): manual and scheduled runs share one queue.
  */
 final readonly class RunEngine
 {
@@ -62,6 +65,7 @@ final readonly class RunEngine
         private SiteLockManager $locks,
         private ConcurrencyGate $gate,
         private MaintenanceWindowGate $windows,
+        private GlobalQueue $queue,
         private SecretRedactor $redactor,
         private AuditLogger $audit,
         private StepTicker $ticker,
@@ -106,6 +110,10 @@ final readonly class RunEngine
 
             // Credential operations (site:test…) skip the slots and the site lock: see RunType.
             if ($run->type->usesConcurrencyLimits()) {
+                // One queue, in the order the runs were queued (ADR-0006 §2): an earlier one that may start goes first.
+                if ($run->status === RunStatus::Queued) {
+                    $this->queue->assertTurn($run, CarbonImmutable::now());
+                }
                 $leases->slots = $this->gate->acquire($run, $token);
                 if ($run->site !== null) {
                     $leases->site = $this->locks->acquire($run->site, $run->actor, $run->id);
