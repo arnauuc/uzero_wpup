@@ -30,7 +30,7 @@ final readonly class RunLauncher
      */
     public function launchForAccount(RunType $type, HostingAccount $account, AuditActor $actor, array $flags = []): Run
     {
-        $run = $this->queue($type, null, $account, $actor, $flags, null);
+        $run = $this->queue($type, null, $account, $actor, $flags, null, null);
         ExecuteRun::dispatch($run->id);
 
         return $run;
@@ -39,13 +39,14 @@ final readonly class RunLauncher
     /**
      * @param  list<Site|null>  $sites  null = fleet-level run
      * @param  array<string, mixed>  $flags
+     * @param  Run|null  $parent  the run each one is launched from (a manual rollback's update, UZEROWPUP-61)
      * @return list<Run>
      */
-    public function launch(RunType $type, array $sites, AuditActor $actor, array $flags = [], ?UpdateStrategy $strategy = null): array
+    public function launch(RunType $type, array $sites, AuditActor $actor, array $flags = [], ?UpdateStrategy $strategy = null, ?Run $parent = null): array
     {
         $runs = [];
         foreach ($sites as $site) {
-            $runs[] = $this->queue($type, $site, null, $actor, $flags, $strategy);
+            $runs[] = $this->queue($type, $site, null, $actor, $flags, $strategy, $parent);
         }
 
         // Dispatched after every row exists, so a sync queue sees the whole batch.
@@ -61,10 +62,11 @@ final readonly class RunLauncher
      *
      * @param  array<string, mixed>  $flags
      */
-    private function queue(RunType $type, ?Site $site, ?HostingAccount $account, AuditActor $actor, array $flags, ?UpdateStrategy $strategy): Run
+    private function queue(RunType $type, ?Site $site, ?HostingAccount $account, AuditActor $actor, array $flags, ?UpdateStrategy $strategy, ?Run $parent): Run
     {
         $run = Run::query()->create([
             'site_id' => $site?->id,
+            'parent_run_id' => $parent?->id,
             'hosting_account_id' => $account?->id,
             'user_id' => $actor->userId,
             'actor' => $actor->name,
@@ -74,7 +76,7 @@ final readonly class RunLauncher
             'status' => RunStatus::Queued,
             'flags' => $flags,
         ]);
-        $context = ['type' => $type->value, 'site' => $site?->name, 'flags' => $flags];
+        $context = ['type' => $type->value, 'site' => $site?->name, 'flags' => $flags] + ($parent !== null ? ['parent_run_id' => $parent->id] : []);
         if ($account !== null) {
             $context = ['type' => $type->value, 'hosting_account' => $account->id, 'flags' => $flags];
         }

@@ -36,9 +36,12 @@ final readonly class StepOutcome
         return new self(RunStepStatus::Succeeded, $summary, $output, $data);
     }
 
-    public static function failed(string $summary, string $output = ''): self
+    /**
+     * @param  array<string, mixed>  $data  what a wrapping step needs to know about the failure (e.g. whether the site was touched)
+     */
+    public static function failed(string $summary, string $output = '', array $data = []): self
     {
-        return new self(RunStepStatus::Failed, $summary, $output);
+        return new self(RunStepStatus::Failed, $summary, $output, $data);
     }
 
     public static function skipped(string $summary): self

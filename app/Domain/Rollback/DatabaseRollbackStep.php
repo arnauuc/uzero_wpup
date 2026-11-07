@@ -74,6 +74,10 @@ use Throwable;
  * Every attempt is audited (`rollback.database`; denied when not restored
  * because of new writes).
  *
+ * A failure says in its data whether the database may have been touched
+ * (`restored`: no, unknown or yes), for the manual rollback (UZEROWPUP-61).
+ * With a check step before (RollbackCheckStep), only the copy it verified is used.
+ *
  * Result keys: restored (bool), source_run_id, backup_id, new_writes
  * (NewWrites::toArray(), null when resumed), warning (string|null),
  * force_command (string|null).
@@ -123,15 +127,15 @@ final readonly class DatabaseRollbackStep implements Step
         // Connecting reveals the site's credential: checked again as whoever launched the run (ADR-0011).
         $actor = $this->authorization->actorFor($context->run, Ability::RunOperations);
         if ($actor === null) {
-            return StepOutcome::failed(RunAuthorization::deniedMessage($context->run));
+            return StepOutcome::failed(RunAuthorization::deniedMessage($context->run), '', ['restored' => 'no']);
         }
 
         try {
             $source = RollbackSource::of($context->run);
             $site = $source->site ?? throw new RollbackRefused("L'execució #{$source->id} no té cap lloc.");
-            $candidates = $this->candidates($site, $source);
+            $candidates = RollbackCheckStep::checkedCopy($context, BackupKind::Database, $this->candidates($site, $source));
         } catch (RollbackRefused $e) {
-            return StepOutcome::failed($e->getMessage().' La base de dades no s\'ha restaurat.');
+            return StepOutcome::failed($e->getMessage().' La base de dades no s\'ha restaurat.', '', ['restored' => 'no']);
         }
 
         // What an earlier attempt of this step decided and did (interrupted run).
@@ -144,7 +148,7 @@ final readonly class DatabaseRollbackStep implements Step
         try {
             $driver = ($this->driverFor)($site, $actor);
         } catch (DriverException $e) {
-            return StepOutcome::failed("No s'ha pogut connectar amb el lloc. {$this->redactor->redact($e->getMessage())}".$this->done($audit, $site, $source));
+            return StepOutcome::failed("No s'ha pogut connectar amb el lloc. {$this->redactor->redact($e->getMessage())}".$this->done($audit, $site, $source), '', ['restored' => $audit['restored']]);
         }
 
         $warnings = [];
@@ -246,7 +250,7 @@ final readonly class DatabaseRollbackStep implements Step
             $reason = $this->redactor->redact($e->getMessage());
             $this->record($actor, $site, AuditResult::Failure, $audit + ['reason' => $reason]);
 
-            return StepOutcome::failed($reason.$this->done($audit, $site, $source), implode("\n", $warnings));
+            return StepOutcome::failed($reason.$this->done($audit, $site, $source), implode("\n", $warnings), ['restored' => $imported ? $audit['restored'] : 'no']);
         } catch (Throwable $e) {
             $this->maintenanceOff($driver, $enabled && ! $imported, $context->run->id, $warnings);
             $this->record($actor, $site, AuditResult::Failure, $audit + ['exception' => $e::class]);

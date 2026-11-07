@@ -77,15 +77,23 @@ use App\Domain\Planning\FutureMinimums;
 use App\Domain\Planning\PackageVersions;
 use App\Domain\Planning\PlanStep;
 use App\Domain\Planning\UpdatePlanner;
+use App\Domain\Rollback\DatabaseRollbackStep;
+use App\Domain\Rollback\FilesRollbackStep;
+use App\Domain\Rollback\ManualRollback;
 use App\Domain\Rollback\RevertedChanges;
+use App\Domain\Rollback\RollbackCheckStep;
+use App\Domain\Rollback\RollbackMaintenanceRestoreStep;
 use App\Domain\Rollback\RollbackSteps;
+use App\Domain\Rollback\UntouchedFailureMaintenance;
 use App\Domain\Runs\Concurrency\ConcurrencyGate;
 use App\Domain\Runs\Concurrency\MaintenanceWindowGate;
+use App\Domain\Runs\OnFailure;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\RunClaim;
 use App\Domain\Runs\RunEngineSettings;
+use App\Domain\Runs\Step;
 use App\Domain\Secrets\EnvelopeSecretStore;
 use App\Domain\Secrets\Kek\ConfigPublicKeyRing;
 use App\Domain\Secrets\Kek\EnvKekProvider;
@@ -487,11 +495,16 @@ class AppServiceProvider extends ServiceProvider
                     new InventoryStep($app->make(SiteInventory::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.inventory.step_timeout_seconds'), readOnlySite: true, advisory: true),
                     new RestoreCheckStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $app->make(NewWritesDetector::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.restore.check_timeout_seconds')),
                     $maintenance,
-                    new PreRestoreBackupStep($app->make(RestorePointService::class), $maintenance, $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.backups.step_timeout_seconds')),
+                    new PreRestoreBackupStep($app->make(RestorePointService::class), $maintenance, $driverFor, $app->make(RunAuthorization::class), $app->make(SecretRedactor::class), self::configInt('wpup.backups.step_timeout_seconds')),
                     new RestoreStep($app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(RestorePointGate::class), $maintenance, $driverFor,
                         $app->make(RunAuthorization::class), $app->make(AuditLogger::class), $app->make(SecretRedactor::class), self::configInt('wpup.backups.restore.step_timeout_seconds')),
                 ]);
             });
+            // `wpup rollback <run>` (UZEROWPUP-61): see manualRollbackPipeline().
+            $resolver->register(RunType::Rollback, static fn (): Pipeline => self::manualRollbackPipeline(
+                $app,
+                static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
+            ));
             // The tool's own backup (UZEROWPUP-47): a read-only check (also under --dry-run), then the copy.
             $resolver->register(RunType::ToolBackup, static fn (): Pipeline => new Pipeline([
                 new ToolBackupCheckStep($app->make(ToolBackupService::class), $app->make(RunAuthorization::class), self::configInt('wpup.tool_backup.check_timeout_seconds')),
@@ -590,17 +603,9 @@ class AppServiceProvider extends ServiceProvider
         ));
         // The steps that undo an update, for `wpup rollback <run>` and the update flow: the
         // files (UZEROWPUP-57), then the database only without new writes (UZEROWPUP-59).
-        $this->app->bind(RollbackSteps::class, static fn (Application $app): RollbackSteps => new RollbackSteps(
-            $app->make(RestoreSelection::class),
-            $app->make(SiteRestore::class),
-            $app->make(RevertedChanges::class),
-            $app->make(NewWritesDetector::class),
+        $this->app->bind(RollbackSteps::class, static fn (Application $app): RollbackSteps => self::rollbackSteps(
+            $app,
             static fn (Site $site, AuditActor $actor): SiteDriver => $app->make(DriverFactory::class)->forSite($site, $actor),
-            $app->make(RunAuthorization::class),
-            $app->make(AuditLogger::class),
-            $app->make(SecretRedactor::class),
-            self::configInt('wpup.rollback.files_timeout_seconds'),
-            self::configInt('wpup.rollback.database_timeout_seconds'),
         ));
         $this->app->bind(SshSettings::class, static fn (): SshSettings => new SshSettings(
             connectTimeoutSeconds: self::configInt('wpup.ssh.connect_timeout_seconds'),
@@ -707,6 +712,56 @@ class AppServiceProvider extends ServiceProvider
         }
 
         return $keys;
+    }
+
+    /**
+     * The steps that undo an update (UZEROWPUP-57, 59) over the drivers $driverFor gives.
+     *
+     * @param  Closure(Site, AuditActor): SiteDriver  $driverFor
+     */
+    private static function rollbackSteps(Application $app, Closure $driverFor): RollbackSteps
+    {
+        return new RollbackSteps(
+            $app->make(RestoreSelection::class), $app->make(SiteRestore::class), $app->make(RevertedChanges::class), $app->make(NewWritesDetector::class),
+            $driverFor, $app->make(RunAuthorization::class), $app->make(AuditLogger::class), $app->make(SecretRedactor::class),
+            self::configInt('wpup.rollback.files_timeout_seconds'), self::configInt('wpup.rollback.database_timeout_seconds'),
+        );
+    }
+
+    /**
+     * The pipeline of a manual rollback (UZEROWPUP-61) over the drivers $driverFor
+     * gives; public so the feature tests run the same steps over FakeDriver.
+     * Inventory that never blocks nor stops the run, the update and its copies
+     * checked before writing anything, maintenance mode, a verified point of the
+     * current state, the files, the database only without new writes (each one
+     * puts the mode back when it fails without touching the site), and the mode
+     * as it was.
+     *
+     * @param  Closure(Site, AuditActor): SiteDriver  $driverFor
+     */
+    public static function manualRollbackPipeline(Application $app, Closure $driverFor): Pipeline
+    {
+        $maintenanceTimeout = self::configInt('wpup.rollback.maintenance_timeout_seconds');
+        $maintenance = new RestoreMaintenanceStep($driverFor, $app->make(RunAuthorization::class), $app->make(SecretRedactor::class), $maintenanceTimeout);
+        $rollback = self::rollbackSteps($app, $driverFor);
+        $untouched = static fn (Step $step): Step => new UntouchedFailureMaintenance($step, $maintenance, $driverFor, $app->make(RunAuthorization::class), $app->make(SecretRedactor::class));
+
+        return new Pipeline([
+            new InventoryStep($app->make(SiteInventory::class), $driverFor, $app->make(RunAuthorization::class), self::configInt('wpup.inventory.step_timeout_seconds'), readOnlySite: true, advisory: true),
+            new RollbackCheckStep($app->make(ManualRollback::class), $app->make(SiteRestore::class), $app->make(FilesBackup::class), $driverFor,
+                $app->make(RunAuthorization::class), $app->make(SecretRedactor::class), self::configInt('wpup.rollback.check_timeout_seconds')),
+            $maintenance,
+            new PreRestoreBackupStep($app->make(RestorePointService::class), $maintenance, $driverFor, $app->make(RunAuthorization::class), $app->make(SecretRedactor::class),
+                self::configInt('wpup.backups.step_timeout_seconds'), RollbackCheckStep::NAME),
+            $untouched($rollback->files()),
+            $untouched($rollback->database()),
+            new RollbackMaintenanceRestoreStep($maintenance, $driverFor, $app->make(RunAuthorization::class), $app->make(SecretRedactor::class), $maintenanceTimeout),
+        ], onFailure: [
+            // Nothing to compensate once the site may be touched: the run fails and keeps what it did.
+            FilesRollbackStep::NAME => OnFailure::Stop,
+            DatabaseRollbackStep::NAME => OnFailure::Stop,
+            RollbackMaintenanceRestoreStep::NAME => OnFailure::Stop,
+        ]);
     }
 
     /**

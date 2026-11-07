@@ -11,7 +11,9 @@ use App\Domain\Runs\RunAuthorization;
 use App\Domain\Runs\Step;
 use App\Domain\Runs\StepContext;
 use App\Domain\Runs\StepOutcome;
+use App\Domain\Secrets\SecretRedactor;
 use App\Enums\BackupKind;
+use App\Enums\RunType;
 use App\Models\Site;
 use Closure;
 
@@ -21,6 +23,9 @@ use Closure;
  * Its code archive leaves out only what the restored archive left out
  * (RestoreCheckStep), so it covers everything the restore may overwrite or
  * delete (uploads included when the restored archive has them).
+ *
+ * A manual rollback (UZEROWPUP-61) makes it the same way, after its own
+ * check step ($checkStep, which says what the archive left out).
  *
  * If it cannot be made, nothing is restored, unless the operator asked for
  * --without-pre-backup (interactive only, for a site too broken to back up):
@@ -38,7 +43,9 @@ final readonly class PreRestoreBackupStep implements Step
         private RestoreMaintenanceStep $maintenance,
         private Closure $driverFor,
         private RunAuthorization $authorization,
+        private SecretRedactor $redactor,
         private int $timeoutSeconds,
+        private string $checkStep = RestoreCheckStep::NAME,
     ) {}
 
     public function name(): string
@@ -64,33 +71,30 @@ final readonly class PreRestoreBackupStep implements Step
             return StepOutcome::failed(is_string($actor) ? $actor : "L'execució no té cap lloc.");
         }
 
-        $excludes = $context->resultOf(RestoreCheckStep::NAME)['pre_restore_excludes'] ?? null;
+        $excludes = $context->resultOf($this->checkStep)['pre_restore_excludes'] ?? null;
         $excludes = is_array($excludes) ? array_values(array_filter($excludes, is_string(...))) : null;
-
-        try {
-            $request = RestoreRequest::fromRun($context->run);
-        } catch (RestoreRefused $e) {
-            return StepOutcome::failed($e->getMessage());
-        }
+        // Validated by the restore's check step; a manual rollback never goes without it (UZEROWPUP-61).
+        $withoutPreBackup = $context->run->type === RunType::Restore && ($context->run->flags[RestoreRequest::WITHOUT_PRE_BACKUP_FLAG] ?? false) === true;
 
         try {
             $driver = ($this->driverFor)($site, $actor);
         } catch (DriverException $e) {
-            return StepOutcome::failed("No s'ha pogut connectar amb el lloc: no es restaura res. {$e->getMessage()}");
+            return StepOutcome::failed("No s'ha pogut connectar amb el lloc: no es restaura res. {$this->redactor->redact($e->getMessage())}");
         }
 
         try {
             $point = $this->restorePoints->create($site, $driver, $context->run, $actor, $excludes);
         } catch (BackupFailed $e) {
-            if (! $request->withoutPreBackup) {
+            $reason = $this->redactor->redact($e->getMessage());
+            if (! $withoutPreBackup) {
                 $note = $this->maintenance->restoreState($driver, $context, on: false);
 
-                return StepOutcome::failed(trim("No s'ha pogut fer el punt de restauració de l'estat actual: no es restaura res. {$e->getMessage()} ".($note ?? '')));
+                return StepOutcome::failed(trim("No s'ha pogut fer el punt de restauració de l'estat actual: no es restaura res. {$reason} ".($note ?? '')));
             }
 
             return StepOutcome::succeeded(
-                "Sense punt de l'estat actual (--without-pre-backup): {$e->getMessage()}",
-                $e->getMessage(),
+                "Sense punt de l'estat actual (--without-pre-backup): {$reason}",
+                $reason,
                 ['directory' => null, 'skipped' => true],
             );
         }

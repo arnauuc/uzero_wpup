@@ -19,6 +19,22 @@ use Carbon\CarbonImmutable;
 final class RevertedChanges
 {
     /**
+     * Marks the run itself as being undone (runs.reverted_at), right before
+     * its code is put back: from then on the retention holds its restore
+     * point until an operator reviews it (ADR-0009), even when the update
+     * had succeeded and is rolled back by hand (UZEROWPUP-61). A review made
+     * before is cleared, since what it reviewed was not this rollback. Only
+     * the first time: a retried rollback changes nothing. Written with a
+     * query, never through $source: it may be the run the engine is
+     * executing (the update's own rollback).
+     */
+    public function started(Run $source): void
+    {
+        Run::query()->whereKey($source->id)->whereNull('reverted_at')
+            ->update(['reverted_at' => CarbonImmutable::now(), 'reviewed_at' => null, 'reviewed_by' => null]);
+    }
+
+    /**
      * @return int rows marked now
      */
     public function mark(Run $source): int
