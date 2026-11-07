@@ -63,17 +63,23 @@ final readonly class UpdateSteps
      */
     public function for(UpdatePlan $plan): array
     {
-        $steps = [];
-        foreach ($plan->changes as $change) {
-            if ($change->action === PlanAction::Update && $change->type !== ComponentType::Translation) {
-                $steps[] = $this->step($change);
-            }
-        }
+        $steps = array_map($this->step(...), self::applicable($plan));
         if ($steps !== []) {
             $steps[] = new PostUpdateStep($plan->changes, $this->driverFor, $this->authorization, $this->redactor, $this->postUpdate, $this->maintenance);
         }
 
         return $steps;
+    }
+
+    /**
+     * The planned changes an update run applies, in the plan's order: none means
+     * the run has nothing to do (the same criterion everywhere it is asked).
+     *
+     * @return list<PlannedChange>
+     */
+    public static function applicable(UpdatePlan $plan): array
+    {
+        return array_values(array_filter($plan->changes, static fn (PlannedChange $change): bool => $change->action === PlanAction::Update && $change->type !== ComponentType::Translation));
     }
 
     private function step(PlannedChange $change): ComponentUpdateStep
