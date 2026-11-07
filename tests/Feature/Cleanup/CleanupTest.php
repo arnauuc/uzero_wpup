@@ -184,11 +184,12 @@ it('drops package versions no inventory offered for a year', function (): void {
     expect($audit->context['versions'])->toBe(1);
 });
 
-it('has a screenshots extension point that does nothing until F4', function (): void {
+it('runs the screenshots class too, which does nothing when there are none (ScreenshotCleanupTest)', function (): void {
+    config(['wpup.verifier.work_dir' => artifactsRoot().'/no-verifier']);
     $result = resultOf(app(CleanupService::class)->run(AuditActor::system(), cleanupNow(), false), 'screenshots');
     $settings = app(CleanupSettings::class);
 
-    expect($result->count)->toBe(0)->and($result->note)->toContain('F4')
+    expect($result->count)->toBe(0)->and($result->failed())->toBeFalse()
         ->and([$settings->screenshotsDays, $settings->screenshotsFlaggedDays])->toBe([30, 180])
         ->and(AuditLogEntry::query()->where('action', 'cleanup.screenshots')->exists())->toBeFalse();
 });
