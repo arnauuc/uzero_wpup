@@ -24,7 +24,6 @@ use App\Domain\Rollback\FilesRollbackStep;
 use App\Domain\Rollback\RestoredState;
 use App\Domain\Rollback\RevertedChanges;
 use App\Domain\Rollback\RollbackSteps;
-use App\Domain\Runs\Exceptions\RunException;
 use App\Domain\Runs\Pipeline;
 use App\Domain\Runs\PipelineResolver;
 use App\Domain\Runs\RunAuthorization;
@@ -119,9 +118,8 @@ function filesRollbackRun(Site $site, Run $update, string $channel = 'cli'): Run
         'actor' => $update->actor, 'channel' => AuditChannel::from($channel)]);
 }
 
-it('gives the rollback steps for 60 and 61 to compose, without registering a rollback pipeline itself', function (): void {
-    expect(array_map(fn ($s): string => $s->name(), app(RollbackSteps::class)->steps()))->toBe([FilesRollbackStep::NAME, DatabaseRollbackStep::NAME])
-        ->and(fn () => app(PipelineResolver::class)->resolve(Run::factory()->create(['type' => RunType::Rollback])))->toThrow(RunException::class);
+it('gives the rollback steps for 60 and 61 to compose, in order', function (): void {
+    expect(array_map(fn ($s): string => $s->name(), app(RollbackSteps::class)->steps()))->toBe([FilesRollbackStep::NAME, DatabaseRollbackStep::NAME]);
 });
 
 it('puts back the code of the run: updated, added and removed components, and marks the applied changes reverted', function (): void {

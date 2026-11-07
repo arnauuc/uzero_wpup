@@ -146,9 +146,11 @@ final readonly class SiteRestore
     }
 
     /**
+     * The destination that holds $row, opened without reading the object.
+     *
      * @throws RestoreRefused
      */
-    private function target(Site $site, Backup $row, AuditActor $actor): BackupTarget
+    public function target(Site $site, Backup $row, AuditActor $actor): BackupTarget
     {
         try {
             $record = $row->backupTarget ?? throw new BackupTargetException("La destinació {$row->backup_target_id} no existeix.");

@@ -157,23 +157,11 @@ final readonly class RestoreCheckStep implements ReadOnlyStep
      */
     private function firstVerified(Site $site, AuditActor $actor, array $candidates, array &$warnings): array
     {
-        $failures = [];
-        foreach ($candidates as $row) {
-            try {
-                $target = $this->restore->verify($site, $row, $actor);
-            } catch (RestoreRefused $e) {
-                $failures[] = $e->getMessage();
-
-                continue;
-            }
-            if ($failures !== []) {
-                $warnings[] = implode(' ', $failures)." Es fa servir la còpia #{$row->id} de «".($row->backupTarget->name ?? '?').'».';
-            }
-
-            return [$row, $target];
+        try {
+            return IntactCopy::first($candidates, fn (Backup $row): BackupTarget => $this->restore->verify($site, $row, $actor), $warnings);
+        } catch (RestoreRefused $e) {
+            throw new RestoreRefused($e->getMessage().' No es restaura res.');
         }
-
-        throw new RestoreRefused(implode(' ', $failures).' No es restaura res.');
     }
 
     /**

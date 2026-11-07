@@ -36,6 +36,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property CarbonImmutable|null $deadline_at
  * @property CarbonImmutable|null $reviewed_at
  * @property int|null $reviewed_by
+ * @property CarbonImmutable|null $reverted_at
  */
 class Run extends Model
 {
@@ -63,6 +64,7 @@ class Run extends Model
             'finished_at' => 'immutable_datetime',
             'deadline_at' => 'immutable_datetime',
             'reviewed_at' => 'immutable_datetime',
+            'reverted_at' => 'immutable_datetime',
         ];
     }
 
