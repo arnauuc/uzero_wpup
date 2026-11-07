@@ -20,6 +20,10 @@ const hits: string[] = [];
 beforeAll(async () => {
   server = createServer((request, response) => {
     hits.push(request.url ?? '');
+    if (request.url === '/slow') {
+      setTimeout(() => response.writeHead(200).end('late'), 5000);
+      return;
+    }
     const [status, body] = pages[request.url ?? ''] ?? [404, 'not found'];
     response.writeHead(status, { 'content-type': 'text/html' }).end(body);
   });
@@ -45,18 +49,52 @@ describe('verify', () => {
       );
 
       expect(output.verifier_errors).toEqual([]);
+      expect(output.partial).toBe(false);
       const [home, broken, checkout] = output.results;
       expect(home).toMatchObject({ http_status: 200, screenshot: join('desktop', '0.png'), error: null });
       expect(home?.console_errors.some((message) => message.includes('boom'))).toBe(true);
       expect(home?.resource_errors.some((resource) => resource.status === 404 && resource.url.endsWith('/missing.png'))).toBe(true);
       expect(broken?.http_status).toBe(500);
+      // The page's own status is http_status, not a resource error.
+      expect(broken?.resource_errors).toEqual([]);
       expect(checkout?.http_status).toBe(200);
+      // The blocked order is visible, but it is not an error of the site.
+      expect(checkout?.blocked_requests.some((url) => url.includes('wc-ajax=checkout'))).toBe(true);
+      expect(checkout?.resource_errors).toEqual([]);
       expect(hits.some((url) => url.includes('wc-ajax=checkout'))).toBe(false);
       expect((await stat(join(dir, 'desktop', '0.png'))).size).toBeGreaterThan(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+describe('verify, out of time', () => {
+  it('bounds the navigation by the time left, then stops and reports a partial result', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wpup-verify-'));
+    try {
+      const started = Date.now();
+      const output = await verify(
+        validInput({
+          site: { name: 'local', base_url: base },
+          urls: [
+            { path: '/slow', profile: 'page' },
+            { path: '/', profile: 'home' },
+          ],
+          output_dir: dir,
+          timeouts: { navigation_ms: 30000, screenshot_ms: 30000, total_ms: 2500 },
+        }),
+      );
+
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(output.partial).toBe(true);
+      expect(output.results).toHaveLength(1);
+      expect(output.results[0]?.error).toMatch(/Timeout/);
+      expect(output.verifier_errors).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe('pageUrl', () => {

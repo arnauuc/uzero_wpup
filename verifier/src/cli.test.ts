@@ -22,11 +22,11 @@ afterEach(async () => {
 describe('main', () => {
   it('writes the output document to result.json, readable only by its owner', async () => {
     const code = await main(JSON.stringify(validInput({ output_dir: dir })), write, (input) =>
-      Promise.resolve({ version: 1, run_id: input.run_id, results: [], verifier_errors: [] }),
+      Promise.resolve({ version: 1, run_id: input.run_id, results: [], verifier_errors: [], partial: false }),
     );
     expect(code).toBe(EXIT.ok);
     expect(lines).toEqual([]);
-    expect(JSON.parse(await readFile(join(dir, 'result.json'), 'utf8'))).toEqual({ version: 1, run_id: 7, results: [], verifier_errors: [] });
+    expect(JSON.parse(await readFile(join(dir, 'result.json'), 'utf8'))).toEqual({ version: 1, run_id: 7, results: [], verifier_errors: [], partial: false });
     expect((await stat(join(dir, 'result.json'))).mode & 0o777).toBe(0o600);
   });
 

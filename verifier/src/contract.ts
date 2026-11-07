@@ -14,6 +14,7 @@ export const LIMITS = {
   masks: 50,
   consoleErrorsPerPage: 50,
   resourceErrorsPerPage: 100,
+  blockedRequestsPerPage: 20,
   messageChars: 500,
   issues: 20,
 } as const;
@@ -51,6 +52,7 @@ export const InputSchema = z.strictObject({
   output_dir: z.string().regex(/^\//, 'must be an absolute path').max(1000),
   timeouts: z.strictObject({
     navigation_ms: z.int().min(1000).max(300_000),
+    screenshot_ms: z.int().min(1000).max(300_000),
     total_ms: z.int().min(1000).max(3_600_000),
   }),
 });
@@ -71,7 +73,10 @@ export interface PageResult {
   /** Relative to output_dir; null when the page could not be captured. */
   screenshot: string | null;
   console_errors: string[];
+  /** Resources other than the page itself that answered 4xx/5xx or did not load. */
   resource_errors: ResourceError[];
+  /** Requests the verifier blocked on purpose (the checkout order): not errors. */
+  blocked_requests: string[];
   timings: { navigation_ms: number };
   error: string | null;
 }
@@ -82,6 +87,8 @@ export interface VerifierOutput {
   results: PageResult[];
   /** Problems of the verifier itself (not of the site): pages skipped, browser crashes… */
   verifier_errors: string[];
+  /** True when the time ran out (or the run was stopped) before every url × viewport was visited. */
+  partial: boolean;
 }
 
 /** Written to stdout (one line) when the verifier cannot produce an output document. */

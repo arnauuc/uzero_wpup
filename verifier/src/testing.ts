@@ -11,7 +11,7 @@ export function validInput(overrides: Partial<VerifierInput> = {}): VerifierInpu
     masks: ['.slider'],
     thresholds: { max_diff_ratio: 0.01 },
     output_dir: '/tmp/wpup-verifier',
-    timeouts: { navigation_ms: 30000, total_ms: 600000 },
+    timeouts: { navigation_ms: 30000, screenshot_ms: 30000, total_ms: 600000 },
     ...overrides,
   };
 }
