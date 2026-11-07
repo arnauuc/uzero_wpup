@@ -26,7 +26,8 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
         {--php-binary= : Camí absolut del PHP a fer servir per a WP-CLI}
         {--tag=* : Etiqueta (repetible; en editar, substitueix la llista)}
         {--strategy= : in_place o staging_first}
-        {--window-days= : Dies de la finestra, 1 (dilluns) a 7: «1-5,7»}
+        {--window= : Finestra de manteniment: «dl-dv 10:00-13:00», «cada dia 01:00-06:00» (pot travessar la mitjanit)}
+        {--window-days= : Dies de la finestra: «1-5,7» o «dl-dv,dg»}
         {--window-start= : Inici de la finestra (HH:MM)}
         {--window-end= : Final de la finestra (HH:MM)}
         {--auto-update : Actualitza automàticament dins de la finestra}
@@ -81,6 +82,16 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
             ?? throw new DomainException('L\'estratègia ha de ser in_place o staging_first.'));
 
         $days = $this->stringOption('window-days');
+        $start = $this->stringOption('window-start');
+        $end = $this->stringOption('window-end');
+        $windowDays = $days === null ? null : WindowDays::parse($days);
+        $window = $this->stringOption('window');
+        if ($window !== null) {
+            if ($days !== null || $start !== null || $end !== null) {
+                throw new DomainException('--window no es pot combinar amb --window-days, --window-start ni --window-end.');
+            }
+            ['days' => $windowDays, 'start' => $start, 'end' => $end] = WindowDays::parseWindow($window);
+        }
 
         return new SiteInput(
             url: $url ?? $this->stringOption('url'),
@@ -88,9 +99,9 @@ abstract class SiteCommand extends WpupCommand implements ChangesState
             phpBinary: $this->stringOption('php-binary'),
             tags: $this->listOption('tag'),
             strategy: $strategy,
-            windowDays: $days === null ? null : WindowDays::parse($days),
-            windowStart: $this->stringOption('window-start'),
-            windowEnd: $this->stringOption('window-end'),
+            windowDays: $windowDays,
+            windowStart: $start,
+            windowEnd: $end,
             autoUpdate: $this->toggle('auto-update', 'no-auto-update'),
             active: $this->hasOption('activate') ? $this->toggle('activate', 'deactivate') : null,
             verifyUrls: $this->listOption('verify-url'),

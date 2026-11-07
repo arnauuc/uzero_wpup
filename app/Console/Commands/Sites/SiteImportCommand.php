@@ -50,7 +50,7 @@ final class SiteImportCommand extends WpupCommand implements ChangesState
             $this->emitJson([
                 'dry_run' => $this->isDryRun(),
                 'sites' => array_map(static fn (SiteImportOutcome $o): array => [
-                    'name' => $o->name, 'action' => $o->action->value, 'fields' => $o->fields,
+                    'name' => $o->name, 'action' => $o->action->value, 'fields' => $o->fields, 'auto_update_blocked' => $o->autoUpdateBlocked,
                 ], $result->outcomes),
             ]);
 
@@ -61,6 +61,12 @@ final class SiteImportCommand extends WpupCommand implements ChangesState
         $this->table(['Lloc', 'Acció', 'Canvis'], array_map(static fn (SiteImportOutcome $o): array => [
             $o->name, $labels[$o->action->value], $o->fields === [] ? '—' : implode(', ', $o->fields),
         ], $result->outcomes));
+
+        foreach ($result->outcomes as $outcome) {
+            if ($outcome->autoUpdateBlocked !== null) {
+                $this->warn("{$outcome->name}: continua bloquejat per a l'actualització automàtica ({$outcome->autoUpdateBlocked}). La importació no l'aixeca: cal revisar-lo i fer `wpup site:edit {$outcome->name} --auto-update`.");
+            }
+        }
 
         $summary = $result->count(ImportAction::Create).' per crear, '.$result->count(ImportAction::Update).' per actualitzar, '
             .$result->count(ImportAction::Unchanged).' sense canvis.';

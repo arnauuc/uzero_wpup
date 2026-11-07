@@ -15,6 +15,12 @@ Artisan::command('inspire', function () {
 // Run engine watchdog (UZEROWPUP-21).
 Schedule::command('engine:recover')->everyMinute()->withoutOverlapping();
 
+// Scheduled updates (ADR-0006, UZEROWPUP-129): per-site windows, one update at a time.
+Schedule::command('engine:schedule-updates')->everyMinute()->withoutOverlapping();
+Schedule::command('engine:daily-summary')
+    ->dailyAt(config()->string('wpup.scheduler.daily_summary.time'))
+    ->withoutOverlapping();
+
 // The scheduler holds the KEK private key: it confirms the public key the CLI
 // and the web seal with (ADR-0011, KekConfirmation).
 Schedule::call(static fn (): bool => app(KekConfirmation::class)->confirm())

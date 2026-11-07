@@ -27,6 +27,9 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property UpdateStrategy $strategy
  * @property array{days: list<int>, start: string, end: string}|null $maintenance_window
  * @property bool $auto_update
+ * @property CarbonImmutable|null $auto_update_blocked_at
+ * @property string|null $auto_update_blocked_reason
+ * @property CarbonImmutable|null $auto_update_unblocked_at
  * @property bool $use_maintenance_mode
  * @property bool $active
  * @property string|null $blocked_reason
@@ -51,6 +54,8 @@ class Site extends Model
             'strategy' => UpdateStrategy::class,
             'maintenance_window' => 'array',
             'auto_update' => 'boolean',
+            'auto_update_blocked_at' => 'immutable_datetime',
+            'auto_update_unblocked_at' => 'immutable_datetime',
             'use_maintenance_mode' => 'boolean',
             'active' => 'boolean',
             'blocked_at' => 'immutable_datetime',

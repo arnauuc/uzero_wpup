@@ -93,7 +93,8 @@ final readonly class SiteImporter
                     $problems = $this->checkPlacement($entry, $site);
                     $changes = $this->sites->edit($this->silent(), $site, $entry->input, $entry->clear, true);
                     $fields = array_keys($changes);
-                    $outcomes[] = new SiteImportOutcome($entry->name, $fields === [] ? ImportAction::Unchanged : ImportAction::Update, $fields);
+                    $outcomes[] = new SiteImportOutcome($entry->name, $fields === [] ? ImportAction::Unchanged : ImportAction::Update, $fields,
+                        $site->auto_update_blocked_at === null ? null : (string) $site->auto_update_blocked_reason);
                 } else {
                     $placement = $this->placement($entry, $servers, $accounts, $problems);
                     if ($placement !== null) {
