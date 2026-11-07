@@ -269,6 +269,13 @@ return [
         // Until the site profiles list their URLs (spec, Verificació): path => profile.
         'urls' => ['/' => 'home'],
         'masks' => [],
+        // Extra CSS selectors removed from the page before the capture (own banners, popups),
+        // on top of the consent banners the verifier already knows (verifier/src/capture.ts).
+        'hide_selectors' => [],
+        // Preparation of each page (fonts, lazy images, quiet network) and the height where
+        // taller pages (infinite scroll) are cut so baseline and after stay comparable.
+        'prepare_ms' => 30_000,
+        'max_page_height' => 20_000,
     ],
 
     /*

@@ -16,6 +16,7 @@ final readonly class VerificationRequest
      * @param  list<PageTarget>  $urls
      * @param  list<Viewport>  $viewports
      * @param  list<string>  $masks
+     * @param  list<string>  $hideSelectors
      */
     public function __construct(
         public int $runId,
@@ -28,12 +29,16 @@ final readonly class VerificationRequest
         public int $navigationTimeoutMs,
         public int $screenshotTimeoutMs,
         public int $totalMs,
+        public array $hideSelectors = [],
+        public ?int $prepareMs = null,
+        public ?int $maxPageHeight = null,
     ) {}
 
     public static function withDefaults(int $runId, string $siteName, string $baseUrl, VerifierSettings $settings): self
     {
         return new self($runId, $siteName, $baseUrl, $settings->urls, $settings->viewports, $settings->masks,
-            $settings->maxDiffRatio, $settings->navigationTimeoutMs, $settings->screenshotTimeoutMs, $settings->totalMs);
+            $settings->maxDiffRatio, $settings->navigationTimeoutMs, $settings->screenshotTimeoutMs, $settings->totalMs,
+            $settings->hideSelectors, $settings->prepareMs, $settings->maxPageHeight);
     }
 
     /**
@@ -43,7 +48,7 @@ final readonly class VerificationRequest
      */
     public function toProtocol(string $outputDir): array
     {
-        return [
+        $document = [
             'version' => self::PROTOCOL_VERSION,
             'run_id' => $this->runId,
             'site' => ['name' => $this->siteName, 'base_url' => $this->baseUrl],
@@ -54,5 +59,15 @@ final readonly class VerificationRequest
             'output_dir' => $outputDir,
             'timeouts' => ['navigation_ms' => $this->navigationTimeoutMs, 'screenshot_ms' => $this->screenshotTimeoutMs, 'total_ms' => $this->totalMs],
         ];
+        // Optional fields of protocol v1: sent only when set.
+        if ($this->hideSelectors !== []) {
+            $document['hide_selectors'] = $this->hideSelectors;
+        }
+        $capture = array_filter(['prepare_ms' => $this->prepareMs, 'max_height' => $this->maxPageHeight], static fn (?int $v): bool => $v !== null);
+        if ($capture !== []) {
+            $document['capture'] = $capture;
+        }
+
+        return $document;
     }
 }

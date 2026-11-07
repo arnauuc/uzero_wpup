@@ -15,6 +15,7 @@ final readonly class VerifierSettings
      * @param  list<Viewport>  $viewports
      * @param  list<PageTarget>  $urls
      * @param  list<string>  $masks  CSS selectors hidden in the screenshots
+     * @param  list<string>  $hideSelectors  CSS selectors removed from the page before the capture
      */
     public function __construct(
         public string $nodeBinary,
@@ -36,9 +37,12 @@ final readonly class VerifierSettings
         public array $viewports,
         public array $urls,
         public array $masks,
+        public array $hideSelectors,
+        public int $prepareMs,
+        public int $maxPageHeight,
     ) {
         if ($nodeBinary === '' || $script === '' || $setsidBinary === '' || $workDir === '' || $path === '' || $viewports === [] || $urls === []
-            || min($totalMs, $navigationTimeoutMs, $screenshotTimeoutMs, $timeoutSeconds, $stopGraceSeconds, $stepTimeoutSeconds, $maxResultBytes, $maxStdoutBytes, $maxStderrBytes) <= 0) {
+            || min($prepareMs, $maxPageHeight, $totalMs, $navigationTimeoutMs, $screenshotTimeoutMs, $timeoutSeconds, $stopGraceSeconds, $stepTimeoutSeconds, $maxResultBytes, $maxStdoutBytes, $maxStderrBytes) <= 0) {
             throw new InvalidArgumentException('wpup.verifier: binaries, paths, viewports, urls, limits and timeouts must be set and positive.');
         }
         // The last page may start just before total_ms and take its navigation and its
