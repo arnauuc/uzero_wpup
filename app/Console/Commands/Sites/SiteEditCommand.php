@@ -39,7 +39,8 @@ final class SiteEditCommand extends SiteCommand
                 throw new DomainException('No has indicat cap canvi.');
             }
 
-            $changes = $this->administration()->edit($this->actor(), $site, $input, $clear, $this->isDryRun());
+            // An explicit --auto-update is the operator's review that lifts the scheduler's block.
+            $changes = $this->administration()->edit($this->actor(), $site, $input, $clear, $this->isDryRun(), $input->autoUpdate === true);
         } catch (DomainException $e) {
             return $this->reportValidation($e);
         }

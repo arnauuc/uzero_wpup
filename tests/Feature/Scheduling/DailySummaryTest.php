@@ -35,7 +35,7 @@ function summaryWindow(string $site, ScheduledWindowStatus $status, ?string $rea
     $model = Site::query()->where('name', $site)->first() ?? Site::factory()->create(['name' => $site]);
     $at = CarbonImmutable::now()->subHours($hoursAgo);
     $window = ScheduledWindow::query()->create([
-        'site_id' => $model->id, 'opens_at' => $at->subHour(), 'closes_at' => $at->addHours(4),
+        'site_id' => $model->id, 'window_date' => $at->subHour()->setTimezone('Europe/Madrid')->format('Y-m-d'), 'opens_at' => $at->subHour(), 'closes_at' => $at->addHours(4),
         'status' => $status, 'reason' => $reason, 'details' => $details, 'run_id' => $run?->id,
     ]);
     $window->forceFill(['updated_at' => $at])->saveQuietly();

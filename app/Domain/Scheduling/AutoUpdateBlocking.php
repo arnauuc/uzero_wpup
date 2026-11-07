@@ -20,8 +20,9 @@ use Illuminate\Support\Facades\Log;
  * consecutive windows is blocked for automatic updates, with a warning, until
  * an operator reviews it (`site:edit --auto-update` lifts it). Only the
  * windows in which a run finished count: a skipped or deferred window does
- * not break the streak, a successful one resets it. Manual updates are not
- * blocked (blocked_reason is for that).
+ * not break the streak, a successful one resets it, and so does an
+ * operator's review (`site:edit --auto-update`: only the windows settled
+ * after it count). Manual updates are not blocked (blocked_reason is for that).
  *
  * The warning goes on the run that made it (result_summary.warnings), in
  * audit_log (`site.auto_update_blocked`) and in the log; the notification
@@ -38,6 +39,7 @@ final readonly class AutoUpdateBlocking
     {
         $recent = ScheduledWindow::query()->where('site_id', $site->id)
             ->whereIn('status', [ScheduledWindowStatus::Succeeded->value, ScheduledWindowStatus::Failed->value])
+            ->when($site->auto_update_unblocked_at !== null, static fn ($q) => $q->where('updated_at', '>', $site->auto_update_unblocked_at?->format('Y-m-d H:i:s.uP')))
             ->orderByDesc('opens_at')->limit($this->blockAfter)->get();
         if ($recent->count() < $this->blockAfter || $recent->contains(static fn (ScheduledWindow $w): bool => $w->status !== ScheduledWindowStatus::Failed)) {
             return null;

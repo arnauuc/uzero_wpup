@@ -47,8 +47,8 @@ final class EngineScheduleUpdates extends Command implements ChangesState
         }
 
         foreach ($decisions as $decision) {
-            // Waiting is the normal state of most ticks: not logged.
-            if (! $dryRun && $decision->action !== SchedulerAction::Waiting) {
+            // Waiting is the normal state of most ticks; Halted is warned by the scheduler, throttled.
+            if (! $dryRun && ! in_array($decision->action, [SchedulerAction::Waiting, SchedulerAction::Halted], true)) {
                 Log::info('Scheduler: '.$decision->describe(), $decision->toArray());
             }
         }

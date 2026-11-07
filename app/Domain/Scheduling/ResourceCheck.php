@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Scheduling;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -21,6 +22,7 @@ final readonly class ResourceCheck
         private string $diskPath,
         private int $minFreeDiskMb,
         private int $minFreeMemoryMb,
+        private int $warnEveryMinutes,
     ) {}
 
     /**
@@ -33,7 +35,7 @@ final readonly class ResourceCheck
         $shortages = [];
         $disk = $this->resources->freeDiskBytes($this->diskPath);
         $memory = $this->resources->availableMemoryBytes();
-        if ($disk === null || $memory === null) {
+        if (($disk === null || $memory === null) && Cache::add('wpup:scheduler:resources-unreadable', true, $this->warnEveryMinutes * 60)) {
             Log::warning('The scheduler could not read the free resources of the tool server.', ['disk' => $disk, 'memory' => $memory]);
         }
         if ($disk !== null && $disk < $this->minFreeDiskMb * self::MB) {

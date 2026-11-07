@@ -242,6 +242,7 @@ class AppServiceProvider extends ServiceProvider
             self::configString('wpup.scheduler.resources.disk_path'),
             self::configInt('wpup.scheduler.resources.min_free_disk_mb'),
             self::configInt('wpup.scheduler.resources.min_free_memory_mb'),
+            self::configInt('wpup.scheduler.resources.warn_every_minutes'),
         ));
         $this->app->bind(AutoUpdateBlocking::class, static fn (Application $app): AutoUpdateBlocking => new AutoUpdateBlocking(
             $app->make(AuditLogger::class),

@@ -17,7 +17,9 @@ use App\Models\ScheduledWindow;
 use App\Models\Site;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Redis;
 
 /*
  * UZEROWPUP-129, ADR-0006 §2 and §3: blocking after failed windows, the tool
@@ -52,12 +54,13 @@ final class GuardStagings implements OrphanStagingCleaner
     {
         $this->calls++;
 
-        return ['staging-orfe'];
+        return [];
     }
 }
 
 beforeEach(function (): void {
     Queue::fake();
+    Redis::connection('locks')->command('flushdb');
     config([
         'wpup.updates.window.enforced' => true,
         'wpup.updates.window.minimum_minutes' => 15,
@@ -148,7 +151,48 @@ it('blocks a site for automatic updates after 2 consecutive failed windows, with
         ->and($site->auto_update_blocked_reason)->toBeNull();
     $changes = (array) (AuditLogEntry::query()->where('action', 'site.edit')->sole()->context['changes'] ?? []);
     expect($changes)->toHaveKey('auto_update_blocked_reason')
-        ->and(guardSites(guardTick('2026-11-05 01:00'), SchedulerAction::Launched))->toBe(['fragil']);
+        ->and(AuditLogEntry::query()->where('action', 'site.auto_update_unblocked')->sole()->context['previous_reason'] ?? null)->toContain('2 finestres seguides')
+        ->and($site->auto_update_unblocked_at)->not->toBeNull();
+    // The warning stays on the run that blocked it.
+    command('runs')->expectsOutputToContain("#{$run->id}: L'actualització programada ha fallat 2 finestres seguides")->assertSuccessful();
+
+    // The failures before the review no longer count: one more failure does not block it again…
+    guardNight('2026-11-05', RunStatus::Failed);
+    guardTick('2026-11-05 01:10');
+    expect($site->refresh()->auto_update_blocked_at)->toBeNull();
+
+    // …two do.
+    guardNight('2026-11-06', RunStatus::Failed);
+    guardTick('2026-11-06 01:10');
+    expect($site->refresh()->auto_update_blocked_at)->not->toBeNull();
+});
+
+it('never lifts the block from site:import, and says so', function (): void {
+    User::factory()->create(['unix_username' => 'admin1', 'role' => UserRole::Admin]);
+    actingAsOperator('admin1');
+    $file = base_path('docs/examples/llocs.yaml');
+    command('site:import', ['file' => $file, '--no-interaction' => true])->assertSuccessful();
+    $site = Site::query()->where('name', 'botiga-exemple')->sole();
+    expect($site->auto_update)->toBeTrue();
+    $site->forceFill(['auto_update_blocked_at' => CarbonImmutable::now(), 'auto_update_blocked_reason' => 'dues fallades'])->save();
+
+    command('site:import', ['file' => $file, '--no-interaction' => true])
+        ->expectsOutputToContain('botiga-exemple: continua bloquejat')->assertSuccessful();
+
+    expect($site->refresh()->auto_update_blocked_reason)->toBe('dues fallades')
+        ->and(AuditLogEntry::query()->where('action', 'site.auto_update_unblocked')->exists())->toBeFalse();
+});
+
+it('does not log a stop every minute', function (): void {
+    Site::factory()->create(['name' => 'alfa', 'auto_update' => true]);
+    guardResources()->disk = 1024 ** 3;
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-02 01:00', 'Europe/Madrid'));
+    command('engine:schedule-updates')->expectsOutputToContain('planificador aturat')->assertSuccessful();
+
+    Log::shouldReceive('info')->never();
+    Log::shouldReceive('warning')->never();
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-02 01:01', 'Europe/Madrid'));
+    command('engine:schedule-updates')->expectsOutputToContain('planificador aturat')->assertSuccessful();
 });
 
 it('counts only consecutive failed windows: a success resets the count and a skipped window does not break it', function (): void {
@@ -162,7 +206,7 @@ it('counts only consecutive failed windows: a success resets the count and a ski
 
     // A window where it was skipped (nothing to do) sits between two failures.
     ScheduledWindow::query()->create([
-        'site_id' => $site->id, 'opens_at' => CarbonImmutable::parse('2026-11-05 01:00', 'Europe/Madrid'),
+        'site_id' => $site->id, 'window_date' => '2026-11-05', 'opens_at' => CarbonImmutable::parse('2026-11-05 01:00', 'Europe/Madrid'),
         'closes_at' => CarbonImmutable::parse('2026-11-05 06:00', 'Europe/Madrid'), 'status' => ScheduledWindowStatus::Skipped,
     ]);
     guardNight('2026-11-06', RunStatus::RolledBack);

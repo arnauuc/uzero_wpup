@@ -114,16 +114,23 @@ final readonly class SiteAdministration
 
     /**
      * @param  list<string>  $clear  Canonical field names from self::CLEARABLE to reset.
+     * @param  bool  $liftAutoUpdateBlock  the operator's review of a site the scheduler blocked
+     *                                     (ADR-0006 §3): only an explicit `site:edit --auto-update`
+     *                                     passes it, never the bulk import
      * @return array<string, array{from: mixed, to: mixed}> Fields that actually change.
      *
      * @throws SiteValidationException
      */
-    public function edit(AuditActor $actor, Site $site, SiteInput $input, array $clear = [], bool $dryRun = false): array
+    public function edit(AuditActor $actor, Site $site, SiteInput $input, array $clear = [], bool $dryRun = false, bool $liftAutoUpdateBlock = false): array
     {
         $errors = [];
         $plan = $this->plan($input, $clear, $site, $input->url ?? $site->url, $errors);
         if ($errors !== []) {
             throw new SiteValidationException($errors);
+        }
+        $lifted = $liftAutoUpdateBlock && $input->autoUpdate === true && $site->auto_update_blocked_at !== null ? $site->auto_update_blocked_reason : false;
+        if ($lifted !== false) {
+            $plan['site'] += ['auto_update_blocked_at' => null, 'auto_update_blocked_reason' => null, 'auto_update_unblocked_at' => now()->toImmutable()];
         }
 
         $profile = $site->profile ?? new SiteProfile($this->profileDefaults());
@@ -150,6 +157,9 @@ final readonly class SiteAdministration
             'name' => $site->name,
             'changes' => $changes,
         ]);
+        if ($lifted !== false) {
+            $this->audit->record($actor, 'site.auto_update_unblocked', AuditResult::Success, 'site', $site->id, ['name' => $site->name, 'previous_reason' => $lifted]);
+        }
 
         return $changes;
     }
@@ -202,11 +212,6 @@ final readonly class SiteAdministration
         }
         if ($input->autoUpdate !== null) {
             $site['auto_update'] = $input->autoUpdate;
-            // Turning them on is the operator's review that lifts the scheduler's block (ADR-0006 §3).
-            if ($input->autoUpdate) {
-                $site['auto_update_blocked_at'] = null;
-                $site['auto_update_blocked_reason'] = null;
-            }
         }
         if ($input->active !== null) {
             $site['active'] = $input->active;
