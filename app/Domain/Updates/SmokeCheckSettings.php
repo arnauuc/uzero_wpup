@@ -17,7 +17,7 @@ final readonly class SmokeCheckSettings
      * and the new region of the log, the lines before the baseline…), each
      * one with its own SSH command timeout.
      */
-    public const int REMOTE_COMMANDS = 16;
+    public const int REMOTE_COMMANDS = 8;
 
     /**
      * @param  list<string>  $fatalPatterns  PCRE patterns; a new log line matching any is a fatal

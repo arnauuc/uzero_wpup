@@ -212,13 +212,13 @@ it('keeps the query string of the site url when adding the cache buster', functi
 it('requests the home before it reads the log, so what the request breaks counts', function (): void {
     $driver = new class extends FakeDriver
     {
-        public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan
+        public function phpLogScanSince(LogCursor $cursor, int $maxFatals, int $maxWarnings): LogScan
         {
             // The request already happened, and it wrote this fatal.
             Http::assertSentCount(3);
             $this->phpLog[] = SMOKE_FATAL;
 
-            return parent::phpLogFatalsSince($cursor, $maxLines);
+            return parent::phpLogScanSince($cursor, $maxFatals, $maxWarnings);
         }
     };
     Http::fake(['shop.test/*' => Http::response('ok', 200)]);
@@ -251,7 +251,7 @@ it('only warns when the log cannot be read after the update, whatever the error,
     {
         public ?Throwable $error = null;
 
-        public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan
+        public function phpLogScanSince(LogCursor $cursor, int $maxFatals, int $maxWarnings): LogScan
         {
             throw $this->error ?? new RuntimeException('?');
         }
@@ -480,14 +480,19 @@ it('has no debug entry in the baseline when the site has no debug.log', function
     expect($context->resultOf(PhpLogBaselineStep::NAME)['debug'])->toBeNull();
 });
 
-it('notes a warnings read that fails without failing the step or hiding the fatals', function (): void {
+it('notes a debug.log read that fails without failing the step or hiding the web log fatals', function (): void {
     $driver = new class extends FakeDriver
     {
-        public function phpLogWarningsSince(LogCursor $cursor, int $maxLines): LogScan
+        public function phpLogScanSince(LogCursor $cursor, int $maxFatals, int $maxWarnings): LogScan
         {
-            throw new DriverException('grep failed');
+            if (str_ends_with((string) $cursor->path, '/debug.log')) {
+                throw new DriverException('grep failed');
+            }
+
+            return parent::phpLogScanSince($cursor, $maxFatals, $maxWarnings);
         }
     };
+    $driver->debugLog = [];
     Http::fake(['shop.test/*' => Http::response('ok', 200)]);
 
     $outcome = smokeSteps($driver)->check()->run(smokeContext($driver, [SMOKE_FATAL]));
@@ -495,4 +500,92 @@ it('notes a warnings read that fails without failing the step or hiding the fata
     expect($outcome->status)->toBe(RunStepStatus::Failed)
         ->and($outcome->data['fatals'])->toBe(1)
         ->and($outcome->summary)->toContain('no s\'ha pogut llegir el log');
+});
+
+it('only warns about new warning messages, and counts the ones that were already in the log', function (): void {
+    $driver = new FakeDriver;
+    $driver->phpLog = ['[05-Nov-2026 09:00:00 UTC] PHP Warning:  Undefined variable $x in /p/x.php on line 7'];
+    Http::fake(['shop.test/*' => Http::response('ok', 200)]);
+
+    $context = smokeContext($driver, [SMOKE_WARNING, SMOKE_WARNING, '[06-Nov-2026 10:00:10 UTC] PHP Warning:  brand new in /p/z.php on line 1']);
+    $outcome = smokeSteps($driver)->check()->run($context);
+
+    expect($context->resultOf(PhpLogBaselineStep::NAME)['warning_signatures'])->toHaveCount(1)
+        ->and($outcome->data['php_warnings'])->toBe(1)
+        ->and($outcome->data['repeated_warnings'])->toBe(2)
+        ->and($outcome->summary)->toContain('1 warning(s) nou(s)');
+
+    // Only the repeats: nothing to warn about.
+    $driver = new FakeDriver;
+    $driver->phpLog = ['[05-Nov-2026 09:00:00 UTC] PHP Warning:  Undefined variable $x in /p/x.php on line 7'];
+    $repeat = smokeSteps($driver)->check()->run(smokeContext($driver, [SMOKE_WARNING]));
+    expect($repeat->summary)->not->toContain('warning(s) nou(s)')->and($repeat->data['repeated_warnings'])->toBe(1);
+});
+
+it('finds the fatal after a warning on one proxy_fcgi line', function (): void {
+    $driver = new FakeDriver;
+    Http::fake(['shop.test/*' => Http::response('ok', 200)]);
+    $line = "[Fri Nov 06 10:00:00 2026] [proxy_fcgi:error] [pid 1] AH01071: Got error 'PHP message: PHP Warning:  careful in /a.php on line 1PHP message: PHP Fatal error:  Uncaught Error: boom in /b.php:2'";
+
+    $outcome = smokeSteps($driver)->check()->run(smokeContext($driver, [$line]));
+
+    expect($outcome->status)->toBe(RunStepStatus::Failed)
+        ->and($outcome->data['fatals'])->toBe(1)
+        ->and($outcome->data['php_warnings'])->toBe(1);
+});
+
+it('does not watch the debug.log twice when it is the web log itself, even under another path', function (): void {
+    $run = Run::factory()->create(['site_id' => Site::factory(['url' => 'https://shop.test'])]);
+    $driver = new class extends FakeDriver
+    {
+        public function phpLogCursor(?string $webLogPath = null): LogCursor
+        {
+            return new LogCursor('/var/log/web.log', 0, 'same');
+        }
+    };
+    $driver->debugLog = [];
+    $driver->debugLogFileId = 'same';
+
+    $baseline = smokeSteps($driver)->baseline()->run(new StepContext($run, false));
+
+    expect($baseline->data['debug'])->toBeNull();
+});
+
+it('uses the debug log path the site resolves, and says why when it cannot be watched', function (): void {
+    $driver = new FakeDriver;
+    $driver->debugLog = [];
+    $driver->debugLogPath = '/srv/custom/debug.log';
+
+    $context = smokeContext($driver);
+    expect(data_get($context->resultOf(PhpLogBaselineStep::NAME), 'debug.path'))->toBe('/srv/custom/debug.log');
+
+    $broken = new class extends FakeDriver
+    {
+        public function existingLogCursor(string $path): ?LogCursor
+        {
+            throw new DriverException('permission denied');
+        }
+
+        public function debugLogPath(): ?string
+        {
+            throw new DriverException('wp-cli failed');
+        }
+    };
+    $run = Run::factory()->create(['site_id' => Site::factory(['url' => 'https://shop.test'])]);
+    $baseline = smokeSteps($broken)->baseline()->run(new StepContext($run, false));
+
+    expect($baseline->data['debug'])->toBeNull()
+        ->and($baseline->summary)->toContain('no s\'ha pogut resoldre la ruta del debug.log')->toContain('el debug.log no es vigilarà: permission denied');
+});
+
+it('reports the real number of different warnings and says when only some are kept', function (): void {
+    config(['wpup.smoke_check.max_groups' => 2]);
+    $driver = new FakeDriver;
+    Http::fake(['shop.test/*' => Http::response('ok', 200)]);
+    $lines = array_map(static fn (int $i): string => "[06-Nov-2026 10:00:0{$i} UTC] PHP Warning:  w{$i} in /a.php on line {$i}", [1, 2, 3, 4]);
+
+    $outcome = smokeSteps($driver, app(SmokeCheckSettings::class))->check()->run(smokeContext($driver, $lines));
+
+    expect($outcome->data['warning_groups'])->toHaveCount(2)
+        ->and($outcome->summary)->toContain('4 missatge(s) diferent(s), se\'n desen 2');
 });

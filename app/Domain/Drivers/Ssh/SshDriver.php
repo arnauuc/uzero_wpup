@@ -47,9 +47,6 @@ use RuntimeException;
 final class SshDriver implements SiteDriver
 {
     /** Cheap remote prefilter for fatal lines; callers classify what it returns. */
-    private const string LOG_PREFILTER = 'PHP (Fatal error|Parse error):';
-
-    private const string LOG_WARNING_PREFILTER = 'PHP (Warning|Notice|Deprecated|Strict Standards):';
 
     /** A log line can be a whole stack trace: only this much of each candidate is kept. */
     private const int LOG_LINE_BYTES = 2000;
@@ -522,17 +519,7 @@ final class SshDriver implements SiteDriver
         return new LogCursor($log, $size, $inode);
     }
 
-    public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan
-    {
-        return $this->logLinesSince($cursor, $maxLines, self::LOG_PREFILTER);
-    }
-
-    public function phpLogWarningsSince(LogCursor $cursor, int $maxLines): LogScan
-    {
-        return $this->logLinesSince($cursor, $maxLines, self::LOG_WARNING_PREFILTER);
-    }
-
-    private function logLinesSince(LogCursor $cursor, int $maxLines, string $prefilter): LogScan
+    public function phpLogScanSince(LogCursor $cursor, int $maxFatals, int $maxWarnings): LogScan
     {
         $log = $cursor->path;
         if ($log === null) {
@@ -541,7 +528,7 @@ final class SshDriver implements SiteDriver
 
         [$size, $inode] = $this->statLog($log);
         $rotated = $inode !== $cursor->fileId || $size < $cursor->offset;
-        $lines = [];
+        $scans = [];
         $siblingRead = false;
         if ($rotated) {
             // Logrotate renames the old file to .1: what was written between the
@@ -550,47 +537,90 @@ final class SshDriver implements SiteDriver
             $sibling = $this->usableLogPath($log.'.1');
             if ($sibling !== null && $cursor->offset > 0) {
                 try {
-                    $lines = $this->fatalLines($sibling, $cursor->offset, $maxLines + 1, prefilter: $prefilter);
+                    $scans[] = $this->scanRegion($sibling, $cursor->offset, $maxFatals, $maxWarnings);
                     $siblingRead = true;
                 } catch (DriverException) {
-                    $lines = [];
+                    $siblingRead = false;
                 }
             }
         }
         $offset = $rotated ? 0 : $cursor->offset;
         if ($size > $offset) {
-            // An error here must never look like "no fatal lines".
-            $lines = [...$lines, ...$this->fatalLines($log, $offset, $maxLines + 1, prefilter: $prefilter)];
+            // An error here must never look like "nothing in the log".
+            $scans[] = $this->scanRegion($log, $offset, $maxFatals, $maxWarnings);
         }
 
-        return new LogScan(array_slice($lines, 0, $maxLines), count($lines) > $maxLines, $rotated, $siblingRead);
+        $fatals = array_merge(...array_map(static fn (LogScan $s): array => $s->lines, $scans) ?: [[]]);
+        $warnings = array_merge(...array_map(static fn (LogScan $s): array => $s->warnings, $scans) ?: [[]]);
+
+        return new LogScan(
+            array_slice($fatals, 0, $maxFatals),
+            count($fatals) > $maxFatals || in_array(true, array_map(static fn (LogScan $s): bool => $s->capped, $scans), true),
+            $rotated,
+            $siblingRead,
+            array_slice($warnings, 0, $maxWarnings),
+            array_sum(array_map(static fn (LogScan $s): int => $s->notices, $scans)),
+            count($warnings) > $maxWarnings || in_array(true, array_map(static fn (LogScan $s): bool => $s->warningsCapped, $scans), true),
+        );
     }
 
-    public function phpLogFatalsBefore(LogCursor $cursor, int $windowBytes, int $maxLines): array
+    public function phpLogScanBefore(LogCursor $cursor, int $windowBytes, int $maxFatals, int $maxWarnings): LogScan
     {
         if ($cursor->path === null || $cursor->offset <= 0) {
-            return [];
+            return new LogScan;
         }
         $start = max(0, $cursor->offset - max(1, $windowBytes));
 
-        return array_slice($this->fatalLines($cursor->path, $start, $maxLines, $cursor->offset - $start, true), 0, $maxLines);
+        return $this->scanRegion($cursor->path, $start, $maxFatals, $maxWarnings, $cursor->offset - $start, true);
     }
 
     /**
-     * The candidate fatal lines of $path from byte $from (0-based), at most
-     * $length bytes when given and $maxLines lines (the first ones, or the last ones with $newest), each cut to a bounded length.
-     * The exit status of tail and grep is verified (LogGrepResult), so an
-     * unreadable log is an error, never an empty result.
-     *
-     * @return list<string>
+     * One remote pass over $path from byte $from (0-based), at most $length
+     * bytes when given. The exit status of tail and awk is verified
+     * (LogScanResult), so an unreadable log is an error, never an empty result.
      *
      * @throws DriverException
      */
-    private function fatalLines(string $path, int $from, int $maxLines, ?int $length = null, bool $newest = false, string $prefilter = self::LOG_PREFILTER): array
+    private function scanRegion(string $path, int $from, int $maxFatals, int $maxWarnings, ?int $length = null, bool $newest = false): LogScan
     {
-        $result = $this->exec(LogGrepResult::command('tail -c +'.($from + 1).' '.escapeshellarg($path), $prefilter, $maxLines, self::LOG_LINE_BYTES, $length, $newest));
+        $result = $this->exec(LogScanResult::command('tail -c +'.($from + 1).' '.escapeshellarg($path), $maxFatals, $maxWarnings, self::LOG_LINE_BYTES, $length, $newest));
 
-        return LogGrepResult::parse($result->stdout, $result->stderr)->lines;
+        return LogScanResult::parse($result->stdout, $result->stderr);
+    }
+
+    public function debugLogPath(): ?string
+    {
+        // Constants only: --skip-plugins/--skip-themes keep third-party code out of it.
+        $code = 'echo defined("WP_DEBUG_LOG") && is_string(WP_DEBUG_LOG) ? WP_DEBUG_LOG : (defined("WP_CONTENT_DIR") ? WP_CONTENT_DIR."/debug.log" : "");';
+        $result = $this->wp(['eval', $code, '--skip-plugins', '--skip-themes']);
+        if (! $result->successful()) {
+            throw self::failure('La cerca del debug.log', $result);
+        }
+        $lines = array_values(array_filter(array_map('trim', explode("\n", $result->stdout))));
+        $path = (string) end($lines);
+
+        return $path !== '' && $path[0] === '/' ? $path : null;
+    }
+
+    public function existingLogCursor(string $path): ?LogCursor
+    {
+        if ($path === '' || $path[0] !== '/' || str_contains($path, "\n")) {
+            return null;
+        }
+        $q = escapeshellarg($path);
+        $state = trim($this->mustExec(
+            "if [ ! -e {$q} ]; then echo none; elif [ -f {$q} ] && [ -r {$q} ]; then echo ok; else echo unreadable; fi",
+            'La comprovació del log de PHP',
+        )->stdout);
+        if ($state === 'none') {
+            return null;
+        }
+        if ($state !== 'ok') {
+            throw new RemoteCommandFailed("El log «{$path}» existeix però no és un fitxer llegible.");
+        }
+        [$size, $inode] = $this->statLog($path);
+
+        return new LogCursor($path, $size, $inode);
     }
 
     /**

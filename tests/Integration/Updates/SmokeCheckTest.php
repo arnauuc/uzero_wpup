@@ -120,8 +120,8 @@ it('reports an unreadable log as an error, never as a log without fatals', funct
         Fixtures::run(SMOKE_IT_FIXTURE, 'printf "PHP Fatal error:  hidden\\n" > '.escapeshellarg($path).' && chmod 000 '.escapeshellarg($path));
         $inode = trim(Fixtures::run(SMOKE_IT_FIXTURE, 'stat -c %i '.escapeshellarg($path)));
 
-        expect(fn () => $driver->phpLogFatalsSince(new LogCursor($path, 0, $inode), 10))->toThrow(DriverException::class);
-        expect(fn () => $driver->phpLogFatalsBefore(new LogCursor($path, 10, $inode), 1024, 10))->toThrow(DriverException::class);
+        expect(fn () => $driver->phpLogScanSince(new LogCursor($path, 0, $inode), 10, 10))->toThrow(DriverException::class);
+        expect(fn () => $driver->phpLogScanBefore(new LogCursor($path, 10, $inode), 1024, 10, 10))->toThrow(DriverException::class);
     } finally {
         Fixtures::run(SMOKE_IT_FIXTURE, 'rm -f '.escapeshellarg($path));
     }

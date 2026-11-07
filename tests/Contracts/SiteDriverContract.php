@@ -317,8 +317,8 @@ final class SiteDriverContract
                 $driver->wp(['eval', 'error_log("PHP Warning:  wpup-contract-warning");']);
                 $driver->wp(['eval', 'error_log("PHP Fatal error:  '.$marker.'");']);
 
-                $scan = $driver->phpLogFatalsSince($cursor, 50);
-                $earlier = implode("\n", $driver->phpLogFatalsBefore($cursor, 1_048_576, 50));
+                $scan = $driver->phpLogScanSince($cursor, 50, 50);
+                $earlier = implode("\n", $driver->phpLogScanBefore($cursor, 1_048_576, 50, 50)->lines);
 
                 $found = implode("\n", $scan->lines);
 
@@ -329,25 +329,45 @@ final class SiteDriverContract
                 expect($scan->rotated)->toBeFalse();
                 expect($earlier)->toContain($before);
                 expect($earlier)->not->toContain($marker);
-                expect($driver->phpLogFatalsSince($cursor, 1)->lines)->toHaveCount(1);
+                expect($driver->phpLogScanSince($cursor, 1, 1)->lines)->toHaveCount(1);
             });
 
-            it('finds the warning, notice and deprecation lines of the new log region, and never the fatals', function () use ($factory): void {
+            it('sorts the new log region in one pass: fatals, warnings and a notice count, each with its own cap', function () use ($factory): void {
                 $driver = $factory();
                 $cursor = $driver->phpLogCursor();
                 $token = bin2hex(random_bytes(4));
-                $driver->wp(['eval', 'error_log("PHP Warning:  wpup-contract-warn-'.$token.'");']);
+                $driver->wp(['eval', 'error_log("PHP Warning:  wpup-contract-warn1-'.$token.'");']);
+                $driver->wp(['eval', 'error_log("PHP Warning:  wpup-contract-warn2-'.$token.'");']);
                 $driver->wp(['eval', 'error_log("PHP Deprecated:  wpup-contract-depr-'.$token.'");']);
+                $driver->wp(['eval', 'error_log("PHP Notice:  wpup-contract-notice-'.$token.'");']);
                 $driver->wp(['eval', 'error_log("PHP Fatal error:  wpup-contract-fatal-'.$token.'");']);
 
-                $scan = $driver->phpLogWarningsSince($cursor, 50);
-                $found = implode("\n", $scan->lines);
+                $scan = $driver->phpLogScanSince($cursor, 50, 50);
+                $capped = $driver->phpLogScanSince($cursor, 50, 1);
 
-                expect($found)->toContain("wpup-contract-warn-{$token}")
-                    ->and($found)->toContain("wpup-contract-depr-{$token}")
-                    ->and($found)->not->toContain('wpup-contract-fatal')
+                $warnings = implode("\n", $scan->warnings);
+                $fatals = implode("\n", $scan->lines);
+                $all = implode("\n", [...$scan->lines, ...$scan->warnings]);
+
+                expect($warnings)->toContain("wpup-contract-warn1-{$token}")->toContain("wpup-contract-warn2-{$token}");
+                expect($fatals)->toContain("wpup-contract-fatal-{$token}");
+                expect($fatals)->not->toContain('wpup-contract-warn');
+                expect($all)->not->toContain('wpup-contract-depr');
+                expect($scan->notices)->toBe(2)
                     ->and($scan->capped)->toBeFalse()
-                    ->and($driver->phpLogWarningsSince($cursor, 1)->lines)->toHaveCount(1);
+                    ->and($scan->warningsCapped)->toBeFalse()
+                    ->and($capped->warnings)->toHaveCount(1)
+                    ->and($capped->warningsCapped)->toBeTrue()
+                    ->and($capped->lines)->toHaveCount(1);
+            });
+
+            it('resolves the debug log path and gives a cursor only for a file that exists', function () use ($factory): void {
+                $driver = $factory();
+
+                $path = $driver->debugLogPath();
+
+                expect($path === null || str_starts_with($path, '/'))->toBeTrue()
+                    ->and($driver->existingLogCursor('/wpup-contract-missing/'.bin2hex(random_bytes(4)).'.log'))->toBeNull();
             });
 
             it('keeps the most recent fatals before the cursor when there are more than the cap', function () use ($factory): void {
@@ -358,7 +378,7 @@ final class SiteDriverContract
                 }
                 $cursor = $driver->phpLogCursor();
 
-                $lines = implode("\n", $driver->phpLogFatalsBefore($cursor, 1_048_576, 2));
+                $lines = implode("\n", $driver->phpLogScanBefore($cursor, 1_048_576, 2, 2)->lines);
 
                 expect($lines)->toContain("wpup-contract-newest-{$token}");
                 expect($lines)->toContain("wpup-contract-newer-{$token}");

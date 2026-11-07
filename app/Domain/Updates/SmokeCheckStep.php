@@ -130,6 +130,7 @@ final readonly class SmokeCheckStep implements Step
             'warnings' => $warnings,
             'php_warnings' => $php['warnings'],
             'php_notices' => $php['notices'],
+            'repeated_warnings' => $php['repeated'],
             'fatal_groups' => array_map(static fn (LogIssueGroup $g): array => $g->toArray(), $fatals['groups']),
             'warning_groups' => array_map(static fn (LogIssueGroup $g): array => $g->toArray(), $php['groups']),
         ];
@@ -147,12 +148,12 @@ final readonly class SmokeCheckStep implements Step
      * Any error reading a log is a note: the HTTP check still decides (only
      * the step timeout is let through).
      *
-     * @return array{array{count: int, repeated: int, lines: list<string>, groups: list<LogIssueGroup>}, array{warnings: int, notices: int, groups: list<LogIssueGroup>}, list<string>}
+     * @return array{array{count: int, repeated: int, lines: list<string>, groups: list<LogIssueGroup>}, array{warnings: int, repeated: int, distinct: int, notices: int, groups: list<LogIssueGroup>}, list<string>}
      */
     private function readLog(StepContext $context, Site $site, AuditActor $actor): array
     {
         $none = ['count' => 0, 'repeated' => 0, 'lines' => [], 'groups' => []];
-        $noPhp = ['warnings' => 0, 'notices' => 0, 'groups' => []];
+        $noPhp = ['warnings' => 0, 'repeated' => 0, 'distinct' => 0, 'notices' => 0, 'groups' => []];
         $baseline = $context->resultOf(PhpLogBaselineStep::NAME);
         $path = $baseline['path'] ?? null;
         if ($baseline === []) {
@@ -166,7 +167,8 @@ final readonly class SmokeCheckStep implements Step
         if (($baseline['web_verified'] ?? false) !== true) {
             $warnings[] = 'camí del log no verificat pel web';
         }
-        $known = array_values(array_filter(is_array($baseline['signatures'] ?? null) ? $baseline['signatures'] : [], is_string(...)));
+        $known = $this->stringsOf($baseline['signatures'] ?? null);
+        $knownWarnings = $this->stringsOf($baseline['warning_signatures'] ?? null);
         $sources = [$this->cursorOf($baseline)];
         $debug = $baseline['debug'] ?? null;
         if (is_array($debug) && is_string($debug['path'] ?? null)) {
@@ -175,17 +177,17 @@ final readonly class SmokeCheckStep implements Step
 
         $fatalLines = [];
         $warningLines = [];
+        $notices = 0;
         try {
             $driver = ($this->driverFor)($site, $actor);
             foreach ($sources as $cursor) {
                 // A source that fails is a note, and the others are still read.
                 try {
-                    $scan = $driver->phpLogFatalsSince($cursor, $this->settings->maxCandidateLines);
+                    $scan = $driver->phpLogScanSince($cursor, $this->settings->maxCandidateLines, $this->settings->maxCandidateLines);
                     $fatalLines = [...$fatalLines, ...$scan->lines];
-                    $warnings = [...$warnings, ...$this->scanNotes($scan, 'fatals', $cursor)];
-                    $scan = $driver->phpLogWarningsSince($cursor, $this->settings->maxCandidateLines);
-                    $warningLines = [...$warningLines, ...$scan->lines];
-                    $warnings = [...$warnings, ...$this->scanNotes($scan, 'warnings', $cursor)];
+                    $warningLines = [...$warningLines, ...$scan->warnings];
+                    $notices += $scan->notices;
+                    $warnings = [...$warnings, ...$this->scanNotes($scan, $cursor)];
                 } catch (StepTimedOut $e) {
                     throw $e;
                 } catch (Throwable $e) {
@@ -200,15 +202,24 @@ final readonly class SmokeCheckStep implements Step
 
         $warnings = array_values(array_unique($warnings));
         $fatals = $this->scanner->fatals($fatalLines, $known);
-        $php = $this->scanner->warnings($warningLines);
+        // A fatal line can also hold a warning part, so both kinds of line are looked at.
+        $php = [...$this->scanner->warnings([...$fatalLines, ...$warningLines], $knownWarnings), 'notices' => $notices];
         if ($fatals['repeated'] > 0) {
             $warnings[] = "fatal preexistent repetit ({$fatals['repeated']}): ja era al log abans d'actualitzar";
         }
         if ($php['warnings'] > 0) {
-            $warnings[] = "{$php['warnings']} warning(s) nou(s) de PHP al log ({$this->groupsLabel($php['groups'])})";
+            $warnings[] = "{$php['warnings']} warning(s) nou(s) de PHP al log ({$this->groupsLabel($php)})";
         }
 
         return [$fatals, $php, $warnings];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function stringsOf(mixed $value): array
+    {
+        return array_values(array_filter(is_array($value) ? $value : [], is_string(...)));
     }
 
     /**
@@ -226,25 +237,32 @@ final readonly class SmokeCheckStep implements Step
     /**
      * @return list<string>
      */
-    private function scanNotes(LogScan $scan, string $what, LogCursor $cursor): array
+    private function scanNotes(LogScan $scan, LogCursor $cursor): array
     {
         $notes = [];
         if ($scan->rotated) {
             $notes[] = "el log ha rotat durant l'actualització: poden faltar línies".($scan->siblingRead ? " (s'ha llegit també el fitxer rotat)" : '');
         }
         if ($scan->capped) {
-            $notes[] = "hi havia més de {$this->settings->maxCandidateLines} línies candidates de {$what} a «{$cursor->path}»: només s'han mirat les primeres";
+            $notes[] = "hi havia més de {$this->settings->maxCandidateLines} línies candidates de fatals a «{$cursor->path}»: només s'han mirat les primeres";
+        }
+        if ($scan->warningsCapped) {
+            $notes[] = "hi havia més de {$this->settings->maxCandidateLines} línies candidates de warnings a «{$cursor->path}»: només s'han mirat les primeres";
         }
 
-        return array_values(array_unique($notes));
+        return $notes;
     }
 
     /**
-     * @param  list<LogIssueGroup>  $groups
+     * The real number of different new warnings, and how many are kept.
+     *
+     * @param  array{distinct: int, groups: list<LogIssueGroup>}  $php
      */
-    private function groupsLabel(array $groups): string
+    private function groupsLabel(array $php): string
     {
-        return count($groups).' missatge(s) diferent(s)';
+        $kept = count($php['groups']);
+
+        return "{$php['distinct']} missatge(s) diferent(s)".($php['distinct'] > $kept ? ", se'n desen {$kept}" : '');
     }
 
     /**

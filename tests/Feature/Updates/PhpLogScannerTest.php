@@ -128,17 +128,17 @@ it('classifies the lines of the PHP log by level, anchored to the log format', f
     'plain line' => ['WordPress database error Table x doesn\'t exist', null],
 ]);
 
-it('groups repeated lines by signature with count and first and last time, redacted', function (): void {
+it('groups repeated lines by signature with count and first and last time, by timestamp and redacted', function (): void {
     $redactor = new SecretRedactor;
     $redactor->register('s3cr3t-token-value');
     $scanner = new PhpLogScanner($redactor, smokeSettings());
 
-    $groups = $scanner->group([
-        '[06-Nov-2026 10:00:00 UTC] PHP Warning:  bad s3cr3t-token-value in /a.php on line 2',
-        '[06-Nov-2026 10:00:05 UTC] PHP Warning:  other in /b.php on line 9',
+    $groups = $scanner->warnings([
         '[06-Nov-2026 10:00:07 UTC] PHP Warning:  bad s3cr3t-token-value in /a.php on line 2',
+        '[06-Nov-2026 10:00:05 UTC] PHP Warning:  other in /b.php on line 9',
+        '[06-Nov-2026 10:00:00 UTC] PHP Warning:  bad s3cr3t-token-value in /a.php on line 2',
         '[06-Nov-2026 10:00:08 UTC] PHP Warning:  bad s3cr3t-token-value in /a.php on line 3',
-    ], PhpLogLevel::Warning);
+    ])['groups'];
 
     expect($groups)->toHaveCount(3)
         ->and($groups[0]->count)->toBe(2)
@@ -148,22 +148,38 @@ it('groups repeated lines by signature with count and first and last time, redac
         ->and($groups[1]->count)->toBe(1);
 });
 
-it('counts warnings and notices apart and ignores everything else', function (): void {
+it('counts new warnings and the ones already known apart, and ignores everything else', function (): void {
+    $known = scanner()->warningSignatures(['[x] PHP Warning:  a in /a.php on line 1']);
     $result = scanner()->warnings([
-        '[x] PHP Warning:  a in /a.php on line 1',
-        '[x] PHP Notice:  b in /a.php on line 2',
-        '[x] PHP Deprecated:  c in /a.php on line 3',
+        '[y] PHP Warning:  a in /a.php on line 1',
+        '[x] PHP Warning:  b in /a.php on line 2',
+        '[x] PHP Notice:  c in /a.php on line 2',
         '[x] PHP Fatal error:  d in /a.php:4',
         'plain',
-    ]);
+    ], $known);
 
-    expect($result['warnings'])->toBe(1)->and($result['notices'])->toBe(2)->and($result['groups'])->toHaveCount(1);
+    expect($result['warnings'])->toBe(1)->and($result['repeated'])->toBe(1)->and($result['distinct'])->toBe(1);
 });
 
-it('caps the groups kept', function (): void {
+it('splits a proxy_fcgi line with several messages before classifying it', function (): void {
+    $line = "[Fri Nov 06 10:00:00 2026] [proxy_fcgi:error] [pid 1] AH01071: Got error 'PHP message: PHP Warning:  careful in /a.php on line 1PHP message: PHP Fatal error:  Uncaught Error: boom in /b.php:2'";
+
+    $fatals = scanner()->fatals([$line]);
+    $warnings = scanner()->warnings([$line]);
+
+    expect($fatals['lines'][0])->toContain('Fatal error');
+    expect($fatals['lines'][0])->not->toContain('careful');
+    expect($fatals['count'])->toBe(1)
+        ->and($warnings['warnings'])->toBe(1)
+        ->and(scanner()->signatures([$line]))->toHaveCount(1);
+});
+
+it('caps the groups kept but reports how many there were', function (): void {
     $base = app(SmokeCheckSettings::class);
     $settings = new SmokeCheckSettings(3000, 30, 5, 3, 0, true, 200, 1024, 5, 300, $base->fatalPatterns, $base->warningPatterns, $base->noticePatterns, 2);
     $lines = array_map(static fn (int $i): string => "[x] PHP Warning:  w{$i} in /a.php on line {$i}", [1, 2, 3, 4]);
 
-    expect((new PhpLogScanner(new SecretRedactor, $settings))->group($lines, PhpLogLevel::Warning))->toHaveCount(2);
+    $result = (new PhpLogScanner(new SecretRedactor, $settings))->warnings($lines);
+
+    expect($result['groups'])->toHaveCount(2)->and($result['distinct'])->toBe(4);
 });

@@ -194,7 +194,7 @@ return [
      * of the site and the new lines of the PHP error log (from the position
      * saved before). A new fatal, a 5xx or no answer at all fails the step and
      * so triggers the rollback.
-     * - step_timeout_seconds must cover connect + 16 SSH commands + every home
+     * - step_timeout_seconds must cover connect + 8 SSH commands + every home
      *   request with all its redirects and the pauses (ssh.* and the values below); checked when the steps
      *   are built.
      * - http_attempts: how many requests of the home (each with its own cache
@@ -211,7 +211,7 @@ return [
      * Reported lines are redacted and cut to line_max_chars.
      */
     'smoke_check' => [
-        'step_timeout_seconds' => 6000,
+        'step_timeout_seconds' => 3000,
         'http_timeout_seconds' => 30,
         'max_redirects' => 5,
         'http_attempts' => 3,

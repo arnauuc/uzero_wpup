@@ -591,43 +591,89 @@ class FakeDriver implements SiteDriver
     /** @var list<string> */
     public array $rotatedSiblingLines = [];
 
-    /** How many candidates phpLogFatalsSince() returns at most, whatever the caller asks. */
+    /** How many candidates (of each kind) phpLogScanSince() returns at most, whatever the caller asks. */
     public ?int $logCandidateLimit = null;
 
     /** @var list<string>|null When set, wp-content/debug.log exists with these lines (apart from the web error log). */
     public ?array $debugLog = null;
 
+    /** What debugLogPath() answers (null: could not be resolved, the caller uses the default). */
+    public ?string $debugLogPath = null;
+
+    /** The inode the debug.log has; give it the web log's to simulate a symlink to it. */
+    public string $debugLogFileId = 'debug-inode';
+
     public function phpLogCursor(?string $webLogPath = null): LogCursor
     {
-        if ($webLogPath === null || ! str_ends_with($webLogPath, '/debug.log')) {
-            $this->requestedWebLog = $webLogPath;
-        }
-        if ($webLogPath !== null && str_ends_with($webLogPath, '/debug.log') && $this->debugLog === null) {
-            // Not there: like the real driver, fall back to the usual log.
-            return new LogCursor('fake.log', count($this->phpLog));
-        }
+        $this->requestedWebLog = $webLogPath;
 
-        return new LogCursor($webLogPath ?? 'fake.log', count($this->linesOf($webLogPath)));
+        return new LogCursor($webLogPath ?? 'fake.log', count($this->phpLog));
     }
 
-    public function phpLogFatalsSince(LogCursor $cursor, int $maxLines): LogScan
+    public function debugLogPath(): ?string
     {
-        return $this->scanSince($cursor, $maxLines, '/PHP (Fatal error|Parse error):/');
+        return $this->debugLogPath;
     }
 
-    public function phpLogWarningsSince(LogCursor $cursor, int $maxLines): LogScan
+    public function existingLogCursor(string $path): ?LogCursor
     {
-        return $this->scanSince($cursor, $maxLines, '/PHP (Warning|Notice|Deprecated|Strict Standards):/');
+        return $this->debugLog !== null && str_ends_with($path, '/debug.log') ? new LogCursor($path, count($this->debugLog), $this->debugLogFileId) : null;
     }
 
-    private function scanSince(LogCursor $cursor, int $maxLines, string $pattern): LogScan
+    public function phpLogScanSince(LogCursor $cursor, int $maxFatals, int $maxWarnings): LogScan
     {
         $all = $this->linesOf($cursor->path);
         $lines = $this->logRotated ? [...$this->rotatedSiblingLines, ...$all] : array_slice($all, $cursor->offset);
-        $lines = array_values(array_filter($lines, static fn (string $l): bool => preg_match($pattern, $l) === 1));
-        $limit = min($maxLines, $this->logCandidateLimit ?? $maxLines);
+        [$fatals, $warnings, $notices] = $this->sort($lines);
+        $fatalLimit = min($maxFatals, $this->logCandidateLimit ?? $maxFatals);
+        $warningLimit = min($maxWarnings, $this->logCandidateLimit ?? $maxWarnings);
 
-        return new LogScan(array_slice($lines, 0, $limit), count($lines) > $limit, $this->logRotated, $this->logRotated && $this->rotatedSiblingLines !== []);
+        return new LogScan(
+            array_slice($fatals, 0, $fatalLimit),
+            count($fatals) > $fatalLimit,
+            $this->logRotated,
+            $this->logRotated && $this->rotatedSiblingLines !== [],
+            array_slice($warnings, 0, $warningLimit),
+            $notices,
+            count($warnings) > $warningLimit,
+        );
+    }
+
+    public function phpLogScanBefore(LogCursor $cursor, int $windowBytes, int $maxFatals, int $maxWarnings): LogScan
+    {
+        [$fatals, $warnings, $notices] = $this->sort(array_slice($this->linesOf($cursor->path), 0, $cursor->offset));
+
+        return new LogScan(
+            array_slice($fatals, -$maxFatals),
+            count($fatals) > $maxFatals,
+            warnings: array_slice($warnings, -$maxWarnings),
+            notices: $notices,
+            warningsCapped: count($warnings) > $maxWarnings,
+        );
+    }
+
+    /**
+     * Like the remote awk: a line counts for the worst thing it has.
+     *
+     * @param  list<string>  $lines
+     * @return array{list<string>, list<string>, int}
+     */
+    private function sort(array $lines): array
+    {
+        $fatals = [];
+        $warnings = [];
+        $notices = 0;
+        foreach ($lines as $line) {
+            if (preg_match('/PHP (Fatal error|Parse error):/', $line) === 1) {
+                $fatals[] = $line;
+            } elseif (preg_match('/PHP Warning:/', $line) === 1) {
+                $warnings[] = $line;
+            } elseif (preg_match('/PHP (Notice|Deprecated|Strict Standards):/', $line) === 1) {
+                $notices++;
+            }
+        }
+
+        return [$fatals, $warnings, $notices];
     }
 
     /**
@@ -636,13 +682,6 @@ class FakeDriver implements SiteDriver
     private function linesOf(?string $path): array
     {
         return $path !== null && str_ends_with($path, '/debug.log') && $this->debugLog !== null ? $this->debugLog : $this->phpLog;
-    }
-
-    public function phpLogFatalsBefore(LogCursor $cursor, int $windowBytes, int $maxLines): array
-    {
-        $lines = array_slice($this->linesOf($cursor->path), 0, $cursor->offset);
-
-        return array_slice(array_values(array_filter($lines, static fn (string $l): bool => preg_match('/PHP (Fatal error|Parse error):/', $l) === 1)), -$maxLines);
     }
 
     public function phpLogSince(LogCursor $cursor, int $maxBytes = 1_048_576): array
