@@ -37,6 +37,14 @@ it('wraps a range of days past Sunday', function (): void {
     expect(Site::query()->sole()->maintenance_window)->toEqual(['days' => [1, 5, 6, 7], 'start' => '22:00', 'end' => '06:00']);
 });
 
+it('keeps the old meaning of a descending numeric range: «5-1» is Monday to Friday, never a wrap', function (): void {
+    command('site:edit', ['name' => 'botiga-w', '--window-days' => '5-1', '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->maintenance_window['days'] ?? null)->toBe([1, 2, 3, 4, 5]);
+
+    command('site:edit', ['name' => 'botiga-w', '--window' => '5-1 10:00-13:00', '--no-interaction' => true])->assertSuccessful();
+    expect(Site::query()->sole()->maintenance_window['days'] ?? null)->toBe([1, 2, 3, 4, 5]);
+});
+
 it('refuses a malformed window with the same rules as the separate options', function (array $params, string $message): void {
     /** @var array<string, mixed> $params */
     command('site:edit', ['name' => 'botiga-w', '--no-interaction' => true] + $params)
@@ -47,6 +55,7 @@ it('refuses a malformed window with the same rules as the separate options', fun
     'no times' => [['--window' => 'dl-dv'], 'dies HH:MM-HH:MM'],
     'bad day' => [['--window' => 'dl-dx 10:00-13:00'], 'dl-dv,dg'],
     'bad time' => [['--window' => 'dl 25:00-26:00'], 'HH:MM'],
+    'one-digit hour, as the separate options' => [['--window' => 'dl 9:00-13:00'], 'dies HH:MM-HH:MM'],
     'too short' => [['--window' => 'dl 10:00-10:05'], 'com a mínim 15 minuts'],
     'mixed with the separate options' => [['--window' => 'dl 10:00-13:00', '--window-start' => '09:00'], 'no es pot combinar'],
 ]);
