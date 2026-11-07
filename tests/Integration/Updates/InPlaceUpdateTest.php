@@ -59,15 +59,20 @@ use Tests\Support\Fixtures;
  * the update, the smoke check and, when something fails, the run's own
  * rollback of the files and, without new orders, of the database).
  *
- * Nothing depends on WordPress.org: the site is offered an update of a tiny
- * test plugin through its own update_plugins transient (as a premium plugin
- * would be), whose package the run already holds as its artifact (the
- * download has its own tests), and the version is past the quarantine. The
- * core is excluded by the site's profile. Every fatal carries a token no
- * earlier run wrote (the fixture's PHP log is kept between runs). The store
- * root is the test's own; the docroot, the transients, the plugin and the
- * orders the test writes are put back or removed. Afterwards,
- * `snapshot.sh restore wp74 wp83`.
+ * Nothing depends on WordPress.org (no request leaves for anything but the
+ * test sites): the site is offered an update of a tiny test plugin through
+ * its own update_plugins transient (as a premium plugin would be), whose
+ * package the run already holds as its artifact (the download has its own
+ * tests), and the version is past the quarantine. The core is excluded by
+ * the site's profile. Every fatal carries a token no earlier run wrote (the
+ * fixture's PHP log is kept between runs).
+ *
+ * Each test leaves the site as it found it, by itself: the docroot comes back
+ * from an archive, the database from a dump taken before anything changed
+ * (the transients, the plugin, the orders and options the broken versions
+ * write, WordPress's recovery mode), the uploads the run wrote are removed, and
+ * the whole home of the subscription (~/.wpup and its work dirs included) is
+ * listed before and after: nothing may be left.
  */
 
 const IN_PLACE_FIXTURE = 'wp83';
@@ -79,36 +84,34 @@ const IN_PLACE_PACKAGE_URL = 'https://updates.example.com/wpup-contract-plugin.z
 /** HTTP port of each fixture site, as the tool reaches it. */
 const IN_PLACE_PORTS = ['wp74' => 8081, 'wp83' => 8083];
 
-if (! Fixtures::up(IN_PLACE_FIXTURE) || ! Fixtures::up('wp74')) {
-    it('updates a test site in place and rolls it back')->skip('Llocs de prova aturats: make fixtures-up');
+/** Whether the test site $fixture is down (asked once per site). */
+function fixtureUpdateDown(string $fixture): bool
+{
+    /** @var array<string, bool> $up */
+    static $up = [];
 
-    return;
+    return ! ($up[$fixture] ??= Fixtures::up($fixture));
 }
+
+const IN_PLACE_DOWN = 'Llocs de prova aturats: make fixtures-up';
 
 beforeEach(function (): void {
     Redis::connection('locks')->command('flushdb');
     config(['wpup.artifacts.dir' => sys_get_temp_dir().'/wpup-artifacts-'.bin2hex(random_bytes(6))]);
-    // The tool never asks WordPress.org here: nothing offered comes from it.
+    // Only the test sites are reached over HTTP (the probe, the smoke check); WordPress.org never.
     Http::fake(['api.wordpress.org/*' => Http::response([], 404), 'downloads.wordpress.org/*' => Http::response('', 404)]);
+    Http::preventStrayRequests();
+    $allowed = [];
+    foreach (IN_PLACE_PORTS as $fixture => $port) {
+        $allowed[] = "http://{$fixture}:{$port}";
+        $allowed[] = "http://{$fixture}:{$port}/*";
+    }
+    Http::allowStrayRequests($allowed);
 });
 
 afterEach(function (): void {
     exec('rm -rf '.escapeshellarg(artifactsRoot()));
 });
-
-/**
- * A zip of the test plugin whose header says $version, with $code after it.
- */
-function fixtureUpdatePluginZip(string $version, string $code = ''): string
-{
-    $path = sys_get_temp_dir().'/wpup-e2e-plugin-'.bin2hex(random_bytes(4)).'.zip';
-    $zip = new ZipArchive;
-    $zip->open($path, ZipArchive::CREATE);
-    $zip->addFromString(IN_PLACE_PLUGIN.'/'.IN_PLACE_PLUGIN.'.php', "<?php\n/**\n * Plugin Name: Uzero wpup contract plugin\n * Version: {$version}\n * Description: Test-only plugin of the update integration tests.\n */\n{$code}\n");
-    $zip->close();
-
-    return $path;
-}
 
 /**
  * Code of a new version that breaks every web request (never WP-CLI, so the
@@ -157,17 +160,31 @@ function fixtureUpdateTree(string $fixture, Site $site): array
 {
     $out = Fixtures::run($fixture, 'cd '.escapeshellarg($site->wp_path).' && find . -path ./wp-content/uploads -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum');
 
-    return array_values(array_filter(explode("\n", $out)));
+    return array_values(array_filter(explode("\n", $out), static fn (string $line): bool => $line !== ''));
 }
 
 /**
- * The lines only one of the two trees has (a changed file shows twice).
+ * Every path under the subscription's home: the docroot (uploads included),
+ * ~/.wpup with its work dirs, the logs. WooCommerce's own directory is left
+ * out (thousands of files the tests never touch).
+ *
+ * @return list<string>
+ */
+function fixtureUpdateHome(string $fixture): array
+{
+    $out = Fixtures::run($fixture, 'cd "$HOME" && find . -mindepth 1 -path ./httpdocs/wp-content/plugins/woocommerce -prune -o -printf "%P\n" | LC_ALL=C sort');
+
+    return array_values(array_filter(explode("\n", $out), static fn (string $line): bool => $line !== ''));
+}
+
+/**
+ * The lines only one of the two lists has (a changed file shows twice).
  *
  * @param  list<string>  $before
  * @param  list<string>  $after
  * @return list<string>
  */
-function fixtureUpdateTreeDiff(array $before, array $after): array
+function fixtureUpdateDiff(array $before, array $after): array
 {
     return [...array_diff($before, $after), ...array_diff($after, $before)];
 }
@@ -175,8 +192,9 @@ function fixtureUpdateTreeDiff(array $before, array $after): array
 /**
  * Runs `wpup update` on $fixture after installing version 1.0.0 of the test
  * plugin (active when $activate) and offering 1.1.0, whose package holds
- * $packageZip. Leaves the site as it was and checks that nothing of the run
- * stays on it.
+ * $packageZip. Checks that the run left the mode off and the plugin as it
+ * was, puts the site back as it was before the test (files, database, the
+ * uploads the run wrote) and checks that nothing is left in the home.
  *
  * @param  Closure(Run, SiteDriver, Site): void  $check
  * @param  array<string, mixed>  $offer  extra fields of the offered update (requires_php…)
@@ -197,9 +215,16 @@ function fixtureUpdate(string $fixture, string $packageZip, Closure $check, arra
     PackageVersion::query()->create(['component_type' => ComponentType::Plugin, 'slug' => IN_PLACE_PLUGIN, 'source' => 'host:updates.example.com', 'version' => '1.1.0',
         'first_seen_at' => now()->subDays(30), 'last_seen_at' => now()->subDays(30)]);
     $driver = app(DriverFactory::class)->forSite($site, AuditActor::system('tests'));
-    $archive = $driver->archiveFiles(SiteDriverContract::remoteName('files.tar.gz'), ['wp-content/uploads']);
-    $old = fixtureUpdatePluginZip('1.0.0');
     $user = User::factory()->create(['role' => UserRole::Operator]);
+
+    // The state to come back to, before anything changes.
+    $home = fixtureUpdateHome($fixture);
+    $dump = trim(Fixtures::run($fixture, 'printf %s "$HOME"')).'/wpup-e2e-db-'.bin2hex(random_bytes(6)).'.sql';
+    $export = $driver->wp(['db', 'export', $dump]);
+    expect($export->successful())->toBeTrue($export->stderr);
+    $archive = $driver->archiveFiles(SiteDriverContract::remoteName('files.tar.gz'), ['wp-content/uploads']);
+    $old = SiteDriverContract::contractPluginZip('1.0.0');
+    $cleanup = [];
 
     try {
         $driver->applyUpdate(SiteDriverContract::package($old, '1.0.0'));
@@ -223,21 +248,54 @@ function fixtureUpdate(string $fixture, string $packageZip, Closure $check, arra
         $run = app(RunEngine::class)->execute($run);
 
         $check($run, $driver, $site);
+        // Whatever happened, the run itself left the mode off and the plugin as active as it was.
+        expect($driver->wp(['maintenance-mode', 'is-active'])->successful())->toBeFalse('el lloc ha quedat en manteniment')
+            ->and(Fixtures::run($fixture, 'test -e '.escapeshellarg("{$site->wp_path}/.maintenance").' && echo present || true'))->toBe('')
+            ->and($driver->wp(['plugin', 'is-active', IN_PLACE_PLUGIN])->successful())->toBe($activate);
     } finally {
-        $driver->wp(['plugin', 'deactivate', IN_PLACE_PLUGIN, '--skip-plugins', '--skip-themes']);
-        $driver->wp(['transient', 'delete', 'update_plugins', '--network']);
-        $driver->wp(['transient', 'delete', 'update_themes', '--network']);
-        $driver->restoreFiles($archive);
-        $driver->remove($archive->path);
-        Fixtures::run($fixture, 'rm -rf "$HOME/.wpup/"'.escapeshellarg($storeRoot).' '.escapeshellarg("{$site->wp_path}/.maintenance"));
+        // Each step runs whatever failed before; failures are reported after, never masking the test's own.
+        $steps = [
+            'fitxers' => static function () use ($driver, $archive): void {
+                $driver->restoreFiles($archive);
+                $driver->remove($archive->path);
+            },
+            'base de dades' => static function () use ($driver, $dump): void {
+                $import = $driver->wp(['db', 'import', $dump]);
+                if (! $import->successful()) {
+                    throw new RuntimeException(trim($import->stderr));
+                }
+            },
+            'dades del test' => static function () use ($fixture, $site, $storeRoot, $dump, $home): void {
+                $created = ['.wpup/'.$storeRoot, "{$site->wp_path}/.maintenance", $dump];
+                if (! in_array('.wpup/restore-points', $home, true)) {
+                    $created[] = '.wpup/restore-points';
+                }
+                Fixtures::run($fixture, 'cd "$HOME" && rm -rf -- '.implode(' ', array_map(escapeshellarg(...), $created)));
+            },
+            // What the run (WooCommerce's logs of the fatal…) wrote to the uploads, which no archive holds.
+            'uploads' => static function () use ($fixture, $home): void {
+                $written = array_filter(array_diff(fixtureUpdateHome($fixture), $home), static fn (string $path): bool => str_starts_with($path, 'httpdocs/wp-content/uploads/'));
+                if ($written !== []) {
+                    Fixtures::run($fixture, 'cd "$HOME" && rm -rf -- '.implode(' ', array_map(escapeshellarg(...), $written)));
+                }
+            },
+        ];
+        foreach ($steps as $what => $step) {
+            try {
+                $step();
+            } catch (Throwable $e) {
+                $cleanup[] = "{$what}: {$e->getMessage()}";
+            }
+        }
         @unlink($old);
         @unlink($packageZip);
     }
 
-    // Nothing of the run is left on the site: work files, packages, the plugin, the mode.
-    expect(Fixtures::run($fixture, 'ls -a "$HOME/.wpup" 2>/dev/null | grep -cE "^(restore-[0-9a-f]{16}|wpup-)" || true'))->toBe("0\n")
-        ->and(SiteDriverContract::packageTemporaries($driver))->toBe([])
-        ->and(Fixtures::run($fixture, 'ls -d '.escapeshellarg("{$site->wp_path}/wp-content/plugins/".IN_PLACE_PLUGIN).' '.escapeshellarg("{$site->wp_path}/.maintenance").' 2>/dev/null || true'))->toBe('');
+    // Nothing of the run nor of the test is left on the site.
+    $left = fixtureUpdateDiff($home, fixtureUpdateHome($fixture));
+    expect($cleanup)->toBe([], 'neteja incompleta')
+        ->and($left)->toBe([], 'residus: '.implode(' | ', array_slice($left, 0, 10)))
+        ->and(SiteDriverContract::packageTemporaries($driver))->toBe([]);
 }
 
 /**
@@ -263,8 +321,22 @@ function fixtureUpdateMarker(SiteDriver $driver): string
     return trim($driver->wp(['option', 'get', 'wpup_e2e_marker', '--skip-plugins', '--skip-themes'])->stdout);
 }
 
+/**
+ * The IDs of every order of the site; the test fails when they cannot be listed.
+ *
+ * @return list<int>
+ */
+function fixtureUpdateOrders(SiteDriver $driver): array
+{
+    $result = $driver->wp(['eval', 'echo "orders:" . implode(",", wc_get_orders(array("limit" => -1, "return" => "ids", "status" => "any")));']);
+    $line = trim($result->stdout);
+    expect($result->successful() && str_starts_with($line, 'orders:'))->toBeTrue("no s'han pogut llistar les comandes: ".$result->stderr);
+
+    return array_values(array_map(intval(...), array_filter(explode(',', substr($line, strlen('orders:'))), static fn (string $id): bool => $id !== '')));
+}
+
 it('updates a plugin of wp83 in place behind a verified restore point and puts the mode back', function (): void {
-    fixtureUpdate(IN_PLACE_FIXTURE, fixtureUpdatePluginZip('1.1.0'), static function (Run $run, SiteDriver $driver): void {
+    fixtureUpdate(IN_PLACE_FIXTURE, SiteDriverContract::contractPluginZip('1.1.0'), static function (Run $run, SiteDriver $driver): void {
         $change = $run->changes()->where('slug', IN_PLACE_PLUGIN)->sole();
 
         expect($run->status)->toBe(RunStatus::Succeeded, (string) $run->failureReason())
@@ -272,13 +344,12 @@ it('updates a plugin of wp83 in place behind a verified restore point and puts t
             ->and($run->steps()->where('name', MaintenanceOnStep::NAME)->sole()->status->value)->toBe('succeeded')
             ->and(app(RestorePointGate::class)->isVerified($run))->toBeTrue()
             ->and([$change->result, $change->version_before, $change->version_after])->toBe([ChangeResult::Updated, '1.0.0', '1.1.0'])
-            ->and(fixtureUpdateVersion($driver))->toBe('1.1.0')
-            ->and($driver->wp(['maintenance-mode', 'is-active'])->successful())->toBeFalse();
+            ->and(fixtureUpdateVersion($driver))->toBe('1.1.0');
     });
-});
+})->skip(fixtureUpdateDown(IN_PLACE_FIXTURE), IN_PLACE_DOWN);
 
 it('skips, untouched, an update that declares a PHP above the one serving wp74 (layer 1)', function (): void {
-    fixtureUpdate('wp74', fixtureUpdatePluginZip('1.1.0'), static function (Run $run, SiteDriver $driver): void {
+    fixtureUpdate('wp74', SiteDriverContract::contractPluginZip('1.1.0'), static function (Run $run, SiteDriver $driver): void {
         $skip = $run->changes()->where('slug', IN_PLACE_PLUGIN)->sole();
 
         expect($run->status)->toBe(RunStatus::Succeeded, (string) $run->failureReason())
@@ -288,10 +359,10 @@ it('skips, untouched, an update that declares a PHP above the one serving wp74 (
             ->and($skip->reason_detail)->toStartWith('Requereix PHP 8.1 i el lloc té PHP 7.4')
             ->and(fixtureUpdateVersion($driver))->toBe('1.0.0');
     }, offer: ['requires_php' => '8.1']);
-});
+})->skip(fixtureUpdateDown('wp74'), IN_PLACE_DOWN);
 
 it('skips, untouched, an update whose code PHPCompatibility rejects for the PHP of wp83 (layer 2)', function (): void {
-    $package = fixtureUpdatePluginZip('1.1.0', "if (false) {\n    mysql_connect('localhost');\n}");
+    $package = SiteDriverContract::contractPluginZip('1.1.0', "if (false) {\n    mysql_connect('localhost');\n}");
 
     fixtureUpdate(IN_PLACE_FIXTURE, $package, static function (Run $run, SiteDriver $driver): void {
         $skip = $run->changes()->where('slug', IN_PLACE_PLUGIN)->sole();
@@ -302,10 +373,10 @@ it('skips, untouched, an update whose code PHPCompatibility rejects for the PHP 
             ->and($skip->reason_detail)->toStartWith('PHPCompatibility: ')->toContain('per a PHP 8.3')->toContain(IN_PLACE_PLUGIN.'.php:')
             ->and(fixtureUpdateVersion($driver))->toBe('1.0.0');
     });
-});
+})->skip(fixtureUpdateDown(IN_PLACE_FIXTURE), IN_PLACE_DOWN);
 
 it('rolls wp83 back, files and database, when the update leaves the wrong version', function (): void {
-    fixtureUpdate(IN_PLACE_FIXTURE, fixtureUpdatePluginZip('1.0.5'), static function (Run $run, SiteDriver $driver): void {
+    fixtureUpdate(IN_PLACE_FIXTURE, SiteDriverContract::contractPluginZip('1.0.5'), static function (Run $run, SiteDriver $driver): void {
         $recovery = $run->steps()->where('kind', RunStepKind::Recovery->value)->orderBy('sequence')->get();
 
         expect($run->status)->toBe(RunStatus::RolledBack, (string) $run->failureReason())
@@ -316,16 +387,16 @@ it('rolls wp83 back, files and database, when the update leaves the wrong versio
             ->and(fixtureUpdateVersion($driver))->toBe('1.0.0')
             ->and($driver->wp(['option', 'get', 'blogname'])->successful())->toBeTrue();
     });
-});
+})->skip(fixtureUpdateDown(IN_PLACE_FIXTURE), IN_PLACE_DOWN);
 
 it('rolls wp83 back to an identical site when the updated plugin breaks it with a fatal', function (): void {
     $token = bin2hex(random_bytes(6));
     $before = [];
 
-    fixtureUpdate(IN_PLACE_FIXTURE, fixtureUpdatePluginZip('1.1.0', fixtureUpdateBreakingCode($token, false)), static function (Run $run, SiteDriver $driver, Site $site) use ($token, &$before): void {
+    fixtureUpdate(IN_PLACE_FIXTURE, SiteDriverContract::contractPluginZip('1.1.0', fixtureUpdateBreakingCode($token, false)), static function (Run $run, SiteDriver $driver, Site $site) use ($token, &$before): void {
         $recovery = $run->steps()->where('kind', RunStepKind::Recovery->value)->orderBy('sequence')->get();
         $smoke = $run->steps()->where('name', SmokeCheckStep::NAME)->sole();
-        $diff = fixtureUpdateTreeDiff($before, fixtureUpdateTree(IN_PLACE_FIXTURE, $site));
+        $diff = fixtureUpdateDiff($before, fixtureUpdateTree(IN_PLACE_FIXTURE, $site));
 
         expect($run->status)->toBe(RunStatus::RolledBack, (string) $run->failureReason())
             ->and($run->result_summary['failed_step'] ?? null)->toBe(SmokeCheckStep::NAME)
@@ -336,55 +407,40 @@ it('rolls wp83 back to an identical site when the updated plugin breaks it with 
             // The files as they were (versions included) and the database without what the broken version wrote.
             ->and($diff)->toBe([], 'fitxers diferents: '.implode(' | ', array_slice($diff, 0, 10)))
             ->and(fixtureUpdateVersion($driver))->toBe('1.0.0')
-            ->and($driver->wp(['plugin', 'is-active', IN_PLACE_PLUGIN])->successful())->toBeTrue()
-            ->and(fixtureUpdateMarker($driver))->toBe('')
-            ->and($driver->wp(['maintenance-mode', 'is-active'])->successful())->toBeFalse();
+            ->and(fixtureUpdateMarker($driver))->not->toContain($token);
     }, activate: true, before: static function (Site $site) use (&$before): void {
         $before = fixtureUpdateTree(IN_PLACE_FIXTURE, $site);
     });
-});
+})->skip(fixtureUpdateDown(IN_PLACE_FIXTURE), IN_PLACE_DOWN);
 
 it('restores only the files of wp83, and names the order, when an order arrives during the update', function (): void {
     $token = bin2hex(random_bytes(6));
     $before = [];
-    /** @var list<int>|null $existing orders of the fixture before the run */
-    $existing = null;
-    $ordersOf = static fn (SiteDriver $driver): array => array_values(array_map(intval(...), array_filter(explode(',', trim(
-        $driver->wp(['eval', 'echo implode(",", wc_get_orders(array("limit" => -1, "return" => "ids", "status" => "any")));'])->stdout,
-    )))));
-    $driver = app(DriverFactory::class)->forSite(Fixtures::site(IN_PLACE_FIXTURE), AuditActor::system('tests'));
+    $existing = [];
 
-    try {
-        fixtureUpdate(IN_PLACE_FIXTURE, fixtureUpdatePluginZip('1.1.0', fixtureUpdateBreakingCode($token, true)), static function (Run $run, SiteDriver $driver, Site $site) use ($token, &$before, &$existing, $ordersOf): void {
-            $new = array_values(array_diff($ordersOf($driver), $existing ?? []));
-            $database = $run->steps()->where('name', DatabaseRollbackStep::NAME)->sole();
-            $diff = fixtureUpdateTreeDiff($before, fixtureUpdateTree(IN_PLACE_FIXTURE, $site));
+    // The dump the helper takes first puts the database back afterwards: the order goes with it, whole.
+    fixtureUpdate(IN_PLACE_FIXTURE, SiteDriverContract::contractPluginZip('1.1.0', fixtureUpdateBreakingCode($token, true)), static function (Run $run, SiteDriver $driver, Site $site) use ($token, &$before, &$existing): void {
+        $new = array_values(array_diff(fixtureUpdateOrders($driver), $existing));
+        $database = $run->steps()->where('name', DatabaseRollbackStep::NAME)->sole();
+        $diff = fixtureUpdateDiff($before, fixtureUpdateTree(IN_PLACE_FIXTURE, $site));
 
-            expect($new)->not->toBe([], "el lloc no ha rebut cap comanda durant l'actualització")
-                ->and($run->status)->toBe(RunStatus::RolledBack, (string) $run->failureReason())
-                ->and($run->result_summary['failed_step'] ?? null)->toBe(SmokeCheckStep::NAME)
-                ->and($run->steps()->where('name', FilesRollbackStep::NAME)->sole()->status->value)->toBe('succeeded')
-                // AGENTS.md rule 4: the database is never restored over a new order, and the warning names it.
-                ->and($database->status->value)->toBe('succeeded')
-                ->and($database->result['restored'] ?? null)->toBeFalse()
-                ->and($database->summary)->toStartWith('BD no restaurada')
-                ->and($database->output)->toContain("#{$new[0]} (nova, comanda, processing")
-                ->and(data_get($database->result, 'new_writes.orders.*.id'))->toContain($new[0])
-                // The files as they were; the database untouched: the order and what the broken version wrote are still there.
-                ->and($diff)->toBe([], 'fitxers diferents: '.implode(' | ', array_slice($diff, 0, 10)))
-                ->and(fixtureUpdateVersion($driver))->toBe('1.0.0')
-                ->and(trim($driver->wp(['eval', "echo wc_get_order({$new[0]}) ? 'yes' : 'no';"])->stdout))->toBe('yes')
-                ->and(fixtureUpdateMarker($driver))->toBe($token)
-                ->and($driver->wp(['maintenance-mode', 'is-active'])->successful())->toBeFalse();
-        }, activate: true, before: static function (Site $site, SiteDriver $driver) use (&$before, &$existing, $ordersOf): void {
-            $before = fixtureUpdateTree(IN_PLACE_FIXTURE, $site);
-            $existing = $ordersOf($driver);
-        });
-    } finally {
-        // The database was (rightly) not restored: what the run left in it goes now.
-        foreach ($existing === null ? [] : array_diff($ordersOf($driver), $existing) as $id) {
-            $driver->wp(['eval', "\$o = wc_get_order({$id}); if (\$o) { \$o->delete(true); } echo 'ok';"]);
-        }
-        $driver->wp(['option', 'delete', 'wpup_e2e_marker', '--skip-plugins', '--skip-themes']);
-    }
-});
+        expect($new)->not->toBe([], "el lloc no ha rebut cap comanda durant l'actualització")
+            ->and($run->status)->toBe(RunStatus::RolledBack, (string) $run->failureReason())
+            ->and($run->result_summary['failed_step'] ?? null)->toBe(SmokeCheckStep::NAME)
+            ->and($run->steps()->where('name', FilesRollbackStep::NAME)->sole()->status->value)->toBe('succeeded')
+            // AGENTS.md rule 4: the database is never restored over a new order, and the warning names it.
+            ->and($database->status->value)->toBe('succeeded')
+            ->and($database->result['restored'] ?? null)->toBeFalse()
+            ->and($database->summary)->toStartWith('BD no restaurada')
+            ->and($database->output)->toContain("#{$new[0]} (nova, comanda, processing")
+            ->and(data_get($database->result, 'new_writes.orders.*.id'))->toContain($new[0])
+            // The files as they were; the database untouched: the order and what the broken version wrote are still there.
+            ->and($diff)->toBe([], 'fitxers diferents: '.implode(' | ', array_slice($diff, 0, 10)))
+            ->and(fixtureUpdateVersion($driver))->toBe('1.0.0')
+            ->and(trim($driver->wp(['eval', "echo wc_get_order({$new[0]}) ? 'yes' : 'no';"])->stdout))->toBe('yes')
+            ->and(fixtureUpdateMarker($driver))->toBe($token);
+    }, activate: true, before: static function (Site $site, SiteDriver $driver) use (&$before, &$existing): void {
+        $before = fixtureUpdateTree(IN_PLACE_FIXTURE, $site);
+        $existing = fixtureUpdateOrders($driver);
+    });
+})->skip(fixtureUpdateDown(IN_PLACE_FIXTURE), IN_PLACE_DOWN);
